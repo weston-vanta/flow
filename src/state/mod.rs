@@ -75,6 +75,16 @@ impl Store {
         ))
     }
 
+    /// The task's `brief.md`, verbatim.
+    pub fn brief(&self, id: &str) -> anyhow::Result<String> {
+        let dir = self.task_dir(id)?;
+        if !dir.is_dir() {
+            bail!("no such task: {id}");
+        }
+        let path = dir.join(BRIEF_FILE);
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))
+    }
+
     /// Every task, oldest first (ids sort as strings by creation time).
     pub fn list_tasks(&self) -> anyhow::Result<Vec<(TaskRecord, Status)>> {
         let entries = match std::fs::read_dir(&self.tasks) {

@@ -42,7 +42,7 @@ fn dangling_state_symlink_exits_3_and_writes_nothing() {
 }
 
 #[test]
-fn status_prints_state_dir() {
+fn status_on_empty_state_has_no_open_tasks() {
     let dir = tempfile::tempdir().unwrap();
 
     flow()
@@ -50,5 +50,5 @@ fn status_prints_state_dir() {
         .arg("status")
         .assert()
         .success()
-        .stdout(format!("state: {}\n", dir.path().display()));
+        .stdout("no open tasks\nadopted: 0 sessions\n");
 }

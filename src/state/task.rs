@@ -1,3 +1,4 @@
+use std::fmt;
 use std::path::PathBuf;
 
 use jiff::Timestamp;
@@ -21,6 +22,14 @@ pub struct TaskRecord {
 #[serde(rename_all = "kebab-case")]
 pub enum Harness {
     Claude,
+}
+
+impl fmt::Display for Harness {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Harness::Claude => "claude",
+        })
+    }
 }
 
 /// `status.json`: where a task is now. Rewritten under lock by `Store::set_status`.
@@ -56,6 +65,26 @@ pub enum State {
     Orphaned,
 }
 
+impl State {
+    /// Whether the task still needs attention: not `done` and not `orphaned`.
+    pub fn is_open(self) -> bool {
+        !matches!(self, State::Done | State::Orphaned)
+    }
+}
+
+impl fmt::Display for State {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            State::Pending => "pending",
+            State::Working => "working",
+            State::Blocked => "blocked",
+            State::NeedsDecision => "needs-decision",
+            State::Done => "done",
+            State::Orphaned => "orphaned",
+        })
+    }
+}
+
 /// Work on the task waits until `on` answers `what`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hold {
@@ -69,6 +98,15 @@ pub struct Hold {
 pub enum HoldOn {
     User,
     Supervisor,
+}
+
+impl fmt::Display for HoldOn {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            HoldOn::User => "user",
+            HoldOn::Supervisor => "supervisor",
+        })
+    }
 }
 
 /// The herdr pane running the task's agent.
@@ -85,7 +123,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn states_serialize_kebab_case() {
+    fn states_serialize_and_display_kebab_case() {
         let states = [
             State::Pending,
             State::Working,
@@ -99,5 +137,14 @@ mod tests {
             json,
             r#"["pending","working","blocked","needs-decision","done","orphaned"]"#
         );
+        let displayed: Vec<_> = states.iter().map(|s| format!("\"{s}\"")).collect();
+        assert_eq!(format!("[{}]", displayed.join(",")), json);
+    }
+
+    #[test]
+    fn hold_on_displays_as_serialized() {
+        for on in [HoldOn::User, HoldOn::Supervisor] {
+            assert_eq!(serde_json::to_string(&on).unwrap(), format!("\"{on}\""));
+        }
     }
 }
