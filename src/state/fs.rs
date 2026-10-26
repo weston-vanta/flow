@@ -1,5 +1,5 @@
-use std::fs::{self, File};
-use std::io::{self, Write};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
@@ -18,6 +18,34 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
         let _ = fs::remove_file(&temp);
     }
     result
+}
+
+/// Appends `line` (one newline-terminated record) to `path` under the file's lock. A partial last
+/// line left by a crashed writer is dropped first, so it cannot corrupt the line appended after it.
+pub fn append_line(path: &Path, line: &[u8]) -> io::Result<()> {
+    with_lock(path, || {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .append(true)
+            .open(path)?;
+        drop_partial_last_line(&mut file)?;
+        file.write_all(line)?;
+        file.sync_all()
+    })
+}
+
+fn drop_partial_last_line(file: &mut File) -> io::Result<()> {
+    let mut contents = Vec::new();
+    file.read_to_end(&mut contents)?;
+    if contents.is_empty() || contents.ends_with(b"\n") {
+        return Ok(());
+    }
+    let keep = contents
+        .iter()
+        .rposition(|&b| b == b'\n')
+        .map_or(0, |i| i + 1);
+    file.set_len(keep as u64)
 }
 
 /// Runs `f` while holding the mkdir lock `<path>.lock`. Retries every 50 ms for up to 10 s, and

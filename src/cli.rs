@@ -1,7 +1,11 @@
-use clap::{Parser, Subcommand};
+use std::path::PathBuf;
+
+use clap::{Parser, Subcommand, ValueEnum};
 
 use flow::cmd;
+use flow::cmd::task_write::ReportedState;
 use flow::paths::StateDir;
+use flow::state::task::HoldOn;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -26,6 +30,14 @@ pub enum Command {
     Task {
         #[command(subcommand)]
         command: TaskCommand,
+    },
+    /// List dispatch requests not yet consumed
+    Requests {
+        #[command(subcommand)]
+        command: Option<RequestsCommand>,
+        /// Print raw JSON instead of the compact view
+        #[arg(long)]
+        json: bool,
     },
     /// Start a worker session for a new task
     Dispatch,
@@ -79,12 +91,93 @@ pub enum TaskCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Report the task working, blocked, or needing a decision
+    Status {
+        id: String,
+        /// working, blocked, or needs-decision
+        state: ReportedState,
+        /// What changed; for blocked and needs-decision, what the supervisor must answer
+        #[arg(
+            long,
+            required_if_eq_any([("state", "blocked"), ("state", "needs-decision")])
+        )]
+        message: Option<String>,
+    },
+    /// Finish the task with a report
+    Done {
+        id: String,
+        /// File to keep as the task's report.md
+        #[arg(long, value_name = "FILE")]
+        report: PathBuf,
+    },
+    /// Ask the supervisor to dispatch sibling work
+    RequestDispatch {
+        id: String,
+        #[arg(long)]
+        title: String,
+        /// File holding the brief for the new task
+        #[arg(long, value_name = "FILE")]
+        brief: PathBuf,
+        /// CDE to run the new task on
+        #[arg(long, value_name = "NAME")]
+        cde: Option<String>,
+    },
+    /// Answer the task's hold and lift it
+    Decide {
+        id: String,
+        #[arg(long)]
+        by: Party,
+        #[arg(long, value_name = "TEXT")]
+        answer: String,
+    },
+    /// Hold the task until someone answers
+    Hold {
+        id: String,
+        /// Who must answer
+        #[arg(long)]
+        on: Party,
+        /// What they must answer
+        #[arg(long, value_name = "TEXT")]
+        what: String,
+    },
+    /// Mark the task orphaned: its work will not finish
+    Orphan {
+        id: String,
+        #[arg(long, value_name = "TEXT")]
+        reason: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RequestsCommand {
+    /// Mark a request dispatched so it stops listing
+    Consume { req_id: String },
+}
+
+/// Who answers a hold or made a decision.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum Party {
+    User,
+    Supervisor,
+}
+
+impl From<Party> for HoldOn {
+    fn from(party: Party) -> HoldOn {
+        match party {
+            Party::User => HoldOn::User,
+            Party::Supervisor => HoldOn::Supervisor,
+        }
+    }
 }
 
 pub fn run(cli: Cli, state: &StateDir) -> anyhow::Result<()> {
     match cli.command {
         Command::Status { json } => cmd::status::run(state, json),
         Command::Task { command } => run_task(command, state),
+        Command::Requests { command, json } => match command {
+            None => cmd::requests::run_list(state, json),
+            Some(RequestsCommand::Consume { req_id }) => cmd::requests::run_consume(state, &req_id),
+        },
         Command::Dispatch
         | Command::Cde
         | Command::Inventory
@@ -104,5 +197,24 @@ fn run_task(command: TaskCommand, state: &StateDir) -> anyhow::Result<()> {
         TaskCommand::Brief { id } => cmd::task_brief::run(state, &id),
         TaskCommand::List { all, json } => cmd::task_list::run(state, all, json),
         TaskCommand::Events { id, last, json } => cmd::task_events::run(state, &id, last, json),
+        TaskCommand::Status {
+            id,
+            state: reported,
+            message,
+        } => cmd::task_write::run_status(state, &id, reported, message.as_deref()),
+        TaskCommand::Done { id, report } => cmd::task_write::run_done(state, &id, &report),
+        TaskCommand::RequestDispatch {
+            id,
+            title,
+            brief,
+            cde,
+        } => cmd::task_write::run_request_dispatch(state, &id, &title, &brief, cde.as_deref()),
+        TaskCommand::Decide { id, by, answer } => {
+            cmd::task_write::run_decide(state, &id, by.into(), &answer)
+        }
+        TaskCommand::Hold { id, on, what } => {
+            cmd::task_write::run_hold(state, &id, on.into(), &what)
+        }
+        TaskCommand::Orphan { id, reason } => cmd::task_write::run_orphan(state, &id, &reason),
     }
 }

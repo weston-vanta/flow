@@ -2,6 +2,7 @@ pub mod config;
 pub mod events;
 pub mod fs;
 pub mod ids;
+pub mod requests;
 pub mod task;
 
 use std::io;
@@ -15,11 +16,13 @@ use serde_json::json;
 
 use crate::paths::StateDir;
 use events::Event;
-use task::{Status, TaskRecord};
+use task::{Decision, Status, TaskRecord};
 
 const TASK_FILE: &str = "task.json";
 const STATUS_FILE: &str = "status.json";
 const BRIEF_FILE: &str = "brief.md";
+const REPORT_FILE: &str = "report.md";
+const DECISIONS_FILE: &str = "decisions.jsonl";
 const EVENT_SOURCE: &str = "flow";
 
 /// Task records under `state/tasks/<task-id>/`.
@@ -41,6 +44,15 @@ impl Store {
             bail!("invalid task id: {id:?}");
         }
         Ok(self.tasks.join(id))
+    }
+
+    /// `task_dir`, failing when the task does not exist.
+    fn existing_task_dir(&self, id: &str) -> anyhow::Result<PathBuf> {
+        let dir = self.task_dir(id)?;
+        if !dir.is_dir() {
+            bail!("no such task: {id}");
+        }
+        Ok(dir)
     }
 
     /// Writes the task's files into a hidden staging directory and renames it into place, so
@@ -65,10 +77,7 @@ impl Store {
     }
 
     pub fn task(&self, id: &str) -> anyhow::Result<(TaskRecord, Status)> {
-        let dir = self.task_dir(id)?;
-        if !dir.is_dir() {
-            bail!("no such task: {id}");
-        }
+        let dir = self.existing_task_dir(id)?;
         Ok((
             read_json(&dir.join(TASK_FILE))?,
             read_json(&dir.join(STATUS_FILE))?,
@@ -77,16 +86,18 @@ impl Store {
 
     /// The task's `brief.md`, verbatim.
     pub fn brief(&self, id: &str) -> anyhow::Result<String> {
-        let dir = self.task_dir(id)?;
-        if !dir.is_dir() {
-            bail!("no such task: {id}");
-        }
+        let dir = self.existing_task_dir(id)?;
         let path = dir.join(BRIEF_FILE);
         std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))
     }
 
     /// Every task, oldest first (ids sort as strings by creation time).
     pub fn list_tasks(&self) -> anyhow::Result<Vec<(TaskRecord, Status)>> {
+        self.task_ids()?.iter().map(|id| self.task(id)).collect()
+    }
+
+    /// Ids of every task directory, sorted.
+    fn task_ids(&self) -> anyhow::Result<Vec<String>> {
         let entries = match std::fs::read_dir(&self.tasks) {
             Ok(entries) => entries,
             Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -105,7 +116,24 @@ impl Store {
             }
         }
         ids.sort();
-        ids.iter().map(|id| self.task(id)).collect()
+        Ok(ids)
+    }
+
+    /// Replaces the task's `report.md` with `report` and returns its path.
+    pub fn write_report(&self, id: &str, report: &[u8]) -> anyhow::Result<PathBuf> {
+        let dir = self.existing_task_dir(id)?;
+        let path = dir.join(REPORT_FILE);
+        fs::write_atomic(&path, report).with_context(|| format!("writing {}", path.display()))?;
+        Ok(path)
+    }
+
+    /// Appends `decision` as one line of the task's `decisions.jsonl`.
+    pub fn append_decision(&self, id: &str, decision: &Decision) -> anyhow::Result<()> {
+        let dir = self.existing_task_dir(id)?;
+        let path = dir.join(DECISIONS_FILE);
+        let mut line = serde_json::to_vec(decision)?;
+        line.push(b'\n');
+        fs::append_line(&path, &line).with_context(|| format!("appending to {}", path.display()))
     }
 
     /// Updates `status.json` under its lock and sets `last_event` to now before calling `f`.

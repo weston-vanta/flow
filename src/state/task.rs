@@ -109,6 +109,16 @@ impl fmt::Display for HoldOn {
     }
 }
 
+/// One line of `decisions.jsonl`: an answer to the task's hold, or a standalone ruling when the
+/// task had none (`question` is null).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Decision {
+    pub ts: Timestamp,
+    pub by: HoldOn,
+    pub answer: String,
+    pub question: Option<String>,
+}
+
 /// The herdr pane running the task's agent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HerdrTarget {

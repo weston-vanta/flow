@@ -1,11 +1,13 @@
-//! Subcommand implementations. Each `run` renders compact text, or raw serde JSON of the same
+//! Subcommand implementations. Read commands render compact text, or raw serde JSON of the same
 //! data when asked.
 
+pub mod requests;
 pub mod status;
 pub mod task_brief;
 pub mod task_events;
 pub mod task_list;
 pub mod task_show;
+pub mod task_write;
 
 use std::io::{self, Write};
 

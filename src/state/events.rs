@@ -1,5 +1,5 @@
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::fs;
+use std::io;
 use std::path::Path;
 
 use anyhow::Context;
@@ -18,36 +18,12 @@ pub struct Event {
     pub data: serde_json::Value,
 }
 
-/// Appends `ev` as one line to `<dir>/events.jsonl` under the file's lock. A partial last line
-/// left by a crashed writer is dropped first, so it cannot corrupt the line appended after it.
+/// Appends `ev` as one line to `<dir>/events.jsonl`; see `fs::append_line`.
 pub fn append(dir: &Path, ev: &Event) -> anyhow::Result<()> {
     let path = dir.join(EVENTS_FILE);
     let mut line = serde_json::to_vec(ev)?;
     line.push(b'\n');
-    super::fs::with_lock(&path, || {
-        let mut file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .append(true)
-            .open(&path)?;
-        drop_partial_last_line(&mut file)?;
-        file.write_all(&line)?;
-        file.sync_all()
-    })
-    .with_context(|| format!("appending to {}", path.display()))
-}
-
-fn drop_partial_last_line(file: &mut File) -> io::Result<()> {
-    let mut contents = Vec::new();
-    file.read_to_end(&mut contents)?;
-    if contents.is_empty() || contents.ends_with(b"\n") {
-        return Ok(());
-    }
-    let keep = contents
-        .iter()
-        .rposition(|&b| b == b'\n')
-        .map_or(0, |i| i + 1);
-    file.set_len(keep as u64)
+    super::fs::append_line(&path, &line).with_context(|| format!("appending to {}", path.display()))
 }
 
 /// Every event in `<dir>/events.jsonl`, oldest first. A missing file has no events. A last line
@@ -84,6 +60,8 @@ pub fn read_all(dir: &Path) -> anyhow::Result<Vec<Event>> {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::fs::OpenOptions;
+    use std::io::Write;
 
     fn event(kind: &str) -> Event {
         Event {

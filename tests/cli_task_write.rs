@@ -1,0 +1,382 @@
+use std::path::{Path, PathBuf};
+
+use assert_cmd::Command;
+use flow::paths::StateDir;
+use flow::state::Store;
+use flow::state::events::{self, Event};
+use flow::state::task::{Harness, HoldOn, State, TaskRecord};
+use jiff::Timestamp;
+use serde_json::{Value, json};
+
+const TASK: &str = "aaaaaaab";
+
+fn flow(state: &Path) -> Command {
+    let mut cmd = Command::cargo_bin("flow").expect("flow binary is built");
+    cmd.env("FLOW_STATE", state);
+    cmd
+}
+
+/// A temp repo root with an empty `state/` holding one pending task, and a `Store` over it. The
+/// CLI gets the state dir through `FLOW_STATE` on each command.
+fn setup() -> (tempfile::TempDir, PathBuf, Store) {
+    let repo = tempfile::tempdir().unwrap();
+    let state = repo.path().join("state");
+    std::fs::create_dir(&state).unwrap();
+    let store = Store::open(&StateDir::resolve(repo.path()).unwrap());
+    store
+        .create_task(record(TASK, "Add retry to the example client"), "brief")
+        .unwrap();
+    (repo, state, store)
+}
+
+fn record(id: &str, title: &str) -> TaskRecord {
+    TaskRecord {
+        id: id.to_owned(),
+        parent: None,
+        title: title.to_owned(),
+        cde: "cde-a".to_owned(),
+        worktree: PathBuf::from("/workspaces/example-repo.wt/retry"),
+        harness: Harness::Claude,
+        created: Timestamp::now(),
+        owner: "supervisor".to_owned(),
+    }
+}
+
+fn stdout(cmd: &mut Command) -> String {
+    let out = cmd.assert().success().get_output().stdout.clone();
+    String::from_utf8(out).unwrap()
+}
+
+fn last_event(store: &Store, id: &str) -> Event {
+    events::read_all(&store.task_dir(id).unwrap())
+        .unwrap()
+        .pop()
+        .expect("task has events")
+}
+
+fn read_json(path: &Path) -> Value {
+    serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+}
+
+#[test]
+fn needs_decision_sets_supervisor_hold() {
+    let (_repo, state, store) = setup();
+
+    flow(&state)
+        .args(["task", "status", TASK, "needs-decision"])
+        .args(["--message", "Retry forever or give up after five tries?"])
+        .assert()
+        .success();
+
+    let (_, status) = store.task(TASK).unwrap();
+    assert_eq!(status.state, State::NeedsDecision);
+    let hold = status.hold.expect("hold is set");
+    assert_eq!(hold.on, HoldOn::Supervisor);
+    assert_eq!(hold.what, "Retry forever or give up after five tries?");
+    let ev = last_event(&store, TASK);
+    assert_eq!(ev.source, "cli");
+    assert_eq!(ev.kind, "status.report");
+    assert_eq!(
+        ev.data,
+        json!({"message": "Retry forever or give up after five tries?"})
+    );
+}
+
+#[test]
+fn working_report_clears_supervisor_hold() {
+    let (_repo, state, store) = setup();
+    flow(&state)
+        .args(["task", "status", TASK, "blocked", "--message", "CI is down"])
+        .assert()
+        .success();
+
+    flow(&state)
+        .args(["task", "status", TASK, "working"])
+        .assert()
+        .success();
+
+    let (_, status) = store.task(TASK).unwrap();
+    assert_eq!(status.state, State::Working);
+    assert_eq!(status.hold, None);
+    assert_eq!(last_event(&store, TASK).data, json!({"message": null}));
+}
+
+#[test]
+fn working_report_keeps_user_hold() {
+    let (_repo, state, store) = setup();
+    flow(&state)
+        .args([
+            "task",
+            "hold",
+            TASK,
+            "--on",
+            "user",
+            "--what",
+            "Approve the schema change",
+        ])
+        .assert()
+        .success();
+
+    flow(&state)
+        .args(["task", "status", TASK, "working"])
+        .assert()
+        .success();
+
+    let hold = store.task(TASK).unwrap().1.hold.expect("user hold stays");
+    assert_eq!(hold.on, HoldOn::User);
+}
+
+#[test]
+fn blocked_without_message_is_rejected() {
+    let (_repo, state, store) = setup();
+
+    let out = flow(&state)
+        .args(["task", "status", TASK, "blocked"])
+        .assert()
+        .code(2)
+        .get_output()
+        .stderr
+        .clone();
+
+    assert!(String::from_utf8(out).unwrap().contains("--message"));
+
+    assert_eq!(store.task(TASK).unwrap().1.state, State::Pending);
+}
+
+#[test]
+fn invalid_state_is_rejected() {
+    let (_repo, state, store) = setup();
+
+    let out = flow(&state)
+        .args(["task", "status", TASK, "finished"])
+        .assert()
+        .code(2)
+        .get_output()
+        .stderr
+        .clone();
+
+    let err = String::from_utf8(out).unwrap();
+    for accepted in ["working", "blocked", "needs-decision"] {
+        assert!(err.contains(accepted), "{err}");
+    }
+    assert!(err.contains("flow task done"), "{err}");
+    assert!(err.contains("flow task orphan"), "{err}");
+    assert_eq!(store.task(TASK).unwrap().1.state, State::Pending);
+}
+
+#[test]
+fn done_copies_report_and_transitions() {
+    let (repo, state, store) = setup();
+    store
+        .set_status(TASK, |s| {
+            s.hold = Some(flow::state::task::Hold {
+                on: HoldOn::Supervisor,
+                what: "Which endpoint?".to_owned(),
+                since: Timestamp::now(),
+            })
+        })
+        .unwrap();
+    let report = repo.path().join("report-draft.md");
+    std::fs::write(&report, "# Retry added\n\nAll tests pass.\n").unwrap();
+
+    flow(&state)
+        .args(["task", "done", TASK, "--report"])
+        .arg(&report)
+        .assert()
+        .success();
+
+    let dir = store.task_dir(TASK).unwrap();
+    let copied = dir.join("report.md");
+    assert_eq!(
+        std::fs::read_to_string(&copied).unwrap(),
+        "# Retry added\n\nAll tests pass.\n"
+    );
+    let (_, status) = store.task(TASK).unwrap();
+    assert_eq!(status.state, State::Done);
+    assert_eq!(status.hold, None);
+    let ev = last_event(&store, TASK);
+    assert_eq!(ev.kind, "report");
+    assert_eq!(ev.data, json!({"path": copied}));
+}
+
+#[test]
+fn request_dispatch_writes_request_file() {
+    let (repo, state, store) = setup();
+    let brief = repo.path().join("sibling-brief.md");
+    std::fs::write(&brief, "Update the example docs.\n").unwrap();
+
+    let out = stdout(
+        flow(&state)
+            .args(["task", "request-dispatch", TASK])
+            .args(["--title", "Update docs", "--cde", "cde-b", "--brief"])
+            .arg(&brief),
+    );
+
+    let req_id = out.trim();
+    let path = store
+        .task_dir(TASK)
+        .unwrap()
+        .join("requests")
+        .join(format!("{req_id}.json"));
+    assert!(path.is_file(), "{} missing", path.display());
+    let expected = json!({
+        "title": "Update docs",
+        "brief_path": brief,
+        "cde": "cde-b",
+        "requested_by": TASK,
+    });
+    assert_eq!(read_json(&path), expected);
+    let ev = last_event(&store, TASK);
+    assert_eq!(ev.kind, "request.dispatch");
+    assert_eq!(ev.data, expected);
+}
+
+#[test]
+fn decide_clears_hold_and_logs() {
+    let (_repo, state, store) = setup();
+    flow(&state)
+        .args(["task", "status", TASK, "needs-decision"])
+        .args(["--message", "Which endpoint?"])
+        .assert()
+        .success();
+
+    flow(&state)
+        .args(["task", "decide", TASK, "--by", "supervisor"])
+        .args(["--answer", "Use the v2 endpoint"])
+        .assert()
+        .success();
+
+    let dir = store.task_dir(TASK).unwrap();
+    let log = std::fs::read_to_string(dir.join("decisions.jsonl")).unwrap();
+    let lines: Vec<_> = log.lines().collect();
+    assert_eq!(lines.len(), 1, "{log}");
+    let decision: Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(decision["by"], "supervisor");
+    assert_eq!(decision["answer"], "Use the v2 endpoint");
+    assert_eq!(decision["question"], "Which endpoint?");
+    let status = read_json(&dir.join("status.json"));
+    assert_eq!(status["hold"], Value::Null);
+    let ev = last_event(&store, TASK);
+    assert_eq!(ev.kind, "decision");
+    assert_eq!(
+        ev.data,
+        json!({"by": "supervisor", "answer": "Use the v2 endpoint", "question": "Which endpoint?"})
+    );
+}
+
+#[test]
+fn hold_sets_hold_and_logs() {
+    let (_repo, state, store) = setup();
+
+    flow(&state)
+        .args(["task", "hold", TASK, "--on", "user"])
+        .args(["--what", "Approve the schema change"])
+        .assert()
+        .success();
+
+    let (_, status) = store.task(TASK).unwrap();
+    let hold = status.hold.expect("hold is set");
+    assert_eq!(hold.on, HoldOn::User);
+    assert_eq!(hold.what, "Approve the schema change");
+    let ev = last_event(&store, TASK);
+    assert_eq!(ev.kind, "hold.set");
+    assert_eq!(
+        ev.data,
+        json!({"on": "user", "what": "Approve the schema change"})
+    );
+}
+
+#[test]
+fn requests_lists_then_consume_hides() {
+    let (repo, state, store) = setup();
+    store
+        .create_task(record("aaaaaaac", "Second task"), "brief")
+        .unwrap();
+    let brief = repo.path().join("sibling-brief.md");
+    std::fs::write(&brief, "Sibling work.\n").unwrap();
+    let with_cde = stdout(
+        flow(&state)
+            .args(["task", "request-dispatch", TASK])
+            .args(["--title", "Update docs", "--cde", "cde-b", "--brief"])
+            .arg(&brief),
+    );
+    let without_cde = stdout(
+        flow(&state)
+            .args(["task", "request-dispatch", "aaaaaaac"])
+            .args(["--title", "Bump the client", "--brief"])
+            .arg(&brief),
+    );
+    let (with_cde, without_cde) = (with_cde.trim(), without_cde.trim());
+
+    let listed = stdout(flow(&state).arg("requests"));
+
+    let mut lines: Vec<_> = listed.lines().collect();
+    lines.sort();
+    let mut expected = vec![
+        format!("{with_cde}  {TASK}  cde-b  Update docs"),
+        format!("{without_cde}  aaaaaaac  -      Bump the client"),
+    ];
+    expected.sort();
+    assert_eq!(lines, expected, "{listed}");
+
+    flow(&state)
+        .args(["requests", "consume", with_cde])
+        .assert()
+        .success();
+
+    let listed = stdout(flow(&state).arg("requests"));
+    assert!(!listed.contains(with_cde), "{listed}");
+    assert!(listed.contains(without_cde), "{listed}");
+    let consumed = store
+        .task_dir(TASK)
+        .unwrap()
+        .join("requests")
+        .join(format!("{with_cde}.json.consumed"));
+    assert!(consumed.is_file());
+
+    let json = stdout(flow(&state).args(["requests", "--json"]));
+    let json: Value = serde_json::from_str(&json).unwrap();
+    let rows = json.as_array().expect("array of requests");
+    assert_eq!(rows.len(), 1, "{json}");
+    assert_eq!(rows[0]["id"], without_cde);
+    assert_eq!(rows[0]["requested_by"], "aaaaaaac");
+    assert_eq!(rows[0]["cde"], Value::Null);
+
+    flow(&state)
+        .args(["requests", "consume", with_cde])
+        .assert()
+        .failure()
+        .code(1);
+}
+
+#[test]
+fn orphan_transitions_with_reason_event() {
+    let (_repo, state, store) = setup();
+
+    flow(&state)
+        .args(["task", "orphan", TASK, "--reason", "CDE was deleted"])
+        .assert()
+        .success();
+
+    let (_, status) = store.task(TASK).unwrap();
+    assert_eq!(status.state, State::Orphaned);
+    let ev = last_event(&store, TASK);
+    assert_eq!(ev.source, "cli");
+    assert_eq!(ev.kind, "orphaned");
+    assert_eq!(ev.data, json!({"reason": "CDE was deleted"}));
+}
+
+#[test]
+fn write_commands_reject_unknown_task() {
+    let (_repo, state, _store) = setup();
+
+    let out = flow(&state)
+        .args(["task", "orphan", "aaaaaaaz", "--reason", "gone"])
+        .assert()
+        .code(1)
+        .get_output()
+        .stderr
+        .clone();
+
+    assert!(String::from_utf8(out).unwrap().contains("no such task"));
+}
