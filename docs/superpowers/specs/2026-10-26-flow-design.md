@@ -1,0 +1,336 @@
+# flow: a supervisor for agent sessions across CDEs
+
+Date: 2026-10-26. Status: approved design, pending implementation plan.
+
+## Intent
+
+The user works across several Ona cloud development environments (CDEs), each with its
+own checkout of a large monorepo and its own git worktrees. Today that means hopping
+between hosts and agent sessions, and no single session knows what is going on everywhere.
+
+`flow` turns one agent session, started from whichever CDE is convenient, into the single
+point of contact for all of that work. That session is the **supervisor**. It dispatches
+tasks to **worker** sessions on the right CDE, follows them to completion, answers their
+questions when it can and escalates when it should, reports outcomes, and also sees and
+reports on sessions the user started by hand. It is harness-agnostic in principle, with a
+short list of supported harnesses in practice.
+
+The name `flow` is reused from an earlier, stalled project with similar product goals.
+Nothing from that project's design is carried over.
+
+## Goals
+
+- One supervisor session, started anywhere, with a complete and current picture of every
+  agent session across all CDEs: what it is doing, whether it is blocked, what it needs.
+- Dispatch a task to a worker on a chosen CDE without the user opening that CDE.
+- Follow workers without polling or spending tokens while nothing happens; the supervisor
+  is woken when something is actionable.
+- Keep working while the user is disconnected: the supervisor stays alive and keeps
+  answering workers between the user's visits.
+- Adopt sessions the user started by hand so they appear in the same picture.
+- Survive the supervisor session ending, the supervisor CDE being recycled, and any worker
+  CDE being recycled. Durable truth lives on EFS, not in any session or host.
+- Direct access when needed: the user can attach to any worker's terminal.
+- Public code, private content: the repo can be public without leaking anything about the
+  work it supervises.
+
+## Non-goals (v1)
+
+- Connected services (chat, documents, calendar, issue tracker). Designed around, not built.
+- Codex workers. The harness adapter boundary exists so Codex can be added; only Claude
+  Code is implemented.
+- Sessions started outside herdr. The user will start every session in herdr, so adoption
+  is herdr-only.
+- Automatic credential refresh for the CDE control plane. The supervisor reports an
+  expiring or expired login; renewing it is manual for now.
+- Running workers anywhere other than a CDE reachable over Ona ssh.
+- Merging PRs. Workers may open PRs; merging stays human.
+- Replacing `wt`, `herdr`, or the monorepo's own skills. `flow` composes them.
+
+## Anti-goals
+
+- A supervisor that silently decides things that change what the user asked for.
+- Hard-coded rules about kinds of tasks and their lifecycles (for example "a PR task is
+  done after the first CI run"). What "done" means is stated per task in its brief.
+- Depending on undocumented harness internals (inbox file formats, session registry
+  filtering, launcher overrides). Documented hooks, CLI flags, and read-only consumption
+  of on-disk state are acceptable; writing into harness-owned state is not.
+- State that only exists in a process. If a fact matters after a restart, it is a file.
+- Chatty cross-host polling over ssh as the steady state.
+- Anything in the public repo that names the user's employer, projects, tickets, PRs,
+  hosts, or environment ids.
+
+## Verified constraints
+
+Checked on 2026-10-23 and 2026-10-26 from one of the user's CDEs.
+
+- `/efs-home` is one EFS filesystem shared by all of the user's running CDEs. A file
+  written on one host is readable on the others. Cross-host visibility latency was not
+  measured; it is assumed to be seconds at worst.
+- `~/.claude` is a symlink to `/efs-home/.claude` on every CDE (created by the user's
+  dotfiles `post-start-install.sh`). So Claude Code's session registry
+  (`~/.claude/sessions/*.json`), transcripts
+  (`~/.claude/projects/<cwd-slug>/<session-id>.jsonl`), and hooks directory are shared.
+  Transcripts include periodic `away_summary` system entries that summarize what a session
+  is doing. `~/.config/gh` is also on EFS, so GitHub auth survives a recycle.
+- The registry filters peers to the local `pidDomain` (`linux:<machine-id>:<pid-namespace>`)
+  and peer messaging uses Unix sockets in `/tmp`. Native cross-session messaging therefore
+  does not work across hosts. Agent-team inboxes are files on EFS but are undocumented
+  internals keyed to the lead session; they are not used.
+- The `gitpod` CLI inside a CDE is environment-scoped until the user logs in. After
+  `gitpod login` as the user, `gitpod environment list` shows all environments, and
+  `gitpod environment ssh-config` installs an ssh alias `<env-id>.ona.environment` with a
+  ProxyCommand. Native `ssh` to another CDE takes about 0.5 s with connection
+  multiplexing; the `gitpod environment ssh` wrapper takes 4 to 5 s per call. The login
+  token lives in `~/.ona/configuration.yaml` on the local host (lost on recycle), expires
+  in 8 h, and carries a refresh token whose unattended behavior is unverified.
+- A non-login ssh command does not have `~/.local/bin` on PATH; `zsh -lc` does.
+- `herdr` 0.9.5 (protocol 22) is installed in `~/.local/bin` (local disk, lost on recycle)
+  and running on the probe CDE. It reports native agent state (`idle`, `working`,
+  `blocked`, `done`, `unknown`) per pane from terminal content, supports
+  `agent wait --until <state>`, `agent prompt <text> --wait`, `agent read`,
+  `agent start --kind claude|codex ...`, saved ssh machines (`herdr machine add
+  <ssh-target>`, which prepares the remote server), and `herdr --machine <label> <api
+  command>`. Its Claude integration hook lives at `~/.claude/hooks/herdr-agent-state.sh`
+  (on EFS) and reports session identity to herdr, but the user's shared
+  `~/.claude/settings.json` (a symlink into the dotfiles repo) registers it under a macOS
+  path, so on Linux it never runs today.
+- The user's shared Claude settings set `permissions.defaultMode: auto`; a managed
+  settings file adds organization deny rules. Workers inherit both.
+- Rust 1.96 and Go are in the CDE image. All CDEs are x86_64 with glibc 2.39.
+- CDEs are recycled every few weeks by policy. Anything under `/workspaces` or `/home`
+  that is not on EFS is lost then.
+- Firstmate's wake-up design (Claude Code Stop hook with `asyncRewake: true`, a
+  token-free watcher that exits 2 with a reason to wake the session, and a blocking
+  turn-end guard) is the reference for the wake-up mechanism. Firstmate measured two
+  gotchas: an exit 2 after the hook's timeout is not delivered, and async Stop hooks are
+  not deduplicated across firings.
+
+## Decisions
+
+Each item records what was decided and, where the user did not decide it, marks it as the
+designer's call.
+
+### Shape
+
+1. **Supervisor and workers.** One supervisor session is the user's point of contact.
+   Workers do project work. Workers never address the user; their output reaches the user
+   through the supervisor unless the user attaches to a worker directly. Intervention in a
+   worker's terminal by the user is authoritative and the supervisor reconciles it.
+2. **The supervisor runs detached and persistent.** It lives in its own herdr session on
+   some CDE, so it keeps running and keeps answering workers while the user is
+   disconnected. The user attaches to it (`flow attach`, from any CDE over ssh) rather
+   than owning the process in a terminal. The supervisor's lock names the host and herdr
+   target; `flow up` on another CDE finds the existing supervisor and attaches instead of
+   starting a second one, unless the user explicitly takes over.
+3. **Session is the unit; tasks are its durable shadow.** A task record on EFS mirrors one
+   worker session: brief, target CDE, worktree, harness, status events, decisions, report,
+   and a `parent` pointer. Tasks are hierarchical through `parent`; a worker's in-session
+   subagents are invisible to `flow` and need no record. The supervisor rolls the tree up.
+4. **"Done" is defined per task, in the brief.** The brief states the completion criteria
+   (for example "open a draft PR and stop", or "open a PR and keep it mergeable until it
+   merges", or "write a report"). The worker reports `done` against those criteria. `flow`
+   has one generic status vocabulary and no task-kind state machines; a task that watches
+   a PR is just a task whose brief says so. Follow-up work is a new task, usually
+   dispatched to the same natural home.
+5. **Nested dispatch goes through the supervisor.** (Designer's call.) A worker that needs
+   a sibling or child task writes a dispatch request into its task directory; the
+   supervisor executes it. Placement logic and the ssh login live in one place and the
+   supervisor always knows the whole tree.
+6. **CDEs are not interchangeable.** Each has its own checkout at a different commit and
+   its own worktrees, so most tasks have a natural home (the CDE whose worktree already
+   holds the branch or PR). The supervisor keeps an inventory per CDE (worktrees, branches,
+   open PRs, running sessions, load) and picks a home from it, asking the user only when
+   no home is obvious and the choice matters.
+7. **Placement never collides with live work.** The supervisor refuses to dispatch into a
+   worktree that has a live session unless the user says so, surfaces CDE load in the
+   inventory when it matters, and imposes no cap on workers per CDE.
+8. **Adoption is herdr-only and in scope for v1.** Every session the user starts by hand
+   runs in a herdr pane. The supervisor lists herdr agents on every known CDE, matches them
+   to task records where one exists, and shows the rest as adopted sessions with their
+   herdr state and a summary drawn from the registry and transcript. Steering an adopted
+   session is the same herdr operation as steering a worker, used only when the user asks.
+
+### Durability and layout
+
+9. **Code per CDE, state on EFS.** The repo is cloned to `/workspaces/flow` on each CDE
+   (local disk: fast git and fast `cargo build`). Durable state lives at `/efs-home/flow/`
+   and is reached from the clone through a symlink `/workspaces/flow/state ->
+   /efs-home/flow/state`. The dotfiles `post-start-install.sh` creates the clone, the
+   symlink, the PATH entry, installs herdr, and fixes the herdr hook path to be
+   platform-aware, so a recycled CDE is ready without manual steps. (Layout is the user's;
+   the symlink direction and the dotfiles hook are the designer's reading of it.)
+10. **The supervisor always runs from `/workspaces/flow`.** The harness keys transcripts by
+    cwd, and transcripts are on EFS, so `claude --resume` from `/workspaces/flow` on any
+    CDE resumes the same supervisor conversation after a recycle. Session start reads the
+    state directory first and trusts it over the conversation.
+11. **State is plain files.** One directory per task under `state/tasks/<task-id>/` with
+    small JSON documents and an append-only `events.jsonl`. Writes are atomic (write
+    temp, rename) and serialized with a mkdir-style lock directory, both of which are safe
+    on NFS. No database in v1. (Designer's call.)
+12. **Public repo, private content.** `weston-vanta/flow` on GitHub stays public; its
+    `main` is reset with a fresh history. The repo holds code, generic docs, skills, and
+    the supervisor's instructions. Everything about the actual work lives in `state/` on
+    EFS and is never committed: briefs, reports, decisions, inventory, logs, and
+    operator configuration (`state/config.toml`: CDE names and ssh aliases, the monorepo
+    path and conventions, the worktree tool). This separation is structural, not
+    enforced by tooling: nothing about the work is inside the clone, so it cannot be
+    committed by accident. Committed docs and commit messages use generic terms, as this
+    document does. A denylist scan can be added later if a slip actually happens.
+
+### Transport and runtime
+
+13. **EFS files for durable communication; ssh for control.** Status, requests, decisions,
+    and reports are files. Starting a worker, running a herdr API command on another CDE,
+    and attaching to a terminal go over ssh using the Ona aliases. Nothing in the steady
+    state polls over ssh.
+14. **herdr is the only runtime.** Workers, adopted sessions, and the supervisor itself
+    run in herdr panes. `flow` uses herdr for: starting a harness in a pane, native
+    idle/working/blocked/done state, waiting on state transitions, reading terminal
+    output, steering with confirmation, session identity (once the hook path is fixed),
+    and attaching. A herdr server is started on demand on each CDE. The adapter pins a
+    minimum herdr protocol and fails loudly on mismatch. tmux is not a fallback.
+15. **The supervisor host needs the user's Ona login.** There is no dedicated check or
+    repair command. When an ssh or `gitpod` call fails because the login is missing or
+    expired, the supervisor keeps working from EFS state and says plainly that it cannot
+    reach other CDEs until the user logs in again.
+
+### Harness
+
+16. **Claude Code only in v1, behind an adapter.** The adapter owns: how to launch the
+    harness in a herdr pane with a brief, which hooks it installs for status reporting
+    (through project-level or `--settings` files, never the user's shared settings), how
+    to steer it, how to find its transcript and session id, and how to ask it to resume.
+    Codex is the next adapter; nothing outside the adapter may assume Claude Code.
+17. **Workers inherit the user's permissive permission mode.** A worker that still hits a
+    prompt reads as `blocked` in herdr and is routed to the supervisor like any other
+    decision.
+18. **Workers report through hooks and files, not by messaging the supervisor.** The
+    adapter installs hooks that append events to the task's `events.jsonl` (session start,
+    turn end, stop), and the brief tells the worker how to write a structured status line
+    (`working`, `blocked`, `needs-decision`, `done`) and its final report.
+
+### Wake-up and supervision
+
+19. **Firstmate's Stop-hook watcher pattern.** The supervisor's project-level Claude Code
+    settings register a Stop hook with `asyncRewake: true` and a multi-hour timeout that
+    runs `flow watch`. `flow watch` blocks on the fleet: herdr `agent wait` per worker
+    (remote through ssh, one long-lived connection per CDE), file events on `state/`, and
+    a heartbeat. It absorbs benign events in-process and exits 2 with a one-line reason
+    when something is actionable. The harness delivers that as hook feedback and the
+    supervisor takes a turn. A blocking Stop hook, `flow guard`, refuses to let the session
+    end while work is under way and no watcher is live. `flow watch` is single-flight
+    across concurrent hook firings and re-arms itself before the hook timeout.
+20. **Actionable means:** a worker reached `done` or `blocked` or wrote `needs-decision`; a
+    worker went quiet beyond a threshold without evidence it is working (herdr `working`,
+    recent writes in its worktree); a worker's session or pane disappeared; a CDE became
+    unreachable; a dispatch request appeared; an adopted session changed state in a way
+    the user asked to hear about; the heartbeat fired.
+
+### Decision authority
+
+21. **The supervisor is the user's delegate, not proxy.** It answers a worker's question
+    itself when the answer follows from the brief, the codebase, or the understanding it
+    has built with the user. It escalates when the answer could change what the user asked
+    for, when more than one resolution is reasonable and they lead to different work, or
+    when the question shows the brief has drifted from what was agreed. Escalations are
+    batched and specific: what was asked, what the supervisor would choose and why, what it
+    needs. While a question is open the worker is held, and the hold is recorded in the
+    task so a recycled supervisor knows who it is waiting on. Every decision the supervisor
+    makes alone is logged in the task record.
+
+### Work product
+
+22. **Worktrees via `wt`.** A dispatched task that needs a fresh branch gets a worktree on
+    the target CDE through the user's `wt` tool; a task with a natural home reuses the
+    existing worktree. The task record stores the worktree path.
+23. **Deliverables follow the brief and the monorepo's conventions.** When a brief asks
+    for a PR, the worker uses the monorepo's own skills for branches, templates, and
+    labels. Investigation briefs deliver a report file in the task directory. The
+    supervisor reports plain outcomes with links.
+
+### Implementation
+
+24. **CLI in Rust,** one binary `flow`, built with `cargo build --release` in the clone on
+    each CDE (or copied from EFS; same arch and libc everywhere). Startup time matters
+    because hooks run on every turn end. Dependencies should favor plain processes (`ssh`,
+    `herdr`) over libraries that reimplement them.
+25. **The supervisor's instructions live in the repo** as `CLAUDE.md` plus skills under
+    `.claude/skills/`, kept short and pointing at `flow --help` for mechanics rather than
+    duplicating them. Operator-specific instruction (monorepo conventions, preferred CDE
+    names) is loaded from `state/` at session start, not committed.
+
+## Guidelines
+
+- **Agents read and write state through the CLI, never the files.** The on-disk format is
+  the CLI's concern (JSON documents, JSONL event logs, TOML configuration; Markdown for
+  briefs and reports because agents author and read those as prose). Token efficiency is
+  the CLI's job: `flow status`, `flow task show`, and friends render compact views with
+  only the fields the question needs, and offer a way to expand.
+
+## Task record
+
+```
+state/
+  config.toml        operator configuration (CDEs, monorepo, worktree tool)
+  tasks/<task-id>/
+    task.json        id, parent, title, cde, worktree, harness, created, owner
+    status.json      current state, last event, hold (who/what/since), herdr target
+    events.jsonl     append-only: {ts, source, kind, data}
+    brief.md         what the worker was told, including its completion criteria
+    decisions.jsonl  questions, who answered (supervisor|user), rationale
+    report.md        final report (when done)
+    requests/        dispatch requests written by the worker, consumed by the supervisor
+  cdes/<env-id>.json inventory: name, ssh alias, worktrees, branches, PRs, sessions, load,
+                     last seen
+  supervisor/        lock (host, herdr target, session id), watcher ledger, wake queue
+```
+
+Task ids are short, time-ordered, and never reused.
+
+## Flows
+
+**Start or attach.** `flow up` on any CDE reads `state/supervisor/`. If a live supervisor
+exists, it attaches through ssh and herdr. If not, it starts a herdr session on this CDE
+running the harness from `/workspaces/flow` with `--resume` of the recorded supervisor
+session when one exists, takes the lock, and attaches.
+
+**Dispatch.** User asks for work. Supervisor picks a CDE from inventory (or asks), writes
+the task directory and brief with completion criteria, ensures a worktree, ensures a herdr
+server on the CDE, starts the worker in a herdr pane with the brief, records the herdr
+target, and ends its turn. `flow watch` arms.
+
+**Wake.** A worker writes `done`. `flow watch` exits 2 with `done: <task-id>`. The
+supervisor's turn starts with that line, reads the report, checks it against the brief's
+criteria, tells the user (or queues the news if the user is away), and ends the turn.
+`flow watch` re-arms.
+
+**Escalate.** A worker writes `needs-decision`. Watch wakes the supervisor. It reads the
+question; if it can answer, it steers the worker through herdr and logs the decision; if
+not, it records a hold naming the user, asks the user, and on reply steers the worker and
+clears the hold.
+
+**Adopt.** On session start and on each wake, the supervisor lists herdr agents on every
+known CDE, matches them to tasks where possible, and lists the rest as adopted sessions
+with their latest summary and state.
+
+**Recycle.** A worker CDE is recycled: watch sees the CDE unreachable and its sessions
+gone; the supervisor marks affected tasks `orphaned` with what was last known (branch
+pushed or not) and asks the user whether to redispatch. The supervisor CDE is recycled:
+the user runs `flow up` on any CDE; it finds no live supervisor, starts one that resumes
+the recorded session, reads `state/`, re-arms the watcher, and reports what changed while
+it was away.
+
+## Left to the builder
+
+- Exact JSON schemas and the event vocabulary.
+- How `flow watch` multiplexes remote herdr waits (one ssh master connection per CDE with
+  `herdr --machine`, or a small per-CDE agent that writes to EFS) and how it recovers from
+  a dropped connection without reporting a dead worker.
+- The quiet-worker threshold and what counts as evidence of progress.
+- The brief template given to workers, including how they state completion criteria and
+  write status lines and reports.
+- Inventory refresh strategy (on demand over ssh vs. a per-CDE hook that publishes to EFS).
+- The dotfiles changes that bootstrap a CDE, including the platform-aware herdr hook path.
+- Test strategy: the state layer and watcher classification should be testable without
+  ssh or herdr; adapters get integration tests against a real second CDE.
