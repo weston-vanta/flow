@@ -1,13 +1,12 @@
 mod cli;
-mod paths;
 
 use std::path::Path;
 use std::process::ExitCode;
 
 use clap::Parser;
+use flow::paths::{PathError, StateDir};
 
 use crate::cli::Cli;
-use crate::paths::{PathError, StateDir};
 
 const PATH_ERROR_EXIT: u8 = 3;
 

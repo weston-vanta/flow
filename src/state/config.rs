@@ -1,0 +1,46 @@
+use std::fs;
+use std::path::PathBuf;
+
+use anyhow::Context;
+use serde::Deserialize;
+
+use crate::paths::StateDir;
+
+/// Operator configuration from `state/config.toml`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Config {
+    pub cdes: Vec<Cde>,
+    pub monorepo: Monorepo,
+    pub worktree_tool: WorktreeTool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Cde {
+    pub name: String,
+    pub env_id: String,
+    pub ssh_alias: String,
+    /// `(VAR, VALUE)`: this CDE is the local one when `$VAR` equals `VALUE`.
+    #[serde(default)]
+    pub local_marker_env: Option<(String, String)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Monorepo {
+    pub path: PathBuf,
+    pub default_branch: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct WorktreeTool {
+    /// Argv template; `{branch}` is replaced with the branch name.
+    pub create: Vec<String>,
+}
+
+impl Config {
+    pub fn load(state: &StateDir) -> anyhow::Result<Config> {
+        let path = state.root().join("config.toml");
+        let text =
+            fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+    }
+}

@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 
-use crate::paths::StateDir;
+use flow::paths::StateDir;
 
 #[derive(Debug, Parser)]
 #[command(
