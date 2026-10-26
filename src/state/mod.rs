@@ -98,9 +98,43 @@ impl Store {
         ids.iter().map(|id| self.task(id)).collect()
     }
 
-    /// Updates `status.json` under its lock. When `f` changes `state`, also appends a `status`
-    /// event with `{from, to}`.
+    /// Updates `status.json` under its lock and sets `last_event` to now before calling `f`.
+    /// When `f` changes `state`, also appends a `status` event with `{from, to}`.
     pub fn set_status(&self, id: &str, f: impl FnOnce(&mut Status)) -> anyhow::Result<()> {
+        self.update_status(id, |dir, status| {
+            let now = Timestamp::now();
+            let from = status.state;
+            status.last_event = now;
+            f(status);
+            if status.state != from {
+                let ev = Event {
+                    ts: now,
+                    source: EVENT_SOURCE.to_owned(),
+                    kind: "status".to_owned(),
+                    data: json!({"from": from, "to": status.state}),
+                };
+                events::append(dir, &ev).map_err(io::Error::other)?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Appends `ev` to the task's `events.jsonl` and advances `last_event` to `ev.ts`, both under
+    /// the `status.json` lock.
+    pub fn append_event(&self, id: &str, ev: &Event) -> anyhow::Result<()> {
+        self.update_status(id, |dir, status| {
+            events::append(dir, ev).map_err(io::Error::other)?;
+            status.last_event = status.last_event.max(ev.ts);
+            Ok(())
+        })
+    }
+
+    /// Locked read-modify-write of `status.json`; `f` gets the task directory and the status.
+    fn update_status(
+        &self,
+        id: &str,
+        f: impl FnOnce(&Path, &mut Status) -> io::Result<()>,
+    ) -> anyhow::Result<()> {
         let dir = self.task_dir(id)?;
         let path = dir.join(STATUS_FILE);
         if !path.exists() {
@@ -108,19 +142,8 @@ impl Store {
         }
         fs::with_lock(&path, || {
             let mut status: Status = serde_json::from_slice(&std::fs::read(&path)?)?;
-            let from = status.state;
-            f(&mut status);
-            write_json(&path, &status)?;
-            if status.state != from {
-                let ev = Event {
-                    ts: Timestamp::now(),
-                    source: EVENT_SOURCE.to_owned(),
-                    kind: "status".to_owned(),
-                    data: json!({"from": from, "to": status.state}),
-                };
-                events::append(&dir, &ev).map_err(io::Error::other)?;
-            }
-            Ok(())
+            f(&dir, &mut status)?;
+            write_json(&path, &status)
         })
         .with_context(|| format!("updating {}", path.display()))
     }

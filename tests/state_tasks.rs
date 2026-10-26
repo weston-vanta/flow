@@ -1,10 +1,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::Duration;
 
 use flow::paths::StateDir;
 use flow::state::Store;
 use flow::state::config::Config;
-use flow::state::events;
+use flow::state::events::{self, Event};
 use flow::state::task::{Harness, State, TaskRecord};
 use jiff::Timestamp;
 use serde_json::json;
@@ -72,6 +74,36 @@ fn set_status_appends_transition_event() {
     assert_eq!(events.len(), 2);
     assert_eq!(events[1].kind, "status");
     assert_eq!(events[1].data, json!({"from": "pending", "to": "working"}));
+}
+
+#[test]
+fn set_status_and_append_event_advance_last_event() {
+    let repo = tempfile::tempdir().unwrap();
+    let state = state_dir(repo.path());
+    let store = Store::open(&state);
+    store
+        .create_task(sample_record("aaaaaaab"), "brief")
+        .unwrap();
+    let (_, created) = store.task("aaaaaaab").unwrap();
+
+    thread::sleep(Duration::from_millis(5));
+    store.set_status("aaaaaaab", |_| {}).unwrap();
+    let (_, unchanged) = store.task("aaaaaaab").unwrap();
+    assert!(unchanged.last_event > created.last_event);
+    assert_eq!(unchanged.state, State::Pending);
+
+    thread::sleep(Duration::from_millis(5));
+    let ev = Event {
+        ts: Timestamp::now(),
+        source: "hook".to_owned(),
+        kind: "session.start".to_owned(),
+        data: json!({}),
+    };
+    store.append_event("aaaaaaab", &ev).unwrap();
+    let (_, after_event) = store.task("aaaaaaab").unwrap();
+    assert_eq!(after_event.last_event, ev.ts);
+    let logged = events::read_all(&state.root().join("tasks/aaaaaaab")).unwrap();
+    assert_eq!(logged.last(), Some(&ev));
 }
 
 #[test]
