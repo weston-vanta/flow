@@ -20,6 +20,16 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     result
 }
 
+/// Writes `bytes` to `path`, which must not exist yet. The bytes go to a temp file that is then
+/// hard-linked into place, so readers never see a partial file and an existing `path` fails with
+/// `AlreadyExists` instead of being overwritten.
+pub fn write_new_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let temp = temp_path(path)?;
+    let result = write_and_sync(&temp, bytes).and_then(|()| fs::hard_link(&temp, path));
+    let _ = fs::remove_file(&temp);
+    result
+}
+
 /// Appends `line` (one newline-terminated record) to `path` under the file's lock. A partial last
 /// line left by a crashed writer is dropped first, so it cannot corrupt the line appended after it.
 pub fn append_line(path: &Path, line: &[u8]) -> io::Result<()> {
@@ -156,6 +166,23 @@ mod tests {
             .map(|e| e.unwrap().file_name())
             .collect();
         assert_eq!(names, ["status.json"]);
+    }
+
+    #[test]
+    fn write_new_atomic_refuses_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("request.json");
+        write_new_atomic(&path, b"first").unwrap();
+
+        let err = write_new_atomic(&path, b"second").unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&path).unwrap(), b"first");
+        let names: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["request.json"]);
     }
 
     #[test]
