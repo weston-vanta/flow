@@ -20,7 +20,7 @@
 - Everything that runs on another CDE goes through the runner as `ssh <alias> zsh -lc '<command>'`. Nothing polls over ssh in the steady state except `herdr agent wait`, which blocks.
 - Files on EFS are written atomically (temp file in the same directory, then rename) under a mkdir lock directory `<path>.lock`. Readers reopen files on every poll; inotify is not used (NFS does not deliver remote events).
 - Status vocabulary, exactly: `pending`, `working`, `blocked`, `needs-decision`, `done`, `orphaned`.
-- Task ids: 8 lowercase base32 characters (alphabet `abcdefghijklmnopqrstuvwxyz234567`): 6 encoding seconds since 2026-01-01T00:00:00Z, big-endian, then 2 random. Never reused.
+- Task ids: 8 lowercase base32 characters using the ASCII-sorted alphabet `234567abcdefghijklmnopqrstuvwxyz`, so string order equals time order: 6 encoding seconds since 2026-01-01T00:00:00Z, big-endian, then 2 random. Never reused.
 - herdr: named session `flow` on every CDE; minimum protocol 22; one workspace per task labeled with the task id. Every herdr call passes `--session flow`.
 - Supervisor Stop hooks: `flow guard` (blocking) and `flow watch` (`asyncRewake: true`, `timeout: 7200`). Watch heartbeat default 3600 s, always less than the hook timeout.
 - No `flow doctor`. Login failures surface as plain error text from the command that hit them.

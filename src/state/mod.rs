@@ -75,7 +75,7 @@ impl Store {
         ))
     }
 
-    /// Every task, oldest first.
+    /// Every task, oldest first (ids sort as strings by creation time).
     pub fn list_tasks(&self) -> anyhow::Result<Vec<(TaskRecord, Status)>> {
         let entries = match std::fs::read_dir(&self.tasks) {
             Ok(entries) => entries,

@@ -55,19 +55,20 @@ fn drop_partial_last_line(file: &mut File) -> io::Result<()> {
 /// is an error.
 pub fn read_all(dir: &Path) -> anyhow::Result<Vec<Event>> {
     let path = dir.join(EVENTS_FILE);
-    let text = match fs::read_to_string(&path) {
-        Ok(text) => text,
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => return Err(err).with_context(|| format!("reading {}", path.display())),
     };
-    let lines: Vec<_> = text
-        .lines()
+    // Split bytes rather than text: a crash can cut the last line inside a UTF-8 sequence.
+    let lines: Vec<_> = bytes
+        .split(|&b| b == b'\n')
         .enumerate()
-        .filter(|(_, line)| !line.trim().is_empty())
+        .filter(|(_, line)| !line.trim_ascii().is_empty())
         .collect();
     let mut events = Vec::with_capacity(lines.len());
     for (pos, (i, line)) in lines.iter().enumerate() {
-        match serde_json::from_str(line) {
+        match serde_json::from_slice(line) {
             Ok(ev) => events.push(ev),
             Err(_) if pos + 1 == lines.len() => {}
             Err(err) => {
@@ -111,6 +112,21 @@ mod tests {
         file.write_all(br#"{"ts":"2026-10-26T12:"#).unwrap();
 
         assert_eq!(kinds(dir.path()), ["first", "second"]);
+    }
+
+    #[test]
+    fn read_all_skips_trailing_line_cut_mid_character() {
+        let dir = tempfile::tempdir().unwrap();
+        append(dir.path(), &event("first")).unwrap();
+        let mut dashed = event("second");
+        dashed.data = json!({"message": "retry \u{2014} then report"});
+        let line = serde_json::to_vec(&dashed).unwrap();
+        let dash = line.iter().position(|&b| b == 0xE2).unwrap();
+        let path = dir.path().join(EVENTS_FILE);
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(&line[..=dash]).unwrap();
+
+        assert_eq!(kinds(dir.path()), ["first"]);
     }
 
     #[test]
