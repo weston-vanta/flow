@@ -9,14 +9,16 @@ description: Use when the user asks for work a worker should do, or `flow reques
 
 Run `flow inventory` (add `--refresh` when it is stale or a host is missing). Hosts are not
 interchangeable: each has its own checkouts and worktrees, listed per repo when several repos
-are configured.
+are configured. A `missing: <repo>` line means that host has no checkout of the repo; do not
+send `--branch` work in that repo there.
 
 - A host whose worktree already holds the branch or PR is the task's natural home. Dispatch
   there with `--host <name>` and reuse that worktree with `--dir <path>`.
 - When nothing ties the task to a host, leave out `--host`: flow runs it on this machine. When
   the inventory shows this machine busy, pass the least loaded host instead.
 - Work in a repo on a new branch: pass `--branch <name>`; flow creates the worktree with the
-  repo's worktree tool, or with `git worktree add` when it has none. When several repos are
+  repo's worktree tool, or with `git worktree add` from the repo's default branch when it has
+  none. When several repos are
   configured, add `--repo <name>`.
 - Work in some other existing directory on the host: pass `--dir <absolute path>`.
 - Work that needs no repo (research, preparation, an investigation): pass none of `--dir`,

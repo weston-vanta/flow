@@ -27,8 +27,8 @@ pub fn create(
     }
 }
 
-/// `git -C <repo> worktree add <dir>/<branch> -b <branch>`, where `<dir>` is the repo's
-/// `worktrees_dir` or the sibling `<repo>-worktrees`.
+/// `git -C <repo> worktree add <dir>/<branch> -b <branch> <default branch>`, where `<dir>` is
+/// the repo's `worktrees_dir` or the sibling `<repo>-worktrees`.
 fn create_with_git(
     runner: &dyn Runner,
     host: &Host,
@@ -50,6 +50,7 @@ fn create_with_git(
         &path.display().to_string(),
         "-b",
         branch,
+        &repo.default_branch,
     ]
     .map(str::to_owned)
     .to_vec();
@@ -304,7 +305,8 @@ mod tests {
                 "add",
                 "/work/repo-worktrees/feature-x",
                 "-b",
-                "feature-x"
+                "feature-x",
+                "main"
             ])
         );
         assert_eq!(
@@ -317,7 +319,8 @@ mod tests {
                 "add",
                 "/work/trees/feature-x",
                 "-b",
-                "feature-x"
+                "feature-x",
+                "main"
             ])
         );
         let err = format!("{err:#}");

@@ -557,3 +557,95 @@ branch refs/heads/fix-y
         ]
     );
 }
+
+#[test]
+fn inventory_skips_repos_missing_on_a_host() {
+    let fx = Fixture::new();
+    fs::write(
+        fx.state.join("config.toml"),
+        r#"
+[[repos]]
+name = "example-repo"
+path = "/work/repo"
+default_branch = "main"
+
+[[repos]]
+name = "other-repo"
+path = "/work/other"
+default_branch = "main"
+
+[[hosts]]
+name = "host-a"
+env_id = "env-0001"
+ssh_alias = "host-a.example"
+"#,
+    )
+    .unwrap();
+    let porcelain = "\
+worktree /work/repo
+HEAD 1111111111111111111111111111111111111111
+branch refs/heads/main
+";
+    let missing = json!({
+        "host": "host-a", "status": 128, "stdout": "",
+        "stderr": "fatal: cannot change to '/work/other': No such file or directory\n",
+    });
+    let script = [
+        on("host-a", porcelain),
+        missing,
+        on("host-a", LOADAVG),
+        on("host-a", SERVER_RUNNING),
+        on(
+            "host-a",
+            r#"{"id":"cli:agent:list","result":{"agents":[],"type":"agent_list"}}"#,
+        ),
+        default_session_stopped("host-a"),
+        on("host-a", "[]"),
+        on("host-a", "[]"),
+    ];
+
+    let stdout = stdout_of(fx.flow(&script).args(["inventory", "--refresh"]));
+
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert!(
+        lines[0].starts_with("host-a  reachable  load 0.26  1 worktrees  0 agents  (seen "),
+        "{stdout}"
+    );
+    assert_eq!(
+        lines[1..],
+        [
+            "  missing: other-repo",
+            "  repo example-repo",
+            "    main  /work/repo",
+        ],
+        "{stdout}"
+    );
+    let cached = fx.cached("env-0001");
+    assert_eq!(cached["reachable"], true);
+    assert_eq!(cached["missing_repos"], json!(["other-repo"]));
+    assert_eq!(cached["worktrees"][0]["repo"], "example-repo");
+    assert_eq!(cached["worktrees"].as_array().unwrap().len(), 1);
+
+    let broken = Fixture::new();
+    fs::write(
+        broken.state.join("config.toml"),
+        fs::read_to_string(fx.state.join("config.toml")).unwrap(),
+    )
+    .unwrap();
+    let corrupt = json!({
+        "host": "host-a", "status": 128, "stdout": "",
+        "stderr": "fatal: unable to read tree 2222222222222222222222222222222222222222\n",
+    });
+    let mut script = script.to_vec();
+    script[1] = corrupt;
+    let out = broken
+        .flow(&script)
+        .args(["inventory", "--refresh"])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(stderr.contains("unable to read tree"), "{stderr}");
+    assert!(stderr.contains("could not refresh host-a"), "{stderr}");
+}

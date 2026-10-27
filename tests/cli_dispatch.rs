@@ -580,7 +580,7 @@ worktree_tool = { create = ["wt", "create", "{branch}"] }
 [[repos]]
 name = "other-repo"
 path = "/work/other"
-default_branch = "main"
+default_branch = "trunk"
 
 [[hosts]]
 name = "host-a"
@@ -709,7 +709,8 @@ fn dispatch_branch_uses_the_named_repo() {
             "add",
             created,
             "-b",
-            "feature-x"
+            "feature-x",
+            "trunk"
         ]
     );
     let id = fx.only_task();

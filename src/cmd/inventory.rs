@@ -179,8 +179,9 @@ fn render_all(inventories: &[HostInventory], by_repo: bool, now: Timestamp) -> S
 }
 
 /// The header `name  reachable|unreachable  load <load1>  <N> worktrees  <N> agents  (seen
-/// <age>)`, any recorded errors, then `branch  path  [PR #n state]  [agent: <title> <status>]`
-/// per worktree, under a `repo <name>` line per repo when `by_repo` is set.
+/// <age>)`, any recorded errors, a `missing: <repo>` line per repo with no checkout there, then
+/// `branch  path  [PR #n state]  [agent: <title> <status>]` per worktree, under a `repo <name>`
+/// line per repo when `by_repo` is set.
 fn render_block(inv: &HostInventory, by_repo: bool, now: Timestamp) -> String {
     let mut out = format!(
         "{}  {}  load {}  {} worktrees  {} agents  (seen {})\n",
@@ -207,6 +208,9 @@ fn render_block(inv: &HostInventory, by_repo: bool, now: Timestamp) -> String {
                 render::truncate(error, ERROR_WIDTH)
             ));
         }
+    }
+    for repo in &inv.missing_repos {
+        out.push_str(&format!("  missing: {repo}\n"));
     }
     if by_repo {
         let mut repos: Vec<&str> = Vec::new();

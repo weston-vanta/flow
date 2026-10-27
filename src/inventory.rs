@@ -19,6 +19,10 @@ use crate::worktree;
 
 /// The exit code ssh uses for its own failures, as opposed to the remote command's.
 const SSH_FAILURE_STATUS: i32 = 255;
+/// The exit code git uses for `fatal:` errors.
+const GIT_FATAL_STATUS: i32 = 128;
+/// What git prints when `-C <path>` names no directory, or a directory that is not a repo.
+const MISSING_REPO_MESSAGES: [&str; 2] = ["cannot change to", "not a git repository"];
 const LOADAVG_ARGV: [&str; 2] = ["cat", "/proc/loadavg"];
 const PR_LIST_ARGV: [&str; 11] = [
     "gh",
@@ -56,6 +60,9 @@ pub struct HostInventory {
     /// Why open PRs could not be listed; `prs` then holds the previously cached PRs.
     #[serde(default)]
     pub pr_error: Option<String>,
+    /// Configured repos with no checkout on this host; `worktrees` has none of theirs.
+    #[serde(default)]
+    pub missing_repos: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,8 +152,9 @@ impl RepoProbe<'_> {
 
 /// Probes `host` for the worktrees of each of `repos`, its load, and the agents in
 /// `herdr_sessions`. Fails with `Unreachable` when ssh fails on the first call or no probe runs at
-/// all, and with another error when git cannot list some repo's worktrees. The worktree tool and
-/// herdr failing are recorded on the inventory instead. `prs` is left empty for `join_prs`.
+/// all, and with another error when git cannot list the worktrees of a repo checked out there. A
+/// repo with no checkout on the host is recorded in `missing_repos`; the worktree tool and herdr
+/// failing are recorded on the inventory too. `prs` is left empty for `join_prs`.
 pub fn refresh(
     runner: &Arc<dyn Runner>,
     host: &Host,
@@ -197,11 +205,16 @@ pub fn refresh(
     let several = repos.len() > 1;
     let mut worktrees = Vec::new();
     let mut tool_errors = Vec::new();
+    let mut missing_repos = Vec::new();
     for probe in probes {
         let repo = probe.repo;
         let git = probe
             .git
             .with_context(|| format!("listing worktrees of {} on {}", repo.name, host.name))?;
+        if is_missing_repo(&git) {
+            missing_repos.push(repo.name.clone());
+            continue;
+        }
         check_status(host, &probe.git_argv, &git)?;
         let mut listed = parse_porcelain(&repo.name, &git.stdout);
         if let Some((tool, output)) = probe.tool {
@@ -239,6 +252,7 @@ pub fn refresh(
         tool_error: (!tool_errors.is_empty()).then(|| tool_errors.join("; ")),
         herdr_error,
         pr_error: None,
+        missing_repos,
     })
 }
 
@@ -305,22 +319,24 @@ pub fn with_agents(
             tool_error: None,
             herdr_error: found.error,
             pr_error: None,
+            missing_repos: Vec::new(),
         },
     }
 }
 
-/// The inventory of a host that did not answer: the cached worktrees, agents, PRs, and PR error as
-/// of the cached `seen`, or an empty inventory seen `now` when nothing is cached.
+/// The inventory of a host that did not answer: the cached worktrees, agents, PRs, PR error, and
+/// missing repos as of the cached `seen`, or an empty inventory seen `now` when nothing is cached.
 pub fn unreachable(host: &Host, cached: Option<HostInventory>, now: Timestamp) -> HostInventory {
-    let (seen, worktrees, agents, prs, pr_error) = match cached {
+    let (seen, worktrees, agents, prs, pr_error, missing_repos) = match cached {
         Some(cached) => (
             cached.seen,
             cached.worktrees,
             cached.agents,
             cached.prs,
             cached.pr_error,
+            cached.missing_repos,
         ),
-        None => (now, Vec::new(), Vec::new(), Vec::new(), None),
+        None => (now, Vec::new(), Vec::new(), Vec::new(), None, Vec::new()),
     };
     HostInventory {
         name: host.name.clone(),
@@ -334,6 +350,7 @@ pub fn unreachable(host: &Host, cached: Option<HostInventory>, now: Timestamp) -
         tool_error: None,
         herdr_error: None,
         pr_error,
+        missing_repos,
     }
 }
 
@@ -475,6 +492,15 @@ fn parse_prs(repo: &str, text: &str) -> anyhow::Result<Vec<Pr>> {
             state: pr.state,
         })
         .collect())
+}
+
+/// Whether `git -C <path> worktree list` failed because `<path>` is not a checkout on the host:
+/// the directory does not exist or is not a git repository.
+fn is_missing_repo(output: &Output) -> bool {
+    output.status == GIT_FATAL_STATUS
+        && MISSING_REPO_MESSAGES
+            .iter()
+            .any(|message| output.stderr.contains(message))
 }
 
 fn is_ssh_failure(output: &Output) -> bool {
