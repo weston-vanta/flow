@@ -414,5 +414,6 @@ above and are binding for Tasks 14–19.
   token has expired, refresh says so in one line and uses the cached set.
 - **`flow init` and `scripts/install.sh`** are flow's (install.sh links the binary into
   `~/.local/bin`); the user's machine-start script shrinks to cloning once, calling the
-  install script, installing herdr, and fixing the herdr hook path. The README lists what the user still provides.
+  install script, installing herdr, and fixing the herdr hook path. The README lists what
+  the user still provides.
 - **CLI reference.** The README and this document carry the list of subcommands (Task 17).

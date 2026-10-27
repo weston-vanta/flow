@@ -281,6 +281,8 @@ fn install_sh_replaces_a_wrong_symlink_and_refuses_a_directory() {
     let fx = Fixture::new();
     fs::create_dir_all(&fx.state_dir).unwrap();
     symlink("/nonexistent/elsewhere", fx.link()).unwrap();
+    fs::create_dir_all(&fx.bin_dir).unwrap();
+    symlink("/nonexistent", fx.bin_link()).unwrap();
 
     let out = lines(&fx.install(&system_path()));
 
@@ -289,6 +291,11 @@ fn install_sh_replaces_a_wrong_symlink_and_refuses_a_directory() {
         "{out:?}"
     );
     assert_eq!(fs::read_link(fx.link()).unwrap(), fx.state_dir);
+    assert!(out.contains(&"install: link: done".to_owned()), "{out:?}");
+    assert_eq!(
+        fs::read_link(fx.bin_link()).unwrap(),
+        fx.release_dir().join("flow")
+    );
 
     fs::remove_file(fx.link()).unwrap();
     fs::create_dir(fx.link()).unwrap();
@@ -391,4 +398,24 @@ fn install_sh_links_a_relative_state_dir_absolutely() {
     );
     assert_eq!(fs::read_link(fx.link()).unwrap(), fx.state_dir);
     assert!(fx.link().join(".").is_dir());
+}
+
+#[test]
+fn install_sh_links_the_binary_absolutely_from_a_relative_flow_dir() {
+    let fx = Fixture::new();
+
+    let out = fx
+        .script(&system_path())
+        .env("FLOW_SKIP_BUILD", "1")
+        .env("FLOW_DIR", "flow")
+        .current_dir(fx.dir.path())
+        .output()
+        .unwrap();
+
+    let out = lines(&out);
+    assert!(out.contains(&"install: link: done".to_owned()), "{out:?}");
+    assert_eq!(
+        fs::read_link(fx.bin_link()).unwrap(),
+        fx.release_dir().join("flow")
+    );
 }

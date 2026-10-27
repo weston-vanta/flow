@@ -26,6 +26,8 @@ checksum() { if [[ -e $1 ]]; then cksum <"$1"; fi; }
 if ! grep -qx 'name = "flow"' "$FLOW_DIR/Cargo.toml" 2>/dev/null; then
   fail "$FLOW_DIR is not a flow checkout (its Cargo.toml does not declare name = \"flow\"); clone flow there or set FLOW_DIR"
 fi
+# Absolute, so the binary link resolves from $FLOW_BIN_DIR.
+FLOW_DIR=$(CDPATH='' cd -- "$FLOW_DIR" && pwd)
 
 before=$(git -C "$FLOW_DIR" rev-parse HEAD)
 if git -C "$FLOW_DIR" pull --ff-only --quiet; then
