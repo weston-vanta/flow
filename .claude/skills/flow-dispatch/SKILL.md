@@ -39,9 +39,11 @@ the worktree rule and the reporting contract to the brief itself.
 ```
 flow dispatch --cde <name> --title "<short title>" \
   --brief-file <file> --criteria "- <criterion>" \
-  --branch <name>            # or --worktree <path>
-  [--parent <task-id>]       # when splitting work off an existing task
+  --branch <name>
 ```
+
+Use `--worktree <path>` instead of `--branch` to reuse a worktree, and add
+`--parent <task-id>` when splitting work off an existing task.
 
 It prints `dispatched <task-id> on <cde> (<pane>)`. Then:
 
