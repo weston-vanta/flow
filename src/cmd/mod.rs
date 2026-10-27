@@ -30,8 +30,8 @@ use crate::state::task::{Status, TaskRecord};
 
 const NO_PANE: &str = "-";
 
-/// A request flow turns down as given, such as an unknown host or a worktree another agent is
-/// using. The binary exits 2 for it, as for a usage error.
+/// A request flow turns down as given, such as an unknown host or a directory another agent
+/// works in. The binary exits 2 for it, as for a usage error.
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
 pub struct Refused(pub String);

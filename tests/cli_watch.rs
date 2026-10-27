@@ -15,11 +15,11 @@ use jiff::Timestamp;
 use serde_json::{Value, json};
 
 const CONFIG: &str = r#"
-worktree_tool = { create = ["wt", "create", "{branch}"] }
-
-[monorepo]
+[[repos]]
+name = "example-repo"
 path = "/work/repo"
 default_branch = "main"
+worktree_tool = { create = ["wt", "create", "{branch}"] }
 
 [[hosts]]
 name = "host-a"
@@ -68,7 +68,8 @@ impl Fixture {
                     parent: None,
                     title: "Build feature".to_owned(),
                     host: host.to_owned(),
-                    worktree: PathBuf::from("/work/repo.wt/feature"),
+                    cwd: PathBuf::from("/work/repo.wt/feature"),
+                    repo: Some("example-repo".to_owned()),
                     harness: Harness::Claude,
                     created: Timestamp::now(),
                     owner: "supervisor".to_owned(),

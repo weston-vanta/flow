@@ -26,3 +26,15 @@ pub fn find<'a>(config: &'a Config, name: &str) -> anyhow::Result<&'a Host> {
         .find(|host| host.name == name)
         .ok_or_else(|| anyhow!("no host named {name:?} in config.toml"))
 }
+
+/// The configured host this process runs on, found by `$ONA_ID`.
+pub fn local(config: &Config) -> anyhow::Result<&Host> {
+    let env_id = local_env_id().ok_or_else(|| {
+        anyhow!("${LOCAL_ENV_ID_VAR} is not set, so this machine is unknown; pass --host")
+    })?;
+    config
+        .hosts
+        .iter()
+        .find(|host| is_local(host, Some(&env_id)))
+        .ok_or_else(|| anyhow!("this machine ({env_id}) is not a configured host"))
+}

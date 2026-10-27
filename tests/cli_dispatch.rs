@@ -9,11 +9,11 @@ use flow::state::task::{HerdrTarget, HoldOn, State};
 use serde_json::{Value, json};
 
 const CONFIG: &str = r#"
-worktree_tool = { create = ["wt", "create", "{branch}"] }
-
-[monorepo]
+[[repos]]
+name = "example-repo"
 path = "/workspaces/acme"
 default_branch = "main"
+worktree_tool = { create = ["wt", "create", "{branch}"] }
 
 [[hosts]]
 name = "host-a"
@@ -31,7 +31,7 @@ const SERVER_RUNNING: &str = "status: running\nversion: 0.9.5\nendpoint_compatib
      private_protocol: 22\nprivate_protocol_compatible: yes\n\
      socket: /home/dev/.config/herdr/sessions/flow/herdr.sock\n";
 
-/// The worktree a scripted `workspace create` reports, and the one most tests dispatch into.
+/// The directory a scripted `workspace create` reports, and the one most tests dispatch into.
 const WORKTREE: &str = "/workspaces/acme-worktrees/search-index";
 /// The pane and workspace a scripted `workspace create` returns.
 const PANE: &str = "w3:p1";
@@ -78,8 +78,19 @@ impl Fixture {
         cmd
     }
 
-    /// The argv of every runner call, in order.
+    fn with_config(config: &str) -> Fixture {
+        let fx = Fixture::new();
+        fs::write(fx.state.join("config.toml"), config).unwrap();
+        fx
+    }
+
+    /// The argv of every runner call, in order, each of them made on `host-a`.
     fn calls(&self) -> Vec<Vec<String>> {
+        self.calls_on("host-a")
+    }
+
+    /// The argv of every runner call, in order, each of them made on `host`.
+    fn calls_on(&self, host: &str) -> Vec<Vec<String>> {
         let mut log = self.script_path().into_os_string();
         log.push(".calls.jsonl");
         fs::read_to_string(log)
@@ -87,7 +98,7 @@ impl Fixture {
             .lines()
             .map(|line| {
                 let call: Value = serde_json::from_str(line).unwrap();
-                assert_eq!(call["host"], "host-a", "{call}");
+                assert_eq!(call["host"], host, "{call}");
                 serde_json::from_value(call["argv"].clone()).unwrap()
             })
             .collect()
@@ -140,7 +151,7 @@ fn starts_working(before: Vec<Value>) -> Vec<Value> {
     script
 }
 
-fn dispatch_args(worktree: &[&str]) -> Vec<String> {
+fn dispatch_args(dir: &[&str]) -> Vec<String> {
     let mut args: Vec<String> = [
         "dispatch",
         "--host",
@@ -155,7 +166,15 @@ fn dispatch_args(worktree: &[&str]) -> Vec<String> {
     .iter()
     .map(|s| (*s).to_owned())
     .collect();
-    args.extend(worktree.iter().map(|s| (*s).to_owned()));
+    args.extend(dir.iter().map(|s| (*s).to_owned()));
+    args
+}
+
+/// `dispatch_args` without `--host`.
+fn local_dispatch_args(dir: &[&str]) -> Vec<String> {
+    let mut args = dispatch_args(dir);
+    assert_eq!(args[1..3], ["--host", "host-a"]);
+    args.drain(1..3);
     args
 }
 
@@ -172,13 +191,13 @@ fn herdr_calls<'a>(calls: &'a [Vec<String>], subcommand: &[&str]) -> Vec<&'a Vec
 }
 
 #[test]
-fn dispatch_refuses_shared_worktree() {
+fn dispatch_refuses_shared_dir() {
     let fx = Fixture::new();
     let shared = "/workspaces/acme-worktrees/login-form";
 
     let out = fx
         .flow(&[ok(SERVER_RUNNING), ok(AGENT_LIST)])
-        .args(dispatch_args(&["--worktree", shared]))
+        .args(dispatch_args(&["--dir", shared]))
         .assert()
         .code(2)
         .get_output()
@@ -187,7 +206,11 @@ fn dispatch_refuses_shared_worktree() {
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert!(stderr.contains("Refactor login form"), "{stderr}");
     assert!(stderr.contains("w1:p1"), "{stderr}");
-    assert!(stderr.contains("--allow-shared-worktree"), "{stderr}");
+    assert!(stderr.contains("--allow-shared-dir"), "{stderr}");
+    assert!(
+        stderr.contains("to dispatch into that directory anyway"),
+        "{stderr}"
+    );
     let tasks = fx.state.join("tasks");
     assert!(
         !tasks.exists() || fs::read_dir(&tasks).unwrap().next().is_none(),
@@ -197,7 +220,7 @@ fn dispatch_refuses_shared_worktree() {
 }
 
 #[test]
-fn dispatch_allows_shared_worktree_when_asked() {
+fn dispatch_allows_shared_dir_when_asked() {
     let fx = Fixture::new();
     let shared = "/workspaces/acme-worktrees/login-form";
     let script = [
@@ -208,17 +231,13 @@ fn dispatch_allows_shared_worktree_when_asked() {
     ];
 
     fx.flow(&script)
-        .args(dispatch_args(&[
-            "--worktree",
-            shared,
-            "--allow-shared-worktree",
-        ]))
+        .args(dispatch_args(&["--dir", shared, "--allow-shared-dir"]))
         .assert()
         .success();
 
     assert!(herdr_calls(&fx.calls(), &["agent", "list"]).is_empty());
     let (rec, status) = fx.store().task(&fx.only_task()).unwrap();
-    assert_eq!(rec.worktree, Path::new(shared));
+    assert_eq!(rec.cwd, Path::new(shared));
     assert_eq!(status.state, State::Working);
 }
 
@@ -228,7 +247,7 @@ fn dispatch_creates_task_and_starts_agent() {
 
     let out = fx
         .flow(&starts_working(Vec::new()))
-        .args(dispatch_args(&["--worktree", WORKTREE]))
+        .args(dispatch_args(&["--dir", WORKTREE]))
         .assert()
         .success()
         .get_output()
@@ -291,7 +310,7 @@ fn dispatch_creates_task_and_starts_agent() {
     let (rec, status) = store.task(&id).unwrap();
     assert_eq!(rec.title, "Rebuild the search index");
     assert_eq!(rec.host, "host-a");
-    assert_eq!(rec.worktree, Path::new(WORKTREE));
+    assert_eq!(rec.cwd, Path::new(WORKTREE));
     assert_eq!(rec.owner, "supervisor");
     assert_eq!(rec.parent, None);
     assert_eq!(status.state, State::Working);
@@ -370,7 +389,7 @@ fn dispatch_with_branch_runs_worktree_tool() {
         ]
     );
     let (rec, _) = fx.store().task(&fx.only_task()).unwrap();
-    assert_eq!(rec.worktree, Path::new(created));
+    assert_eq!(rec.cwd, Path::new(created));
     let create = herdr_calls(&calls, &["workspace", "create"]);
     assert_eq!(create[0][6], created);
 }
@@ -390,7 +409,7 @@ fn dispatch_answers_the_trust_dialog() {
     ];
 
     fx.flow(&script)
-        .args(dispatch_args(&["--worktree", WORKTREE]))
+        .args(dispatch_args(&["--dir", WORKTREE]))
         .assert()
         .success();
 
@@ -432,7 +451,7 @@ fn dispatch_records_an_unexpected_block_without_sending_keys() {
     ];
 
     fx.flow(&script)
-        .args(dispatch_args(&["--worktree", WORKTREE]))
+        .args(dispatch_args(&["--dir", WORKTREE]))
         .assert()
         .success();
 
@@ -462,7 +481,7 @@ fn dispatch_marks_task_blocked_when_launch_fails() {
 
     let out = fx
         .flow(&script)
-        .args(dispatch_args(&["--worktree", WORKTREE]))
+        .args(dispatch_args(&["--dir", WORKTREE]))
         .assert()
         .code(1)
         .get_output()
@@ -506,7 +525,7 @@ fn dispatch_fails_naming_the_pane_when_the_worker_never_starts() {
 
     let out = fx
         .flow(&script)
-        .args(dispatch_args(&["--worktree", WORKTREE]))
+        .args(dispatch_args(&["--dir", WORKTREE]))
         .assert()
         .code(1)
         .get_output()
@@ -522,7 +541,7 @@ fn dispatch_fails_naming_the_pane_when_the_worker_never_starts() {
 #[test]
 fn dispatch_unknown_host_exits_2() {
     let fx = Fixture::new();
-    let mut args = dispatch_args(&["--worktree", WORKTREE]);
+    let mut args = dispatch_args(&["--dir", WORKTREE]);
     args[2] = "host-z".to_owned();
 
     fx.flow(&[])
@@ -532,4 +551,211 @@ fn dispatch_unknown_host_exits_2() {
         .stderr(predicates::str::contains("host-z"));
 
     assert!(fx.calls().is_empty());
+}
+
+const TWO_HOSTS: &str = r#"
+[[repos]]
+name = "example-repo"
+path = "/workspaces/acme"
+default_branch = "main"
+
+[[hosts]]
+name = "host-a"
+env_id = "env-0001"
+ssh_alias = "host-a.example"
+
+[[hosts]]
+name = "host-b"
+env_id = "env-0002"
+ssh_alias = "host-b.example"
+"#;
+
+const TWO_REPOS: &str = r#"
+[[repos]]
+name = "example-repo"
+path = "/work/repo"
+default_branch = "main"
+worktree_tool = { create = ["wt", "create", "{branch}"] }
+
+[[repos]]
+name = "other-repo"
+path = "/work/other"
+default_branch = "main"
+
+[[hosts]]
+name = "host-a"
+env_id = "env-0001"
+ssh_alias = "host-a.example"
+"#;
+
+const CHECKOUT_SENTENCE: &str =
+    "Work only inside this directory; never touch the main checkout or other worktrees.";
+
+#[test]
+fn dispatch_defaults_to_the_local_host() {
+    let fx = Fixture::with_config(TWO_HOSTS);
+
+    let out = fx
+        .flow(&starts_working(Vec::new()))
+        .env("ONA_ID", "env-0002")
+        .args(local_dispatch_args(&["--dir", WORKTREE]))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let id = fx.only_task();
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap(),
+        format!("dispatched {id} on host-b ({PANE})\n")
+    );
+    assert!(!fx.calls_on("host-b").is_empty());
+    let (rec, _) = fx.store().task(&id).unwrap();
+    assert_eq!(rec.host, "host-b");
+    assert_eq!(rec.cwd, Path::new(WORKTREE));
+    assert_eq!(rec.repo, None);
+
+    let unset = Fixture::with_config(TWO_HOSTS);
+    let out = unset
+        .flow(&[])
+        .env_remove("ONA_ID")
+        .args(local_dispatch_args(&["--dir", WORKTREE]))
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(stderr.contains("--host"), "{stderr}");
+    assert!(unset.calls_on("host-a").is_empty());
+}
+
+#[test]
+fn dispatch_refuses_unknown_local_host() {
+    let fx = Fixture::new();
+
+    let out = fx
+        .flow(&[])
+        .env("ONA_ID", "env-9999")
+        .args(local_dispatch_args(&[]))
+        .assert()
+        .code(2)
+        .get_output()
+        .clone();
+
+    assert_eq!(
+        String::from_utf8(out.stderr).unwrap(),
+        "this machine (env-9999) is not a configured host\n"
+    );
+    assert!(fx.calls().is_empty());
+    assert!(!fx.state.join("tasks").exists());
+}
+
+#[test]
+fn dispatch_without_dir_creates_the_task_work_dir() {
+    let fx = Fixture::new();
+
+    fx.flow(&starts_working(Vec::new()))
+        .args(dispatch_args(&[]))
+        .assert()
+        .success();
+
+    let id = fx.only_task();
+    let store = fx.store();
+    let work = store.task_dir(&id).unwrap().join("work");
+    assert!(work.is_absolute(), "{}", work.display());
+    assert!(work.is_dir(), "{} was not created", work.display());
+    let (rec, _) = store.task(&id).unwrap();
+    assert_eq!(rec.cwd, work);
+    assert_eq!(rec.repo, None);
+    let calls = fx.calls();
+    let create = herdr_calls(&calls, &["workspace", "create"]);
+    assert_eq!(create[0][5..7], ["--cwd", work.to_str().unwrap()]);
+
+    let brief = store.brief(&id).unwrap();
+    assert!(
+        brief.contains(&format!(
+            "## Working directory\n\n`{}`\n\n## What is asked\n",
+            work.display()
+        )),
+        "{brief}"
+    );
+    assert!(!brief.contains(CHECKOUT_SENTENCE), "{brief}");
+    assert!(!brief.contains("\n\n\n"), "{brief}");
+}
+
+#[test]
+fn dispatch_branch_uses_the_named_repo() {
+    let fx = Fixture::with_config(TWO_REPOS);
+    let created = "/work/other-worktrees/feature-x";
+
+    fx.flow(&starts_working(vec![ok("")]))
+        .args(dispatch_args(&[
+            "--branch",
+            "feature-x",
+            "--repo",
+            "other-repo",
+        ]))
+        .assert()
+        .success();
+
+    let calls = fx.calls();
+    assert_eq!(
+        calls[0],
+        [
+            "git",
+            "-C",
+            "/work/other",
+            "worktree",
+            "add",
+            created,
+            "-b",
+            "feature-x"
+        ]
+    );
+    let id = fx.only_task();
+    let (rec, _) = fx.store().task(&id).unwrap();
+    assert_eq!(rec.cwd, Path::new(created));
+    assert_eq!(rec.repo.as_deref(), Some("other-repo"));
+    assert_eq!(herdr_calls(&calls, &["workspace", "create"])[0][6], created);
+    let brief = fx.store().brief(&id).unwrap();
+    assert!(
+        brief.contains(&format!(
+            "`{created}`\n\n{CHECKOUT_SENTENCE}\n\n## What is asked\n"
+        )),
+        "{brief}"
+    );
+
+    for (args, error) in [
+        (
+            vec!["--branch", "feature-y"],
+            "several repos configured (example-repo, other-repo); pass --repo",
+        ),
+        (
+            vec!["--branch", "feature-y", "--repo", "nope"],
+            "no repo named nope",
+        ),
+        (
+            vec!["--repo", "other-repo"],
+            "--repo only applies with --branch",
+        ),
+        (
+            vec!["--dir", WORKTREE, "--repo", "other-repo"],
+            "--repo only applies with --branch",
+        ),
+    ] {
+        let refused = Fixture::with_config(TWO_REPOS);
+        let out = refused
+            .flow(&[])
+            .args(dispatch_args(&args))
+            .assert()
+            .code(2)
+            .get_output()
+            .clone();
+        assert_eq!(
+            String::from_utf8(out.stderr).unwrap(),
+            format!("{error}\n"),
+            "{args:?}"
+        );
+        assert!(refused.calls().is_empty(), "{args:?}");
+    }
 }

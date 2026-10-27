@@ -22,7 +22,8 @@ fn sample_record(id: &str) -> TaskRecord {
         parent: None,
         title: "Add retry to the example client".to_owned(),
         host: "host-a".to_owned(),
-        worktree: PathBuf::from("/workspaces/example-repo.wt/retry"),
+        cwd: PathBuf::from("/workspaces/example-repo.wt/retry"),
+        repo: Some("example-repo".to_owned()),
         harness: Harness::Claude,
         created: "2026-10-26T12:00:00Z".parse::<Timestamp>().unwrap(),
         owner: "supervisor".to_owned(),
@@ -113,11 +114,11 @@ fn config_loads_sample() {
     fs::write(
         state.root().join("config.toml"),
         r#"
-worktree_tool = { create = ["wt", "create", "{branch}"] }
-
-[monorepo]
+[[repos]]
+name = "example-repo"
 path = "/workspaces/example-repo"
 default_branch = "main"
+worktree_tool = { create = ["wt", "create", "{branch}"] }
 
 [[hosts]]
 name = "host-a"
@@ -144,8 +145,13 @@ ssh_alias = "host-b.example"
         Some(("EXAMPLE_ENV_ID".to_owned(), "env-0001".to_owned()))
     );
     assert_eq!(config.hosts[1].local_marker_env, None);
-    assert_eq!(config.monorepo.path, Path::new("/workspaces/example-repo"));
-    assert_eq!(config.monorepo.default_branch, "main");
-    assert_eq!(config.worktree_tool.create, ["wt", "create", "{branch}"]);
+    let repo = config.repo(None).unwrap();
+    assert_eq!(repo.name, "example-repo");
+    assert_eq!(repo.path, Path::new("/workspaces/example-repo"));
+    assert_eq!(repo.default_branch, "main");
+    assert_eq!(
+        repo.worktree_tool.as_ref().map(|tool| tool.create.clone()),
+        Some(["wt", "create", "{branch}"].map(str::to_owned).to_vec())
+    );
     assert_eq!(config.herdr_sessions, ["flow", "default"]);
 }

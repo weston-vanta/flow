@@ -38,7 +38,7 @@ pub enum Observation {
     /// The task filed a dispatch request.
     RequestAppeared { task: String, request: String },
     /// The task's last event is `since_secs` old; `worktree_written` says whether files in its
-    /// worktree changed after it.
+    /// working directory changed after it.
     Quiet {
         task: String,
         since_secs: u64,
@@ -63,7 +63,7 @@ pub enum Verdict {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Thresholds {
-    /// How long a task may go without an event, and without worktree writes, before it wakes
+    /// How long a task may go without an event, and without writes to its working directory, before it wakes
     /// the supervisor.
     pub quiet_secs: u64,
     /// The adopted sessions whose state changes wake the supervisor, from `follow.json`.

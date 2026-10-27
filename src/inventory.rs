@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::herdr::{self, Agent, Herdr};
 use crate::paths::StateDir;
 use crate::runner::{Output, Runner};
-use crate::state::config::{Host, WorktreeTool};
+use crate::state::config::{Host, Repo, WorktreeTool};
 use crate::state::fs::write_atomic;
 use crate::worktree;
 
@@ -45,7 +45,7 @@ pub struct HostInventory {
     pub load1: Option<f32>,
     pub worktrees: Vec<Worktree>,
     pub agents: Vec<Agent>,
-    /// Open PRs whose head branch is checked out in one of `worktrees`.
+    /// Open PRs whose head branch is checked out in one of `worktrees` of the same repo.
     pub prs: Vec<Pr>,
     /// Why the worktree tool's list failed; `busy` and `dirty_files` are then unknown.
     #[serde(default)]
@@ -60,6 +60,10 @@ pub struct HostInventory {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Worktree {
+    /// The configured repo this is a worktree of. Inventories cached before repos were named
+    /// leave it empty.
+    #[serde(default)]
+    pub repo: String,
     pub path: PathBuf,
     /// `None` for a detached HEAD.
     pub branch: Option<String>,
@@ -70,6 +74,10 @@ pub struct Worktree {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pr {
+    /// The configured repo the PR was listed in. Inventories cached before repos were named leave
+    /// it empty.
+    #[serde(default)]
+    pub repo: String,
     /// The PR's head branch.
     pub branch: String,
     pub number: u64,
@@ -119,55 +127,95 @@ struct GhPr {
     state: String,
 }
 
-/// Probes `host` for its worktrees, load, and the agents in `herdr_sessions`. Fails with
-/// `Unreachable` when ssh fails on the first call or no probe runs at all, and with another
-/// error when git cannot list the worktrees. The worktree tool and herdr failing are recorded on
-/// the inventory instead. `prs` is left empty for `join_prs`.
+/// One repo's worktree probes on a host: git's listing, and the worktree tool's when the repo
+/// has one.
+struct RepoProbe<'a> {
+    repo: &'a Repo,
+    git_argv: Vec<String>,
+    git: anyhow::Result<Output>,
+    tool: Option<(&'a WorktreeTool, anyhow::Result<Output>)>,
+}
+
+impl RepoProbe<'_> {
+    /// Whether no call for this repo ran at all.
+    fn failed(&self) -> bool {
+        self.git.is_err() && self.tool.as_ref().is_none_or(|(_, listed)| listed.is_err())
+    }
+}
+
+/// Probes `host` for the worktrees of each of `repos`, its load, and the agents in
+/// `herdr_sessions`. Fails with `Unreachable` when ssh fails on the first call or no probe runs at
+/// all, and with another error when git cannot list some repo's worktrees. The worktree tool and
+/// herdr failing are recorded on the inventory instead. `prs` is left empty for `join_prs`.
 pub fn refresh(
     runner: &Arc<dyn Runner>,
     host: &Host,
-    monorepo: &Path,
-    tool: &WorktreeTool,
+    repos: &[Repo],
     herdr_sessions: &[String],
     now: Timestamp,
 ) -> anyhow::Result<HostInventory> {
-    let git_argv = words(&["git", "-C", &monorepo.display().to_string()])
-        .into_iter()
-        .chain(words(&["worktree", "list", "--porcelain"]))
-        .collect::<Vec<_>>();
-    let git = runner.run(host, &git_argv, None);
-    if let Ok(output) = &git
-        && is_ssh_failure(output)
-    {
-        return Err(unreachable_error(host, output));
+    let mut probes = Vec::new();
+    for repo in repos {
+        let git_argv = words(&["git", "-C", &repo.path.display().to_string()])
+            .into_iter()
+            .chain(words(&["worktree", "list", "--porcelain"]))
+            .collect::<Vec<_>>();
+        let git = runner.run(host, &git_argv, None);
+        if probes.is_empty()
+            && let Ok(output) = &git
+            && is_ssh_failure(output)
+        {
+            return Err(unreachable_error(host, output));
+        }
+        let tool = repo.worktree_tool.as_ref().map(|tool| {
+            let listed = if tool.list.is_empty() {
+                Err(anyhow!("worktree_tool.list in config.toml is empty"))
+            } else {
+                runner.run(host, &worktree::wrapped_argv(&repo.path, &tool.list), None)
+            };
+            (tool, listed)
+        });
+        probes.push(RepoProbe {
+            repo,
+            git_argv,
+            git,
+            tool,
+        });
     }
-    let listed = if tool.list.is_empty() {
-        Err(anyhow!("worktree_tool.list in config.toml is empty"))
-    } else {
-        runner.run(host, &worktree::wrapped_argv(monorepo, &tool.list), None)
-    };
     let load = runner.run(host, &words(&LOADAVG_ARGV), None);
-    if let (Err(err), Err(_), Err(_)) = (&git, &listed, &load) {
+    if let Err(load_err) = &load
+        && probes.iter().all(RepoProbe::failed)
+    {
+        let first = probes.first().and_then(|probe| probe.git.as_ref().err());
         return Err(Unreachable {
             host: host.name.clone(),
-            detail: format!("{err:#}"),
+            detail: format!("{:#}", first.unwrap_or(load_err)),
         }
         .into());
     }
 
-    let git = git.with_context(|| format!("listing worktrees on {}", host.name))?;
-    check_status(host, &git_argv, &git)?;
-    let mut worktrees = parse_porcelain(&git.stdout);
-    let tool_error = match listed.and_then(|output| {
-        check_status(host, &tool.list, &output)?;
-        parse_tool_list(&output.stdout)
-    }) {
-        Ok(listed) => {
-            merge_tool(&mut worktrees, &listed);
-            None
+    let several = repos.len() > 1;
+    let mut worktrees = Vec::new();
+    let mut tool_errors = Vec::new();
+    for probe in probes {
+        let repo = probe.repo;
+        let git = probe
+            .git
+            .with_context(|| format!("listing worktrees of {} on {}", repo.name, host.name))?;
+        check_status(host, &probe.git_argv, &git)?;
+        let mut listed = parse_porcelain(&repo.name, &git.stdout);
+        if let Some((tool, output)) = probe.tool {
+            match output.and_then(|output| {
+                check_status(host, &tool.list, &output)?;
+                parse_tool_list(&output.stdout)
+            }) {
+                Ok(known) => merge_tool(&mut listed, &known),
+                Err(err) if several => tool_errors.push(format!("{}: {err:#}", repo.name)),
+                Err(err) => tool_errors.push(format!("{err:#}")),
+            }
         }
-        Err(err) => Some(format!("{err:#}")),
-    };
+        worktrees.extend(listed);
+    }
     let load1 = load
         .ok()
         .filter(|output| output.status == 0)
@@ -188,7 +236,7 @@ pub fn refresh(
         worktrees,
         agents,
         prs: Vec::new(),
-        tool_error,
+        tool_error: (!tool_errors.is_empty()).then(|| tool_errors.join("; ")),
         herdr_error,
         pr_error: None,
     })
@@ -289,34 +337,34 @@ pub fn unreachable(host: &Host, cached: Option<HostInventory>, now: Timestamp) -
     }
 }
 
-/// The user's open PRs, listed by `gh` run inside `monorepo` on `host`.
-pub fn open_prs(runner: &dyn Runner, host: &Host, monorepo: &Path) -> anyhow::Result<Vec<Pr>> {
+/// The user's open PRs in `repo`, listed by `gh` run inside its checkout on `host`.
+pub fn open_prs(runner: &dyn Runner, host: &Host, repo: &Repo) -> anyhow::Result<Vec<Pr>> {
     let argv = words(&PR_LIST_ARGV);
-    let output = runner.run(host, &worktree::wrapped_argv(monorepo, &argv), None)?;
+    let output = runner.run(host, &worktree::wrapped_argv(&repo.path, &argv), None)?;
     if output.status != 0 {
         bail!(
-            "`gh pr list` on {} exited {}: {}",
+            "`gh pr list` in {} on {} exited {}: {}",
+            repo.name,
             host.name,
             output.status,
             output.stderr.trim()
         );
     }
-    parse_prs(&output.stdout)
+    parse_prs(&repo.name, &output.stdout)
 }
 
-/// Sets `inventory.prs` to the PRs in `prs` whose head branch one of its worktrees has checked
-/// out.
+/// Sets `inventory.prs` to the PRs in `prs` whose head branch one of its worktrees of the same
+/// repo has checked out.
 pub fn join_prs(inventory: &mut HostInventory, prs: &[Pr]) {
-    inventory.prs = prs
-        .iter()
-        .filter(|pr| {
-            inventory
-                .worktrees
-                .iter()
-                .any(|wt| wt.branch.as_deref() == Some(pr.branch.as_str()))
-        })
-        .cloned()
-        .collect();
+    inventory.prs =
+        prs.iter()
+            .filter(|pr| {
+                inventory.worktrees.iter().any(|wt| {
+                    wt.repo == pr.repo && wt.branch.as_deref() == Some(pr.branch.as_str())
+                })
+            })
+            .cloned()
+            .collect();
 }
 
 fn hosts_dir(state: &StateDir) -> PathBuf {
@@ -371,13 +419,14 @@ fn parse_cached(path: &Path, text: &str) -> anyhow::Result<HostInventory> {
     serde_json::from_str(text).with_context(|| format!("parsing {}", path.display()))
 }
 
-/// Parses `git worktree list --porcelain`: blank-line separated blocks of `worktree <path>`,
+/// Parses `git worktree list --porcelain` of `repo`: blank-line separated blocks of `worktree <path>`,
 /// `HEAD <sha>`, and `branch refs/heads/<name>` or `detached`.
-fn parse_porcelain(text: &str) -> Vec<Worktree> {
+fn parse_porcelain(repo: &str, text: &str) -> Vec<Worktree> {
     let mut worktrees: Vec<Worktree> = Vec::new();
     for line in text.lines() {
         if let Some(path) = line.strip_prefix("worktree ") {
             worktrees.push(Worktree {
+                repo: repo.to_owned(),
                 path: PathBuf::from(path),
                 branch: None,
                 busy: None,
@@ -414,11 +463,12 @@ fn parse_load1(text: &str) -> Option<f32> {
     text.split_whitespace().next()?.parse().ok()
 }
 
-fn parse_prs(text: &str) -> anyhow::Result<Vec<Pr>> {
+fn parse_prs(repo: &str, text: &str) -> anyhow::Result<Vec<Pr>> {
     let prs: Vec<GhPr> = serde_json::from_str(text).context("parsing `gh pr list` output")?;
     Ok(prs
         .into_iter()
         .map(|pr| Pr {
+            repo: repo.to_owned(),
             branch: pr.head_ref_name,
             number: pr.number,
             url: pr.url,
@@ -475,8 +525,11 @@ HEAD 3333333333333333333333333333333333333333
 detached
 ";
 
+    const REPO: &str = "example-repo";
+
     fn worktree(path: &str, branch: Option<&str>) -> Worktree {
         Worktree {
+            repo: REPO.to_owned(),
             path: PathBuf::from(path),
             branch: branch.map(str::to_owned),
             busy: None,
@@ -487,14 +540,14 @@ detached
     #[test]
     fn porcelain_parses_branches_and_detached() {
         assert_eq!(
-            parse_porcelain(PORCELAIN),
+            parse_porcelain(REPO, PORCELAIN),
             [
                 worktree("/workspaces/acme", Some("main")),
                 worktree("/workspaces/acme-worktrees/feature-x", Some("feature-x")),
                 worktree("/workspaces/acme-worktrees/bisect", None),
             ]
         );
-        assert_eq!(parse_porcelain(""), []);
+        assert_eq!(parse_porcelain(REPO, ""), []);
     }
 
     #[test]
@@ -509,7 +562,7 @@ detached
             ]}"#,
         )
         .unwrap();
-        let mut worktrees = parse_porcelain(PORCELAIN);
+        let mut worktrees = parse_porcelain(REPO, PORCELAIN);
 
         merge_tool(&mut worktrees, &tool);
 
@@ -539,11 +592,17 @@ detached
         }
     }
 
-    fn tool() -> WorktreeTool {
-        WorktreeTool {
-            create: Vec::new(),
-            list: words(&["wt", "--json", "list"]),
-        }
+    fn repos() -> Vec<Repo> {
+        vec![Repo {
+            name: REPO.to_owned(),
+            path: PathBuf::from("/workspaces/acme"),
+            default_branch: "main".to_owned(),
+            worktrees_dir: None,
+            worktree_tool: Some(WorktreeTool {
+                create: Vec::new(),
+                list: words(&["wt", "--json", "list"]),
+            }),
+        }]
     }
 
     const SERVER_RUNNING: &str = "status: running\nprivate_protocol: 22\n";
@@ -575,8 +634,7 @@ detached
         refresh(
             &runner,
             &host(),
-            Path::new("/workspaces/acme"),
-            &tool(),
+            &repos(),
             &sessions(),
             Timestamp::UNIX_EPOCH,
         )
@@ -636,7 +694,7 @@ detached
 
         assert!(inventory.reachable);
         assert_eq!(inventory.load1, Some(1.75));
-        assert_eq!(inventory.worktrees, parse_porcelain(PORCELAIN));
+        assert_eq!(inventory.worktrees, parse_porcelain(REPO, PORCELAIN));
         let tool_error = inventory.tool_error.unwrap();
         assert!(tool_error.contains("command not found: wt"), "{tool_error}");
         let herdr_error = inventory.herdr_error.unwrap();

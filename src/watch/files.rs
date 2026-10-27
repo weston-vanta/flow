@@ -1,6 +1,6 @@
 //! What `flow watch` reads from files: each task's `status.json` state and the lines appended
-//! to its `events.jsonl`, and, on the task's host, whether its worktree was written since its
-//! last event.
+//! to its `events.jsonl`, and, on the task's host, whether its working directory was written
+//! since its last event.
 
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
@@ -17,7 +17,7 @@ use crate::state::config::Host;
 use crate::state::events::Event;
 use crate::state::task::State;
 
-/// How long a worktree check may run, on the host and here.
+/// How long a working-directory check may run, on the host and here.
 const WORKTREE_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 /// The exit code ssh uses for its own failures.
 const SSH_FAILURE_STATUS: i32 = 255;
@@ -77,7 +77,7 @@ pub(super) fn file_len(path: &Path) -> u64 {
     std::fs::metadata(path).map_or(0, |meta| meta.len())
 }
 
-/// A `find` on a task's host for the first file under its worktree, `.git` aside, modified after
+/// A `find` on a task's host for the first file under its working directory, `.git` aside, modified after
 /// a time. It runs in the background so a slow walk or a hung connection cannot stall the poll
 /// loop, and is killed after `WORKTREE_CHECK_TIMEOUT`.
 pub(super) struct WorktreeCheck {

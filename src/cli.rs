@@ -4,7 +4,8 @@ use std::process::ExitCode;
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 
 use flow::cmd;
-use flow::cmd::dispatch::{BriefSource, DispatchArgs, WorktreeSource};
+use flow::cmd::Refused;
+use flow::cmd::dispatch::{BriefSource, DirSource, DispatchArgs};
 use flow::cmd::task_write::ReportedState;
 use flow::paths::StateDir;
 use flow::state::task::HoldOn;
@@ -127,11 +128,11 @@ impl Command {
 
 #[derive(Debug, Args)]
 #[command(group(ArgGroup::new("brief_source").required(true)))]
-#[command(group(ArgGroup::new("worktree_source").required(true)))]
+#[command(group(ArgGroup::new("dir_source")))]
 pub struct DispatchCli {
-    /// Host to run the worker on
+    /// Host to run the worker on [default: this machine]
     #[arg(long, value_name = "NAME")]
-    host: String,
+    host: Option<String>,
     #[arg(long)]
     title: String,
     /// File holding the ask, read on this machine
@@ -148,18 +149,22 @@ pub struct DispatchCli {
     /// What must be true for the task to be done, often a `- ` list
     #[arg(long, value_name = "TEXT", allow_hyphen_values = true)]
     criteria: String,
-    /// Existing worktree on the host to work in
-    #[arg(long, value_name = "PATH", group = "worktree_source")]
-    worktree: Option<PathBuf>,
-    /// Branch to create a worktree for with the configured worktree tool
-    #[arg(long, value_name = "NAME", group = "worktree_source")]
+    /// Existing directory on the host to work in; with neither this nor --branch, the worker
+    /// runs in the task's own work directory
+    #[arg(long, value_name = "PATH", group = "dir_source")]
+    dir: Option<PathBuf>,
+    /// New branch to create a worktree for in the repo
+    #[arg(long, value_name = "NAME", group = "dir_source")]
     branch: Option<String>,
+    /// Configured repo to create the --branch worktree in; needed when several are configured
+    #[arg(long, value_name = "NAME")]
+    repo: Option<String>,
     /// Task this one was split from
     #[arg(long, value_name = "ID")]
     parent: Option<String>,
-    /// Dispatch even when another agent already works in the worktree
+    /// Dispatch even when another agent already works in the directory
     #[arg(long)]
-    allow_shared_worktree: bool,
+    allow_shared_dir: bool,
 }
 
 impl TryFrom<DispatchCli> for DispatchArgs {
@@ -171,19 +176,23 @@ impl TryFrom<DispatchCli> for DispatchArgs {
             (None, Some(text)) => BriefSource::Text(text),
             _ => anyhow::bail!("pass exactly one of --brief-file and --brief"),
         };
-        let worktree = match (cli.worktree, cli.branch) {
-            (Some(path), None) => WorktreeSource::Path(path),
-            (None, Some(branch)) => WorktreeSource::Branch(branch),
-            _ => anyhow::bail!("pass exactly one of --worktree and --branch"),
+        let dir = match (cli.dir, cli.branch, cli.repo) {
+            (None, Some(branch), repo) => DirSource::Branch { branch, repo },
+            (_, None, Some(_)) => {
+                return Err(Refused("--repo only applies with --branch".to_owned()).into());
+            }
+            (Some(path), None, None) => DirSource::Path(path),
+            (None, None, None) => DirSource::TaskWorkDir,
+            (Some(_), Some(_), _) => anyhow::bail!("pass at most one of --dir and --branch"),
         };
         Ok(DispatchArgs {
             host: cli.host,
             title: cli.title,
             brief,
             criteria: cli.criteria,
-            worktree,
+            dir,
             parent: cli.parent,
-            allow_shared_worktree: cli.allow_shared_worktree,
+            allow_shared_dir: cli.allow_shared_dir,
         })
     }
 }

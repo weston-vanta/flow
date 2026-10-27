@@ -5,11 +5,11 @@ use assert_cmd::Command;
 use serde_json::{Value, json};
 
 const CONFIG: &str = r#"
-worktree_tool = { create = ["wt", "create", "{branch}"] }
-
-[monorepo]
+[[repos]]
+name = "example-repo"
 path = "/workspaces/acme"
 default_branch = "main"
+worktree_tool = { create = ["wt", "create", "{branch}"] }
 
 [[hosts]]
 name = "host-a"
@@ -188,20 +188,20 @@ fn refresh_parses_worktrees_load_and_joins_prs() {
     assert_eq!(
         cached["worktrees"],
         json!([
-            {"path": "/workspaces/acme", "branch": "main", "busy": null, "dirty_files": null},
-            {"path": "/workspaces/acme-worktrees/feature-x", "branch": "feature-x", "busy": true, "dirty_files": 3},
-            {"path": "/workspaces/acme-worktrees/bisect", "branch": null, "busy": null, "dirty_files": null},
+            {"repo": "example-repo", "path": "/workspaces/acme", "branch": "main", "busy": null, "dirty_files": null},
+            {"repo": "example-repo", "path": "/workspaces/acme-worktrees/feature-x", "branch": "feature-x", "busy": true, "dirty_files": 3},
+            {"repo": "example-repo", "path": "/workspaces/acme-worktrees/bisect", "branch": null, "busy": null, "dirty_files": null},
         ])
     );
     assert_eq!(
         cached["prs"],
-        json!([{"branch": "feature-x", "number": 12, "url": "https://github.com/example/acme/pull/12", "state": "OPEN"}])
+        json!([{"repo": "example-repo", "branch": "feature-x", "number": 12, "url": "https://github.com/example/acme/pull/12", "state": "OPEN"}])
     );
     assert_eq!(cached["agents"][0]["pane_id"], "w4:p1");
     assert_eq!(cached["tool_error"], Value::Null);
     assert_eq!(cached["herdr_error"], Value::Null);
 
-    let in_monorepo = |tool: &[&str]| {
+    let in_repo = |tool: &[&str]| {
         let mut argv = words(&[
             "sh",
             "-c",
@@ -225,12 +225,12 @@ fn refresh_parses_worktrees_load_and_joins_prs() {
                 "list",
                 "--porcelain"
             ]),
-            &in_monorepo(&["wt", "--json", "list"]),
+            &in_repo(&["wt", "--json", "list"]),
             &words(&["cat", "/proc/loadavg"]),
             &words(&["herdr", "--session", "flow", "status", "server"]),
             &words(&["herdr", "--session", "flow", "agent", "list"]),
             &words(&["herdr", "--session", "default", "agent", "list"]),
-            &in_monorepo(&[
+            &in_repo(&[
                 "gh",
                 "pr",
                 "list",
@@ -368,8 +368,8 @@ fn gh_failure_is_recorded_in_cache_and_output() {
             "name": "host-a", "env_id": "env-0001", "seen": "2026-10-26T09:00:00Z",
             "reachable": true, "load1": 0.5, "worktrees": [], "agents": [],
             "prs": [
-                {"branch": "feature-x", "number": 12, "url": "https://github.com/example/acme/pull/12", "state": "OPEN"},
-                {"branch": "removed", "number": 9, "url": "https://github.com/example/acme/pull/9", "state": "OPEN"},
+                {"repo": "example-repo", "branch": "feature-x", "number": 12, "url": "https://github.com/example/acme/pull/12", "state": "OPEN"},
+                {"repo": "example-repo", "branch": "removed", "number": 9, "url": "https://github.com/example/acme/pull/9", "state": "OPEN"},
             ],
         }),
     );
@@ -405,4 +405,155 @@ fn gh_failure_is_recorded_in_cache_and_output() {
     recovered.push(on("host-a", PR_LIST));
     stdout_of(with_cache.flow(&recovered).args(["inventory", "--refresh"]));
     assert_eq!(with_cache.cached("env-0001")["pr_error"], Value::Null);
+}
+
+#[test]
+fn inventory_lists_worktrees_per_repo() {
+    let fx = Fixture::new();
+    fs::write(
+        fx.state.join("config.toml"),
+        r#"
+[[repos]]
+name = "example-repo"
+path = "/work/repo"
+default_branch = "main"
+worktree_tool = { create = ["wt", "create", "{branch}"] }
+
+[[repos]]
+name = "other-repo"
+path = "/work/other"
+default_branch = "main"
+
+[[hosts]]
+name = "host-a"
+env_id = "env-0001"
+ssh_alias = "host-a.example"
+"#,
+    )
+    .unwrap();
+    let repo_porcelain = "\
+worktree /work/repo
+HEAD 1111111111111111111111111111111111111111
+branch refs/heads/main
+
+worktree /work/repo-worktrees/feature-x
+HEAD 2222222222222222222222222222222222222222
+branch refs/heads/feature-x
+";
+    let other_porcelain = "\
+worktree /work/other
+HEAD 4444444444444444444444444444444444444444
+branch refs/heads/main
+
+worktree /work/other-worktrees/fix-y
+HEAD 5555555555555555555555555555555555555555
+branch refs/heads/fix-y
+";
+    let wt_list =
+        r#"{"worktrees":[{"path":"/work/repo-worktrees/feature-x","dirty_files":1,"busy":false}]}"#;
+    let repo_prs = r#"[{"headRefName":"feature-x","number":12,"state":"OPEN","url":"https://github.com/example/example-repo/pull/12"},{"headRefName":"fix-y","number":13,"state":"OPEN","url":"https://github.com/example/example-repo/pull/13"}]"#;
+    let other_prs = r#"[{"headRefName":"fix-y","number":21,"state":"OPEN","url":"https://github.com/example/other-repo/pull/21"}]"#;
+    let script = [
+        on("host-a", repo_porcelain),
+        on("host-a", wt_list),
+        on("host-a", other_porcelain),
+        on("host-a", LOADAVG),
+        on("host-a", SERVER_RUNNING),
+        on(
+            "host-a",
+            r#"{"id":"cli:agent:list","result":{"agents":[],"type":"agent_list"}}"#,
+        ),
+        default_session_stopped("host-a"),
+        on("host-a", repo_prs),
+        on("host-a", other_prs),
+    ];
+
+    let stdout = stdout_of(fx.flow(&script).args(["inventory", "--refresh"]));
+
+    let mut lines = stdout.lines();
+    let header = lines.next().unwrap();
+    assert!(
+        header.starts_with("host-a  reachable  load 0.26  4 worktrees  0 agents  (seen "),
+        "{stdout}"
+    );
+    assert_eq!(
+        lines.collect::<Vec<_>>(),
+        [
+            "  repo example-repo",
+            "    main       /work/repo",
+            "    feature-x  /work/repo-worktrees/feature-x  PR #12 OPEN",
+            "  repo other-repo",
+            "    main   /work/other",
+            "    fix-y  /work/other-worktrees/fix-y  PR #21 OPEN",
+        ],
+        "{stdout}"
+    );
+
+    let cached = fx.cached("env-0001");
+    assert_eq!(
+        cached["worktrees"],
+        json!([
+            {"repo": "example-repo", "path": "/work/repo", "branch": "main", "busy": null, "dirty_files": null},
+            {"repo": "example-repo", "path": "/work/repo-worktrees/feature-x", "branch": "feature-x", "busy": false, "dirty_files": 1},
+            {"repo": "other-repo", "path": "/work/other", "branch": "main", "busy": null, "dirty_files": null},
+            {"repo": "other-repo", "path": "/work/other-worktrees/fix-y", "branch": "fix-y", "busy": null, "dirty_files": null},
+        ])
+    );
+    let prs: Vec<(Value, Value)> = cached["prs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|pr| (pr["repo"].clone(), pr["number"].clone()))
+        .collect();
+    assert_eq!(
+        prs,
+        [
+            (json!("example-repo"), json!(12)),
+            (json!("other-repo"), json!(21))
+        ],
+        "a PR joins only worktrees of its own repo"
+    );
+    assert_eq!(cached["tool_error"], Value::Null);
+
+    let in_dir = |dir: &str, tool: &[&str]| {
+        let mut argv = words(&["sh", "-c", r#"cd "$1" && shift && exec "$@""#, "sh", dir]);
+        argv.extend(words(tool));
+        argv
+    };
+    let gh = [
+        "gh",
+        "pr",
+        "list",
+        "--author",
+        "@me",
+        "--state",
+        "open",
+        "--json",
+        "number,url,headRefName,state",
+        "--limit",
+        "100",
+    ];
+    let calls = fx.calls();
+    let argvs: Vec<&Vec<String>> = calls.iter().map(|(_, argv)| argv).collect();
+    assert_eq!(
+        argvs,
+        [
+            &words(&["git", "-C", "/work/repo", "worktree", "list", "--porcelain"]),
+            &in_dir("/work/repo", &["wt", "--json", "list"]),
+            &words(&[
+                "git",
+                "-C",
+                "/work/other",
+                "worktree",
+                "list",
+                "--porcelain"
+            ]),
+            &words(&["cat", "/proc/loadavg"]),
+            &words(&["herdr", "--session", "flow", "status", "server"]),
+            &words(&["herdr", "--session", "flow", "agent", "list"]),
+            &words(&["herdr", "--session", "default", "agent", "list"]),
+            &in_dir("/work/repo", &gh),
+            &in_dir("/work/other", &gh),
+        ]
+    );
 }

@@ -31,9 +31,9 @@ one reason; handle every row.
 - `host-unreachable: <host>`: keep working from state. Tell the user plainly that `<host>` cannot
   be reached (an expired login, or a stopped or recycled host). A recycled host's tasks are
   orphaned with what was last known; ask before redispatching.
-- `quiet: <id> <N>s`: no events and no worktree writes for N seconds. Check
-  `flow task events <id> --last 5` and `flow sessions`, then steer the worker with a short
-  status question.
+- `quiet: <id> <N>s`: no events and no writes in the task's working directory for N seconds.
+  Check `flow task events <id> --last 5` and `flow sessions`, then steer the worker with a
+  short status question.
 - `request: <id>`: a dispatch request; follow the `flow-dispatch` skill.
 - `adopted-<status>: <host>/<pane>`: a session the user asked you to follow changed state; tell
   them. `flow unfollow <host> <pane>` once they no longer need it.

@@ -8,7 +8,7 @@ use jiff::Timestamp;
 
 use crate::herdr::Agent;
 use crate::host;
-use crate::inventory::{self, HostInventory, Unreachable};
+use crate::inventory::{self, HostInventory, Unreachable, Worktree};
 use crate::paths::StateDir;
 use crate::render;
 use crate::runner::{self, Runner};
@@ -22,8 +22,9 @@ const ERROR_WIDTH: usize = 160;
 /// `refresh` is set. A host that cannot be refreshed keeps its cache and fails the command once
 /// the rest are rendered; an unreachable host is recorded as such and does not fail it.
 pub fn run(state: &StateDir, refresh: bool, json: bool) -> anyhow::Result<()> {
+    let config = Config::load(state)?;
     let failed = if refresh {
-        refresh_all(state)?
+        refresh_all(state, &config)?
     } else {
         Vec::new()
     };
@@ -33,7 +34,8 @@ pub fn run(state: &StateDir, refresh: bool, json: bool) -> anyhow::Result<()> {
     } else if inventories.is_empty() {
         super::print("no inventory cached; run `flow inventory --refresh`\n")?;
     } else {
-        super::print(&render_all(&inventories, Timestamp::now()))?;
+        let by_repo = config.repos.len() > 1;
+        super::print(&render_all(&inventories, by_repo, Timestamp::now()))?;
     }
     if !failed.is_empty() {
         bail!("could not refresh {}", failed.join(", "));
@@ -41,10 +43,10 @@ pub fn run(state: &StateDir, refresh: bool, json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Refreshes every configured host in parallel, then joins the user's open PRs, listed once, to
-/// each reachable host's worktrees, and writes each inventory. Returns the hosts that failed.
-fn refresh_all(state: &StateDir) -> anyhow::Result<Vec<String>> {
-    let config = Config::load(state)?;
+/// Refreshes every configured host in parallel, then joins the user's open PRs, listed once per
+/// repo, to each reachable host's worktrees, and writes each inventory. A repo whose PRs cannot
+/// be listed keeps each host's cached PRs of that repo. Returns the hosts that failed.
+fn refresh_all(state: &StateDir, config: &Config) -> anyhow::Result<Vec<String>> {
     let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
     let now = Timestamp::now();
     let results: Vec<(&Host, anyhow::Result<HostInventory>)> = thread::scope(|scope| {
@@ -53,7 +55,6 @@ fn refresh_all(state: &StateDir) -> anyhow::Result<Vec<String>> {
             .iter()
             .map(|host| {
                 let runner = &runner;
-                let config = &config;
                 scope.spawn(move || (host, refresh_one(state, runner, config, host, now)))
             })
             .collect();
@@ -75,16 +76,37 @@ fn refresh_all(state: &StateDir) -> anyhow::Result<Vec<String>> {
         }
     }
 
-    let prs = list_prs(runner.as_ref(), &config, &refreshed);
+    let listed = list_prs(runner.as_ref(), config, &refreshed);
+    let several = config.repos.len() > 1;
+    let errors: Vec<String> = listed
+        .iter()
+        .filter_map(|(repo, prs)| {
+            let error = prs.as_ref().err()?;
+            Some(if several {
+                format!("{repo}: {error}")
+            } else {
+                error.clone()
+            })
+        })
+        .collect();
+    let pr_error = (!errors.is_empty()).then(|| errors.join("; "));
     for (_, inventory) in refreshed.iter_mut().filter(|(_, inv)| inv.reachable) {
-        match &prs {
-            Ok(prs) => inventory::join_prs(inventory, prs),
-            Err(error) => {
-                let cached = inventory::load(state, &inventory.env_id)?;
-                inventory::join_prs(inventory, &cached.map(|c| c.prs).unwrap_or_default());
-                inventory.pr_error = Some(error.clone());
+        let mut prs: Vec<inventory::Pr> = Vec::new();
+        let mut cached = None;
+        for (repo, listed) in &listed {
+            match listed {
+                Ok(listed) => prs.extend(listed.iter().cloned()),
+                Err(_) => {
+                    if cached.is_none() {
+                        cached = Some(inventory::load(state, &inventory.env_id)?);
+                    }
+                    let cached_prs = cached.iter().flatten().flat_map(|c| &c.prs);
+                    prs.extend(cached_prs.filter(|pr| pr.repo == *repo).cloned());
+                }
             }
         }
+        inventory::join_prs(inventory, &prs);
+        inventory.pr_error = pr_error.clone();
     }
     for (_, inventory) in &refreshed {
         inventory::save(state, inventory)?;
@@ -100,14 +122,7 @@ fn refresh_one(
     host: &Host,
     now: Timestamp,
 ) -> anyhow::Result<HostInventory> {
-    match inventory::refresh(
-        runner,
-        host,
-        &config.monorepo.path,
-        &config.worktree_tool,
-        &config.herdr_sessions,
-        now,
-    ) {
+    match inventory::refresh(runner, host, &config.repos, &config.herdr_sessions, now) {
         Err(err) if err.is::<Unreachable>() => {
             eprintln!("{err:#}");
             Ok(inventory::unreachable(
@@ -120,14 +135,15 @@ fn refresh_one(
     }
 }
 
-/// The user's open PRs, listed on this machine when it is a reachable configured host, else on
-/// the first reachable one (gh's login is shared across hosts). Fails with the reason when no
-/// host is reachable or the listing fails.
+/// The user's open PRs per configured repo, `(repo name, PRs)` in config order, listed on this
+/// machine when it is a reachable configured host, else on the first reachable one (gh's login
+/// is shared across hosts). A repo's entry holds the reason when no host is reachable or its
+/// listing fails.
 fn list_prs(
     runner: &dyn Runner,
     config: &Config,
     refreshed: &[(&Host, HostInventory)],
-) -> Result<Vec<inventory::Pr>, String> {
+) -> Vec<(String, Result<Vec<inventory::Pr>, String>)> {
     let local_env_id = host::local_env_id();
     let mut reachable = refreshed
         .iter()
@@ -137,24 +153,35 @@ fn list_prs(
         .clone()
         .find(|host| host::is_local(host, local_env_id.as_deref()))
         .or_else(|| reachable.next());
-    let Some(host) = host else {
-        return Err("no host reachable to list open PRs".to_owned());
-    };
-    inventory::open_prs(runner, host, &config.monorepo.path).map_err(|err| format!("{err:#}"))
+    config
+        .repos
+        .iter()
+        .map(|repo| {
+            let prs = match host {
+                Some(host) => {
+                    inventory::open_prs(runner, host, repo).map_err(|err| format!("{err:#}"))
+                }
+                None => Err("no host reachable to list open PRs".to_owned()),
+            };
+            (repo.name.clone(), prs)
+        })
+        .collect()
 }
 
-fn render_all(inventories: &[HostInventory], now: Timestamp) -> String {
+/// Each inventory's block, separated by blank lines; worktrees are grouped under a `repo <name>`
+/// line per repo when `by_repo` is set.
+fn render_all(inventories: &[HostInventory], by_repo: bool, now: Timestamp) -> String {
     inventories
         .iter()
-        .map(|inv| render_block(inv, now))
+        .map(|inv| render_block(inv, by_repo, now))
         .collect::<Vec<_>>()
         .join("\n")
 }
 
 /// The header `name  reachable|unreachable  load <load1>  <N> worktrees  <N> agents  (seen
 /// <age>)`, any recorded errors, then `branch  path  [PR #n state]  [agent: <title> <status>]`
-/// per worktree.
-fn render_block(inv: &HostInventory, now: Timestamp) -> String {
+/// per worktree, under a `repo <name>` line per repo when `by_repo` is set.
+fn render_block(inv: &HostInventory, by_repo: bool, now: Timestamp) -> String {
     let mut out = format!(
         "{}  {}  load {}  {} worktrees  {} agents  (seen {})\n",
         inv.name,
@@ -181,16 +208,41 @@ fn render_block(inv: &HostInventory, now: Timestamp) -> String {
             ));
         }
     }
-    let rows: Vec<Vec<String>> = inv
-        .worktrees
-        .iter()
+    if by_repo {
+        let mut repos: Vec<&str> = Vec::new();
+        for wt in &inv.worktrees {
+            if !repos.contains(&wt.repo.as_str()) {
+                repos.push(&wt.repo);
+            }
+        }
+        for repo in repos {
+            out.push_str(&format!("  repo {repo}\n"));
+            let worktrees = inv.worktrees.iter().filter(|wt| wt.repo == repo);
+            push_indented(&mut out, "    ", &worktree_rows(inv, worktrees));
+        }
+    } else {
+        push_indented(&mut out, "  ", &worktree_rows(inv, inv.worktrees.iter()));
+    }
+    out
+}
+
+/// `branch  path  [PR #n state]  [agent: <title> <status>]` for each of `worktrees`.
+fn worktree_rows<'a>(
+    inv: &HostInventory,
+    worktrees: impl Iterator<Item = &'a Worktree>,
+) -> Vec<Vec<String>> {
+    worktrees
         .map(|wt| {
             let mut row = vec![
                 wt.branch.clone().unwrap_or_else(|| DETACHED.to_owned()),
                 wt.path.display().to_string(),
                 wt.branch
                     .as_deref()
-                    .and_then(|branch| inv.prs.iter().find(|pr| pr.branch == branch))
+                    .and_then(|branch| {
+                        inv.prs
+                            .iter()
+                            .find(|pr| pr.repo == wt.repo && pr.branch == branch)
+                    })
                     .map_or_else(String::new, |pr| format!("PR #{} {}", pr.number, pr.state)),
             ];
             row.extend(
@@ -204,13 +256,16 @@ fn render_block(inv: &HostInventory, now: Timestamp) -> String {
             }
             row
         })
-        .collect();
-    for line in render::table(&rows).lines() {
-        out.push_str("  ");
+        .collect()
+}
+
+/// Appends `rows` as a table, each line prefixed with `indent`.
+fn push_indented(out: &mut String, indent: &str, rows: &[Vec<String>]) {
+    for line in render::table(rows).lines() {
+        out.push_str(indent);
         out.push_str(line);
         out.push('\n');
     }
-    out
 }
 
 /// `agent: <title, or pane id when untitled> <status>`.

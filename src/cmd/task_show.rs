@@ -36,11 +36,16 @@ fn render_text(task: &TaskRecord, status: &Status, brief: &str, now: Timestamp) 
         ("title", task.title.clone()),
         ("state", status.state.to_string()),
         ("host", task.host.clone()),
-        ("worktree", task.worktree.display().to_string()),
+        ("cwd", task.cwd.display().to_string()),
+    ];
+    if let Some(repo) = &task.repo {
+        fields.push(("repo", repo.clone()));
+    }
+    fields.extend([
         ("harness", task.harness.to_string()),
         ("created", render::relative(task.created, now)),
         ("last event", render::relative(status.last_event, now)),
-    ];
+    ]);
     if let Some(parent) = &task.parent {
         fields.push(("parent", parent.clone()));
     }

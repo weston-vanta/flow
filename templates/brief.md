@@ -2,12 +2,10 @@
 
 You are a worker session run by a supervisor. This brief is your whole assignment.
 
-## Worktree
+## Working directory
 
-`{{worktree}}`
-
-Work only inside this directory; never touch the main checkout or other worktrees.
-
+`{{cwd}}`
+{{worktree_note}}
 ## What is asked
 
 {{body}}

@@ -12,7 +12,13 @@ pub struct TaskRecord {
     pub parent: Option<String>,
     pub title: String,
     pub host: String,
-    pub worktree: PathBuf,
+    /// The absolute directory on `host` the worker runs in. Records written before tasks had
+    /// working directories call it `worktree`.
+    #[serde(alias = "worktree")]
+    pub cwd: PathBuf,
+    /// The configured repo `cwd` is a worktree of, when it was created from `--branch`.
+    #[serde(default)]
+    pub repo: Option<String>,
     pub harness: Harness,
     pub created: Timestamp,
     pub owner: String,
@@ -159,6 +165,21 @@ mod tests {
         );
         let displayed: Vec<_> = states.iter().map(|s| format!("\"{s}\"")).collect();
         assert_eq!(format!("[{}]", displayed.join(",")), json);
+    }
+
+    #[test]
+    fn records_written_with_a_worktree_still_load() {
+        let rec: TaskRecord = serde_json::from_str(
+            r#"{"id": "aaaaaaab", "title": "Old task", "host": "host-a",
+                "worktree": "/work/repo-worktrees/old", "harness": "claude",
+                "created": "2026-10-26T12:00:00Z", "owner": "supervisor"}"#,
+        )
+        .unwrap();
+        assert_eq!(rec.cwd, std::path::Path::new("/work/repo-worktrees/old"));
+        assert_eq!(rec.repo, None);
+        let json = serde_json::to_value(&rec).unwrap();
+        assert_eq!(json["cwd"], "/work/repo-worktrees/old");
+        assert!(json.get("worktree").is_none(), "{json}");
     }
 
     #[test]

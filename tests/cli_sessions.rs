@@ -9,11 +9,11 @@ use jiff::Timestamp;
 use serde_json::{Value, json};
 
 const CONFIG: &str = r#"
-worktree_tool = { create = ["wt", "create", "{branch}"] }
-
-[monorepo]
+[[repos]]
+name = "example-repo"
 path = "/work/repo"
 default_branch = "main"
+worktree_tool = { create = ["wt", "create", "{branch}"] }
 
 [[hosts]]
 name = "host-a"
@@ -77,7 +77,8 @@ impl Fixture {
                     parent: None,
                     title: "Build feature".to_owned(),
                     host: "host-a".to_owned(),
-                    worktree: PathBuf::from("/work/repo.wt/feature"),
+                    cwd: PathBuf::from("/work/repo.wt/feature"),
+                    repo: Some("example-repo".to_owned()),
                     harness: Harness::Claude,
                     created: Timestamp::now(),
                     owner: "supervisor".to_owned(),
@@ -200,7 +201,7 @@ fn host_b_cache() -> Value {
     json!({
         "name": "host-b", "env_id": "env-0002", "seen": "2026-10-26T09:00:00Z",
         "reachable": true, "load1": 0.5,
-        "worktrees": [{"path": "/work/repo", "branch": "main", "busy": null, "dirty_files": null}],
+        "worktrees": [{"repo": "example-repo", "path": "/work/repo", "branch": "main", "busy": null, "dirty_files": null}],
         "agents": [{
             "pane_id": "w5:p1", "workspace_id": "w5", "agent": "claude", "status": "blocked",
             "cwd": "/work/other", "title": "Upgrade toolchain", "session": "default",
@@ -266,9 +267,9 @@ fn sessions_update_only_agents_in_an_existing_cache() {
     let earlier = json!({
         "name": "host-a", "env_id": "env-0001", "seen": "2026-10-26T09:00:00Z",
         "reachable": true, "load1": 1.25,
-        "worktrees": [{"path": "/work/repo", "branch": "main", "busy": null, "dirty_files": null}],
+        "worktrees": [{"repo": "example-repo", "path": "/work/repo", "branch": "main", "busy": null, "dirty_files": null}],
         "agents": [],
-        "prs": [{"branch": "main", "number": 3, "url": "https://example.com/pull/3", "state": "OPEN"}],
+        "prs": [{"repo": "example-repo", "branch": "main", "number": 3, "url": "https://example.com/pull/3", "state": "OPEN"}],
         "tool_error": "wt: command not found", "herdr_error": null, "pr_error": null,
     });
     fx.write_cache("env-0001", &earlier);

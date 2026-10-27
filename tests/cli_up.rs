@@ -11,11 +11,11 @@ use jiff::Timestamp;
 use serde_json::{Value, json};
 
 const CONFIG: &str = r#"
-worktree_tool = { create = ["wt", "create", "{branch}"] }
-
-[monorepo]
+[[repos]]
+name = "example-repo"
 path = "/workspaces/acme"
 default_branch = "main"
+worktree_tool = { create = ["wt", "create", "{branch}"] }
 
 [[hosts]]
 name = "host-a"
@@ -407,7 +407,8 @@ fn create_task_with_pane(fx: &Fixture) -> Store {
                 parent: None,
                 title: "Add retry to the example client".to_owned(),
                 host: "host-b".to_owned(),
-                worktree: PathBuf::from("/workspaces/example-repo.wt/retry"),
+                cwd: PathBuf::from("/workspaces/example-repo.wt/retry"),
+                repo: Some("example-repo".to_owned()),
                 harness: Harness::Claude,
                 created: Timestamp::now(),
                 owner: "supervisor".to_owned(),

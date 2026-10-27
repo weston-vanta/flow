@@ -47,7 +47,7 @@ use panes::{PaneWait, Polled, WaitSpec, WaitTarget};
 const SUPERVISOR_DIR: &str = "supervisor";
 const WATCH_STATE_FILE: &str = "supervisor/watch-state.json";
 const WATCH_LOG_FILE: &str = "supervisor/watch.log";
-/// How often one quiet task's worktree is searched for writes.
+/// How often one quiet task's working directory is searched for writes.
 const WORKTREE_CHECK_INTERVAL: Duration = Duration::from_secs(10 * 60);
 /// `--once` runs this many cycles, one poll interval apart, so the herdr waits the first
 /// starts can answer in the second.
@@ -104,7 +104,7 @@ fn quiet(
     )
 }
 
-/// A worktree check under way for a quiet task.
+/// A working-directory check under way for a quiet task.
 struct RunningCheck {
     check: WorktreeCheck,
     host: String,
@@ -410,7 +410,7 @@ impl<'a> Watcher<'a> {
 
     /// `Quiet` observations for working or pending tasks without a hold whose last event is
     /// older than the quiet threshold, unless a wake already reported that quiet spell. Each
-    /// such task's worktree is searched for writes after its last event, at most once per
+    /// such task's working directory is searched for writes after its last event, at most once per
     /// `WORKTREE_CHECK_INTERVAL`, by a check that runs across cycles; the observation comes
     /// when it ends, and only if the task is still quiet the same way.
     fn quiet_tasks(&mut self, tasks: &[(TaskRecord, Status)]) -> Vec<(Observation, Progress)> {
@@ -447,11 +447,13 @@ impl<'a> Watcher<'a> {
                     continue;
                 }
                 Checked::TimedOut => {
-                    self.log(&format!("{task}: worktree check timed out"));
+                    self.log(&format!("{task}: working-directory check timed out"));
                     false
                 }
                 Checked::Failed(problem) => {
-                    self.log(&format!("{task}: worktree check failed: {problem}"));
+                    self.log(&format!(
+                        "{task}: working-directory check failed: {problem}"
+                    ));
                     false
                 }
             };
@@ -472,11 +474,11 @@ impl<'a> Watcher<'a> {
             }
             self.quiet_checked.insert(rec.id.clone(), Instant::now());
             let host = self.config.hosts.iter().find(|host| host.name == rec.host);
-            let Some(host) = host.filter(|_| !rec.worktree.as_os_str().is_empty()) else {
+            let Some(host) = host else {
                 observed.push(quiet(&rec.id, status, since_secs, false));
                 continue;
             };
-            match WorktreeCheck::start(&*self.runner, host, &rec.worktree, status.last_event) {
+            match WorktreeCheck::start(&*self.runner, host, &rec.cwd, status.last_event) {
                 Ok(check) => {
                     let running = RunningCheck {
                         check,
@@ -487,7 +489,7 @@ impl<'a> Watcher<'a> {
                 }
                 Err(err) => {
                     let host = host.name.clone();
-                    self.log(&format!("checking {}: {err:#}", rec.worktree.display()));
+                    self.log(&format!("checking {}: {err:#}", rec.cwd.display()));
                     observed.push((Observation::HostUnreachable { host }, Progress::Nothing));
                 }
             }
@@ -573,9 +575,8 @@ mod tests {
     use classify::DEFAULT_QUIET_SECS;
 
     const CONFIG: &str = r#"
-worktree_tool = { create = ["wt", "create", "{branch}"] }
-
-[monorepo]
+[[repos]]
+name = "example-repo"
 path = "/work/repo"
 default_branch = "main"
 
@@ -612,7 +613,8 @@ ssh_alias = "host-a.example"
                 parent: None,
                 title: "Build feature".to_owned(),
                 host: "host-a".to_owned(),
-                worktree: PathBuf::from("/work/repo.wt/feature"),
+                cwd: PathBuf::from("/work/repo.wt/feature"),
+                repo: Some("example-repo".to_owned()),
                 harness: Harness::Claude,
                 created: Timestamp::now(),
                 owner: "supervisor".to_owned(),

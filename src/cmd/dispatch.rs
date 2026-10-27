@@ -1,4 +1,5 @@
-//! `flow dispatch`: creates a task and starts its worker in a herdr pane on the chosen host.
+//! `flow dispatch`: creates a task and starts its worker in a herdr pane on the chosen host, in
+//! an existing directory, a new worktree of a configured repo, or the task's own work directory.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -15,7 +16,7 @@ use crate::herdr::{Agent, Herdr};
 use crate::host;
 use crate::paths::StateDir;
 use crate::runner::{self, Runner};
-use crate::state::config::{Config, Host};
+use crate::state::config::{Config, Host, Repo};
 use crate::state::events::Event;
 use crate::state::task::{Harness, HerdrTarget, Hold, HoldOn, State, TaskRecord};
 use crate::state::{Store, ids};
@@ -23,50 +24,54 @@ use crate::worktree;
 
 const EVENT_SOURCE: &str = "cli";
 const OWNER: &str = "supervisor";
+/// The task's own working directory, inside its task directory, for work outside any repo.
+const WORK_DIR: &str = "work";
 
 pub enum BriefSource {
     File(PathBuf),
     Text(String),
 }
 
-pub enum WorktreeSource {
-    /// An existing worktree on the host.
+/// Where the worker runs.
+pub enum DirSource {
+    /// An existing directory on the host.
     Path(PathBuf),
-    /// A branch to create a worktree for with the configured worktree tool.
-    Branch(String),
+    /// A new branch to create a worktree for in `repo`, or in the only configured repo.
+    Branch {
+        branch: String,
+        repo: Option<String>,
+    },
+    /// `<task_dir>/work` on the shared volume, created for the task.
+    TaskWorkDir,
 }
 
 pub struct DispatchArgs {
-    pub host: String,
+    /// The host to run on; the machine flow runs on when unset.
+    pub host: Option<String>,
     pub title: String,
     pub brief: BriefSource,
     pub criteria: String,
-    pub worktree: WorktreeSource,
+    pub dir: DirSource,
     pub parent: Option<String>,
-    pub allow_shared_worktree: bool,
+    pub allow_shared_dir: bool,
 }
 
 /// Creates the task, starts its worker, and prints `dispatched <id> on <host> (<pane_id>)`.
 /// A failure once the task exists leaves it `blocked` with a supervisor hold naming the failure.
 pub fn run(state: &StateDir, args: &DispatchArgs) -> anyhow::Result<()> {
     let config = Config::load(state)?;
-    let host = host::find(&config, &args.host).map_err(|err| Refused(format!("{err:#}")))?;
+    let host = match &args.host {
+        Some(name) => host::find(&config, name),
+        None => host::local(&config),
+    }
+    .map_err(|err| Refused(format!("{err:#}")))?;
     let store = Store::open(state);
     if let Some(parent) = &args.parent {
         store
             .task(parent)
             .map_err(|err| Refused(format!("--parent: {err:#}")))?;
     }
-    if let WorktreeSource::Path(path) = &args.worktree
-        && !path.is_absolute()
-    {
-        return Err(Refused(format!(
-            "--worktree must be an absolute path on {}: {}",
-            host.name,
-            path.display()
-        ))
-        .into());
-    }
+    let dir = WorkDir::resolve(&args.dir, &config, host)?;
     let body = match &args.brief {
         BriefSource::File(path) => {
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?
@@ -74,30 +79,35 @@ pub fn run(state: &StateDir, args: &DispatchArgs) -> anyhow::Result<()> {
         BriefSource::Text(text) => text.clone(),
     };
     let flow_bin = std::env::current_exe().context("locating the flow binary")?;
+    let id = ids::new_task_id(Timestamp::now(), &mut rand::rng());
 
     let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
-    let worktree = match &args.worktree {
-        WorktreeSource::Path(path) => path.clone(),
-        WorktreeSource::Branch(branch) => worktree::create(
-            runner.as_ref(),
-            host,
-            &config.monorepo.path,
-            &config.worktree_tool,
-            branch,
-        )?,
+    let cwd = match &dir {
+        WorkDir::Existing(path) => path.to_path_buf(),
+        WorkDir::Worktree { repo, branch } => {
+            worktree::create(runner.as_ref(), host, repo, branch)?
+        }
+        WorkDir::Task => {
+            let work = store.task_dir(&id)?.join(WORK_DIR);
+            std::path::absolute(&work).with_context(|| format!("resolving {}", work.display()))?
+        }
     };
     let herdr = Herdr::new(runner);
     herdr.ensure_server(host)?;
-    if !args.allow_shared_worktree {
-        refuse_shared_worktree(&herdr.agents(host)?, host, &worktree)?;
+    if !args.allow_shared_dir {
+        refuse_shared_dir(&herdr.agents(host)?, host, &cwd)?;
     }
 
     let rec = TaskRecord {
-        id: ids::new_task_id(Timestamp::now(), &mut rand::rng()),
+        id,
         parent: args.parent.clone(),
         title: args.title.clone(),
         host: host.name.clone(),
-        worktree,
+        cwd,
+        repo: match &dir {
+            WorkDir::Worktree { repo, .. } => Some(repo.name.clone()),
+            WorkDir::Existing(_) | WorkDir::Task => None,
+        },
         harness: Harness::Claude,
         created: Timestamp::now(),
         owner: OWNER.to_owned(),
@@ -106,7 +116,9 @@ pub fn run(state: &StateDir, args: &DispatchArgs) -> anyhow::Result<()> {
         rec.clone(),
         &brief::render(&rec, &body, &args.criteria, &flow_bin),
     )?;
-    match start_worker(&store, &herdr, host, &rec, &flow_bin) {
+    let started = create_work_dir(&dir, &rec.cwd)
+        .and_then(|()| start_worker(&store, &herdr, host, &rec, &flow_bin));
+    match started {
         Ok((pane_id, start)) => {
             if let AgentStart::BlockedAtStart { .. } = start {
                 eprintln!(
@@ -129,9 +141,51 @@ pub fn run(state: &StateDir, args: &DispatchArgs) -> anyhow::Result<()> {
     }
 }
 
-/// Fails with `Refused` when an agent on `host` already works in `worktree`.
-fn refuse_shared_worktree(agents: &[Agent], host: &Host, worktree: &Path) -> anyhow::Result<()> {
-    let Some(agent) = agents.iter().find(|agent| agent.cwd == worktree) else {
+/// `DirSource` checked against the config before anything runs.
+enum WorkDir<'a> {
+    Existing(&'a Path),
+    Worktree { repo: &'a Repo, branch: &'a str },
+    Task,
+}
+
+impl<'a> WorkDir<'a> {
+    /// Fails with `Refused` for a relative `--dir` or a repo the config cannot resolve.
+    fn resolve(source: &'a DirSource, config: &'a Config, host: &Host) -> anyhow::Result<Self> {
+        Ok(match source {
+            DirSource::Path(path) if !path.is_absolute() => {
+                return Err(Refused(format!(
+                    "--dir must be an absolute path on {}: {}",
+                    host.name,
+                    path.display()
+                ))
+                .into());
+            }
+            DirSource::Path(path) => WorkDir::Existing(path),
+            DirSource::Branch { branch, repo } => WorkDir::Worktree {
+                repo: config
+                    .repo(repo.as_deref())
+                    .map_err(|err| Refused(format!("{err:#}")))?,
+                branch,
+            },
+            DirSource::TaskWorkDir => WorkDir::Task,
+        })
+    }
+}
+
+/// Creates the task's work directory when the worker runs there. It lives inside the task's
+/// directory, so it can be made only once the task exists.
+fn create_work_dir(dir: &WorkDir, cwd: &Path) -> anyhow::Result<()> {
+    match dir {
+        WorkDir::Task => {
+            std::fs::create_dir_all(cwd).with_context(|| format!("creating {}", cwd.display()))
+        }
+        WorkDir::Existing(_) | WorkDir::Worktree { .. } => Ok(()),
+    }
+}
+
+/// Fails with `Refused` when an agent on `host` already works in `dir`.
+fn refuse_shared_dir(agents: &[Agent], host: &Host, dir: &Path) -> anyhow::Result<()> {
+    let Some(agent) = agents.iter().find(|agent| agent.cwd == dir) else {
         return Ok(());
     };
     let name = if agent.title.is_empty() {
@@ -140,11 +194,11 @@ fn refuse_shared_worktree(agents: &[Agent], host: &Host, worktree: &Path) -> any
         format!("{:?} ", agent.title)
     };
     Err(Refused(format!(
-        "agent {name}(pane {}) on {} already works in {}; pass --allow-shared-worktree to \
-         dispatch there anyway",
+        "agent {name}(pane {}) on {} already works in {}; pass --allow-shared-dir to \
+         dispatch into that directory anyway",
         agent.pane_id,
         host.name,
-        worktree.display()
+        dir.display()
     ))
     .into())
 }
@@ -172,7 +226,7 @@ fn start_worker(
     }
     argv.extend(launch.argv);
 
-    let (workspace_id, pane_id) = herdr.create_workspace(host, &rec.worktree, &rec.id)?;
+    let (workspace_id, pane_id) = herdr.create_workspace(host, &rec.cwd, &rec.id)?;
     store.set_status(&rec.id, |status| {
         status.state = State::Working;
         status.herdr = Some(HerdrTarget {
