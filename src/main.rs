@@ -13,7 +13,7 @@ const PATH_ERROR_EXIT: u8 = 3;
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match run(cli) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(err) => {
             eprintln!("{err:#}");
             if err.downcast_ref::<PathError>().is_some() {
@@ -25,7 +25,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(cli: Cli) -> anyhow::Result<()> {
+fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     // The binary always runs from this repo's own build, so the build-time manifest dir is the repo root.
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let state = StateDir::resolve(repo_root)?;

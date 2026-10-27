@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
@@ -42,7 +43,10 @@ pub enum Command {
     /// Start a worker session for a new task
     Dispatch,
     /// List CDEs and run commands on them
-    Cde,
+    Cde {
+        #[command(subcommand)]
+        command: CdeCommand,
+    },
     /// Show worktrees, agents, and PRs per CDE
     Inventory,
     /// List agent sessions across CDEs
@@ -149,6 +153,22 @@ pub enum TaskCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum CdeCommand {
+    /// List configured CDEs, marking the one this runs on
+    List {
+        /// Print raw JSON instead of the compact view
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run a command on a CDE, passing its output and exit code through
+    Run {
+        name: String,
+        #[arg(last = true, required = true, value_name = "ARGV")]
+        argv: Vec<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub enum RequestsCommand {
     /// Mark a request dispatched so it stops listing
     Consume { req_id: String },
@@ -170,8 +190,9 @@ impl From<Party> for HoldOn {
     }
 }
 
-pub fn run(cli: Cli, state: &StateDir) -> anyhow::Result<()> {
-    match cli.command {
+pub fn run(cli: Cli, state: &StateDir) -> anyhow::Result<ExitCode> {
+    let done = match cli.command {
+        Command::Cde { command } => return run_cde(command, state),
         Command::Status { json } => cmd::status::run(state, json),
         Command::Task { command } => run_task(command, state),
         Command::Requests { command, json } => match command {
@@ -179,7 +200,6 @@ pub fn run(cli: Cli, state: &StateDir) -> anyhow::Result<()> {
             Some(RequestsCommand::Consume { req_id }) => cmd::requests::run_consume(state, &req_id),
         },
         Command::Dispatch
-        | Command::Cde
         | Command::Inventory
         | Command::Sessions
         | Command::Watch
@@ -188,6 +208,17 @@ pub fn run(cli: Cli, state: &StateDir) -> anyhow::Result<()> {
         | Command::Hook
         | Command::Up
         | Command::Attach => anyhow::bail!("not implemented"),
+    };
+    done.map(|()| ExitCode::SUCCESS)
+}
+
+fn run_cde(command: CdeCommand, state: &StateDir) -> anyhow::Result<ExitCode> {
+    match command {
+        CdeCommand::List { json } => cmd::cde::run_list(state, json).map(|()| ExitCode::SUCCESS),
+        CdeCommand::Run { name, argv } => {
+            let status = cmd::cde::run_command(state, &name, &argv)?;
+            Ok(ExitCode::from(u8::try_from(status).unwrap_or(u8::MAX)))
+        }
     }
 }
 

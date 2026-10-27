@@ -1,6 +1,7 @@
 //! Subcommand implementations. Read commands render compact text, or raw serde JSON of the same
 //! data when asked.
 
+pub mod cde;
 pub mod requests;
 pub mod status;
 pub mod task_brief;
