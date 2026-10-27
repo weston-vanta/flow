@@ -119,7 +119,7 @@ fn start(state: &StateDir, herdr: &Herdr, here: &Host, state_root: &Path) -> any
     let Some(session) = &lock.claude_session else {
         return Err(err);
     };
-    let pane_text = match herdr.read(here, &lock.herdr.pane_id, handshake::PANE_LINES) {
+    let pane_text = match herdr.pane_read(here, &lock.herdr.pane_id, handshake::PANE_LINES) {
         Ok(text) => text,
         Err(read_err) => {
             eprintln!(

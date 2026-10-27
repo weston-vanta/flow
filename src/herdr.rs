@@ -502,6 +502,18 @@ impl Herdr {
     }
 
     /// The last `lines` lines of the agent's terminal as plain text.
+    /// The last `lines` lines of the terminal in `pane_id`, whether or not herdr sees an agent
+    /// there.
+    pub fn pane_read(&self, host: &Host, pane_id: &str, lines: u32) -> anyhow::Result<String> {
+        let lines = lines.to_string();
+        let argv = self.argv(&[
+            "pane", "read", pane_id, "--lines", &lines, "--format", "text",
+        ]);
+        Ok(self.call(host, &argv)?.stdout)
+    }
+
+    /// The last `lines` lines of the agent's screen in `pane_id`; fails with `agent_not_found`
+    /// when herdr sees no agent there.
     pub fn read(&self, host: &Host, pane_id: &str, lines: u32) -> anyhow::Result<String> {
         let lines = lines.to_string();
         let argv = self.argv(&[
@@ -1226,6 +1238,30 @@ mod tests {
                 "--session",
                 "flow",
                 "agent",
+                "read",
+                "w2:p1",
+                "--lines",
+                "40",
+                "--format",
+                "text",
+            ])]
+        );
+    }
+
+    #[test]
+    fn pane_read_reads_the_terminal_without_an_agent() {
+        let (herdr, fake) = herdr(vec![ok("$ claude --resume s9\nNo conversation found\n")]);
+        assert_eq!(
+            herdr.pane_read(&host(), "w2:p1", 40).unwrap(),
+            "$ claude --resume s9\nNo conversation found\n"
+        );
+        assert_eq!(
+            argvs(&fake),
+            [words(&[
+                "herdr",
+                "--session",
+                "flow",
+                "pane",
                 "read",
                 "w2:p1",
                 "--lines",

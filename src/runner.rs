@@ -228,6 +228,9 @@ fn exit_code(status: ExitStatus) -> i32 {
 pub struct Scripted {
     /// Only calls to the host with this name use the entry; absent matches every host.
     pub host: Option<String>,
+    /// Only calls whose argv holds these words in a row use the entry; absent matches every
+    /// call.
+    pub argv: Option<Vec<String>>,
     pub status: i32,
     pub stdout: String,
     pub stderr: String,
@@ -299,7 +302,11 @@ impl FakeRunner {
 
         let mut script = self.script.lock().expect("script lock");
         let Some((entry, used)) = script.iter_mut().find(|(entry, used)| {
-            !*used && entry.host.as_deref().is_none_or(|name| name == host.name)
+            !*used
+                && entry.host.as_deref().is_none_or(|name| name == host.name)
+                && entry.argv.as_deref().is_none_or(|words| {
+                    words.is_empty() || argv.windows(words.len()).any(|window| window == words)
+                })
         }) else {
             bail!(
                 "fake runner has no scripted output for {argv:?} on {}",
@@ -493,6 +500,28 @@ mod tests {
         assert_eq!(run_stdout(&fake, &b).unwrap(), "b2");
         let err = run_stdout(&fake, &a).unwrap_err().to_string();
         assert!(err.contains("host-a") && err.contains("\"true\""), "{err}");
+    }
+
+    #[test]
+    fn fake_entry_with_argv_answers_only_calls_holding_those_words() {
+        let fake = FakeRunner::new(vec![
+            Scripted {
+                argv: Some(words(&["agent", "read"])),
+                stdout: "agent".to_owned(),
+                repeat: true,
+                ..Scripted::default()
+            },
+            Scripted {
+                stdout: "other".to_owned(),
+                ..Scripted::default()
+            },
+        ]);
+        let a = host("host-a", "env-0001");
+        let run = |argv: &[&str]| fake.run(&a, &words(argv), None).unwrap().stdout;
+
+        assert_eq!(run(&["herdr", "pane", "read", "w1:p1"]), "other");
+        assert_eq!(run(&["herdr", "agent", "read", "w1:p1"]), "agent");
+        assert_eq!(run(&["herdr", "agent", "read", "w1:p1"]), "agent");
     }
 
     #[test]

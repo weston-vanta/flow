@@ -148,6 +148,14 @@ fn supervisor_agents() -> String {
     list
 }
 
+/// Answers every `agent read` as herdr does for a pane with no agent in it.
+fn agent_read_fails() -> Value {
+    json!({
+        "argv": ["agent", "read"], "repeat": true, "status": 1, "stdout": "",
+        "stderr": r#"{"error":{"code":"agent_not_found","message":"agent target w3:p1 not found"},"id":"cli:agent:read"}"#,
+    })
+}
+
 fn wait_reports(status: &str) -> Value {
     ok(&AGENT_GET.replace(
         r#""agent_status":"working""#,
@@ -391,6 +399,9 @@ fn up_starts_fresh_session_when_resume_fails() {
         ok(WORKSPACE_CLOSED),
     ];
     script.extend(fresh_start().into_iter().skip(1));
+    // herdr's `agent read` fails once Claude Code has exited, so the pane must be read as a
+    // terminal.
+    script.insert(0, agent_read_fails());
 
     let out = fx
         .flow(&script)
@@ -412,6 +423,10 @@ fn up_starts_fresh_session_when_resume_fails() {
     assert!(lines[1].ends_with(START_PROMPT), "{}", lines[1]);
     assert!(
         has_subcommand(&calls, &["workspace", "close", "w3"]),
+        "{calls:?}"
+    );
+    assert!(
+        has_subcommand(&calls, &["pane", "read", NEW_PANE]),
         "{calls:?}"
     );
     let stderr = String::from_utf8(out.stderr).unwrap();
@@ -438,6 +453,7 @@ fn up_keeps_the_session_when_a_resume_fails_for_another_reason() {
         ok(SERVER_RUNNING),
         ok(WORKSPACE_CREATE),
         ok(PANE_RUN_OK),
+        agent_read_fails(),
         failed(AGENT_WAIT_TIMEOUT),
         ok("$ claude --resume s9\n Loading conversation…\n"),
     ];
@@ -457,7 +473,7 @@ fn up_keeps_the_session_when_a_resume_fails_for_another_reason() {
         "{calls:?}"
     );
     assert!(
-        has_subcommand(&calls, &["agent", "read", NEW_PANE]),
+        has_subcommand(&calls, &["pane", "read", NEW_PANE]),
         "{calls:?}"
     );
     let stderr = String::from_utf8(out.stderr).unwrap();
