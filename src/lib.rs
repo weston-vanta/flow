@@ -1,3 +1,4 @@
+pub mod adopt;
 pub mod cde;
 pub mod cmd;
 pub mod harness;

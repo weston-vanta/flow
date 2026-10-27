@@ -57,8 +57,26 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// List agent sessions across CDEs
-    Sessions,
+    /// List herdr agents across CDEs, with their tasks or as adopted sessions
+    Sessions {
+        /// Print raw JSON instead of the compact view
+        #[arg(long)]
+        json: bool,
+    },
+    /// Wake the supervisor when an adopted session changes state
+    Follow {
+        /// CDE the session runs on
+        cde: String,
+        /// herdr pane the session runs in, as `flow sessions` shows it
+        pane_id: String,
+    },
+    /// Stop waking the supervisor for an adopted session
+    Unfollow {
+        /// CDE the session runs on
+        cde: String,
+        /// herdr pane the session runs in
+        pane_id: String,
+    },
     /// Watch tasks and exit when the supervisor should wake
     Watch,
     /// Drain and acknowledge queued wakes
@@ -287,12 +305,12 @@ pub fn run(cli: Cli, state: &StateDir) -> anyhow::Result<ExitCode> {
         },
         Command::Dispatch(args) => cmd::dispatch::run(state, &args.try_into()?),
         Command::Inventory { refresh, json } => cmd::inventory::run(state, refresh, json),
-        Command::Sessions
-        | Command::Watch
-        | Command::Wake
-        | Command::Guard
-        | Command::Up
-        | Command::Attach => anyhow::bail!("not implemented"),
+        Command::Sessions { json } => cmd::sessions::run(state, json),
+        Command::Follow { cde, pane_id } => cmd::sessions::run_follow(state, &cde, &pane_id),
+        Command::Unfollow { cde, pane_id } => cmd::sessions::run_unfollow(state, &cde, &pane_id),
+        Command::Watch | Command::Wake | Command::Guard | Command::Up | Command::Attach => {
+            anyhow::bail!("not implemented")
+        }
     };
     done.map(|()| ExitCode::SUCCESS)
 }

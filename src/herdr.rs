@@ -1,6 +1,6 @@
 //! Typed access to the herdr CLI on a CDE. Every call goes through a `Runner`, so the same code
 //! drives herdr on this machine or over ssh, and every call names the herdr session explicitly
-//! so flow never touches the user's default session.
+//! so flow touches another session, such as the user's default one, only where it asks to.
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -27,6 +27,10 @@ pub const KEY_DOWN: &str = "down";
 
 /// The `error.code` herdr reports when a wait's `--timeout` expires.
 const TIMEOUT_CODE: &str = "timeout";
+/// The `error.code` herdr reports when no server runs for the session.
+const SERVER_NOT_RUNNING_CODE: &str = "server_not_running";
+/// How every error from a call that ssh could not deliver starts.
+const UNREACHABLE_PREFIX: &str = "cde unreachable:";
 
 const SERVER_START_TIMEOUT: Duration = Duration::from_secs(10);
 const SERVER_POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -68,6 +72,14 @@ pub struct Agent {
     pub cwd: PathBuf,
     /// The terminal title without herdr's status glyph.
     pub title: String,
+    /// The herdr session the agent's pane lives in. Pane ids are unique only within a session.
+    /// Inventories cached before sessions were recorded held only flow's own agents.
+    #[serde(default = "flow_session")]
+    pub session: String,
+}
+
+fn flow_session() -> String {
+    SESSION.to_owned()
 }
 
 // Response shapes, pinned against `herdr api schema --json` at protocol 22. Every CLI command
@@ -106,18 +118,19 @@ struct AgentInfo {
     terminal_title_stripped: Option<String>,
 }
 
-impl From<AgentInfo> for Agent {
-    fn from(info: AgentInfo) -> Agent {
+impl AgentInfo {
+    fn into_agent(self, session: &str) -> Agent {
         Agent {
-            pane_id: info.pane_id,
-            workspace_id: info.workspace_id,
-            agent: info.agent.unwrap_or_default(),
-            status: info.agent_status,
-            cwd: info.cwd.unwrap_or_default(),
-            title: info
+            pane_id: self.pane_id,
+            workspace_id: self.workspace_id,
+            agent: self.agent.unwrap_or_default(),
+            status: self.agent_status,
+            cwd: self.cwd.unwrap_or_default(),
+            title: self
                 .terminal_title_stripped
-                .or(info.terminal_title)
+                .or(self.terminal_title)
                 .unwrap_or_default(),
+            session: session.to_owned(),
         }
     }
 }
@@ -202,7 +215,8 @@ impl Herdr {
         Herdr::with_session(runner, SESSION)
     }
 
-    /// herdr in another session, for throwaway sessions such as live smoke checks.
+    /// herdr in another session, such as the one the user starts sessions in by hand or a
+    /// throwaway one for live smoke checks.
     pub fn with_session(runner: Arc<dyn Runner>, session: &str) -> Herdr {
         Herdr {
             runner,
@@ -258,7 +272,7 @@ impl Herdr {
         match status.code() {
             Some(0) => Ok(()),
             Some(SSH_FAILURE_STATUS) => bail!(
-                "cde unreachable: {} while starting the herdr server",
+                "{UNREACHABLE_PREFIX} {} while starting the herdr server",
                 cde.name
             ),
             _ => bail!("`{}` on {} failed: {status}", argv.join(" "), cde.name),
@@ -267,7 +281,25 @@ impl Herdr {
 
     pub fn agents(&self, cde: &Cde) -> anyhow::Result<Vec<Agent>> {
         let list: AgentList = self.call_json(cde, &self.argv(&["agent", "list"]))?;
-        Ok(list.agents.into_iter().map(Agent::from).collect())
+        Ok(self.agents_from(list))
+    }
+
+    /// This session's agents on `cde`, or `None` when no server runs for the session. Unlike
+    /// `agents` after `ensure_server`, this never starts a server.
+    pub fn agents_if_running(&self, cde: &Cde) -> anyhow::Result<Option<Vec<Agent>>> {
+        let argv = self.argv(&["agent", "list"]);
+        let Some(output) = self.call_unless(cde, &argv, SERVER_NOT_RUNNING_CODE)? else {
+            return Ok(None);
+        };
+        let list: AgentList = parse_result(cde, &argv, &output)?;
+        Ok(Some(self.agents_from(list)))
+    }
+
+    fn agents_from(&self, list: AgentList) -> Vec<Agent> {
+        list.agents
+            .into_iter()
+            .map(|info| info.into_agent(&self.session))
+            .collect()
     }
 
     /// Creates a workspace rooted at `cwd` without moving the user's focus, and returns its
@@ -435,16 +467,27 @@ impl Herdr {
     /// Runs `argv` on `cde`: `None` when herdr fails with its `timeout` error code, an error
     /// for any other non-zero exit.
     fn call_or_timeout(&self, cde: &Cde, argv: &[String]) -> anyhow::Result<Option<Output>> {
+        self.call_unless(cde, argv, TIMEOUT_CODE)
+    }
+
+    /// Runs `argv` on `cde`: `None` when herdr fails with error code `code`, an error for any
+    /// other non-zero exit.
+    fn call_unless(
+        &self,
+        cde: &Cde,
+        argv: &[String],
+        code: &str,
+    ) -> anyhow::Result<Option<Output>> {
         let output = self.runner.run(cde, argv, None)?;
         let command = argv.join(" ");
         let stderr = output.stderr.trim();
         if output.status == SSH_FAILURE_STATUS && output.stdout.is_empty() {
-            bail!("cde unreachable: {} (`{command}`): {stderr}", cde.name);
+            bail!("{UNREACHABLE_PREFIX} {} (`{command}`): {stderr}", cde.name);
         }
         if output.status == 0 {
             return Ok(Some(output));
         }
-        if error_code(stderr).as_deref() == Some(TIMEOUT_CODE) {
+        if error_code(stderr).as_deref() == Some(code) {
             return Ok(None);
         }
         bail!(
@@ -457,6 +500,13 @@ impl Herdr {
     fn call_json<T: DeserializeOwned>(&self, cde: &Cde, argv: &[String]) -> anyhow::Result<T> {
         parse_result(cde, argv, &self.call(cde, argv)?)
     }
+}
+
+/// Whether `err`, or an error it wraps, says ssh could not reach the CDE, as opposed to herdr
+/// failing there.
+pub fn is_unreachable(err: &anyhow::Error) -> bool {
+    err.chain()
+        .any(|cause| cause.to_string().starts_with(UNREACHABLE_PREFIX))
 }
 
 fn parse_result<T: DeserializeOwned>(
@@ -521,6 +571,8 @@ mod tests {
 
     const AGENT_LIST: &str = include_str!("../tests/fixtures/herdr/agent_list.json");
     const AGENT_GET: &str = include_str!("../tests/fixtures/herdr/agent_get.json");
+    const AGENT_LIST_SERVER_NOT_RUNNING: &str =
+        include_str!("../tests/fixtures/herdr/agent_list_server_not_running.json");
     const WORKSPACE_CREATE: &str = include_str!("../tests/fixtures/herdr/workspace_create.json");
     const AGENT_WAIT_TIMEOUT: &str =
         include_str!("../tests/fixtures/herdr/agent_wait_timeout.json");
@@ -591,6 +643,7 @@ mod tests {
                     status: AgentStatus::Idle,
                     cwd: PathBuf::from("/workspaces/acme-worktrees/login-form"),
                     title: "Refactor login form".to_owned(),
+                    session: "flow".to_owned(),
                 },
                 Agent {
                     pane_id: "w2:p1".to_owned(),
@@ -599,6 +652,7 @@ mod tests {
                     status: AgentStatus::Working,
                     cwd: PathBuf::from("/workspaces/acme-worktrees/cache-fix"),
                     title: "Fix cache eviction".to_owned(),
+                    session: "flow".to_owned(),
                 },
             ]
         );
@@ -606,6 +660,30 @@ mod tests {
             argvs(&fake),
             [words(&["herdr", "--session", "flow", "agent", "list"])]
         );
+    }
+
+    #[test]
+    fn agents_record_their_session() {
+        let fake = Arc::new(FakeRunner::new(vec![ok(AGENT_LIST)]));
+        let herdr = Herdr::with_session(fake.clone(), "default");
+        let agents = herdr.agents_if_running(&cde()).unwrap().unwrap();
+        assert!(agents.iter().all(|agent| agent.session == "default"));
+        assert_eq!(
+            argvs(&fake),
+            [words(&["herdr", "--session", "default", "agent", "list"])]
+        );
+    }
+
+    #[test]
+    fn agents_if_running_is_none_without_a_server() {
+        let fake = Arc::new(FakeRunner::new(vec![
+            failed(AGENT_LIST_SERVER_NOT_RUNNING),
+            failed(r#"{"error":{"code":"internal","message":"boom"},"id":"cli:agent:list"}"#),
+        ]));
+        let herdr = Herdr::with_session(fake, "default");
+        assert_eq!(herdr.agents_if_running(&cde()).unwrap(), None);
+        let err = herdr.agents_if_running(&cde()).unwrap_err();
+        assert!(!is_unreachable(&err), "{err:#}");
     }
 
     #[test]
@@ -993,7 +1071,9 @@ mod tests {
             stderr: "ssh: connect to host cde-a.example port 22: Connection refused\n".to_owned(),
             ..Scripted::default()
         }]);
-        let err = herdr.agents(&cde()).unwrap_err().to_string();
+        let err = herdr.agents(&cde()).unwrap_err();
+        assert!(is_unreachable(&err), "{err:#}");
+        let err = err.to_string();
         assert!(err.starts_with("cde unreachable:"), "{err}");
         assert!(
             err.contains("cde-a") && err.contains("Connection refused"),

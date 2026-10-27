@@ -12,6 +12,10 @@ pub struct Config {
     pub cdes: Vec<Cde>,
     pub monorepo: Monorepo,
     pub worktree_tool: WorktreeTool,
+    /// The herdr sessions whose agents flow lists: its own session, where workers run, and the
+    /// sessions the user starts sessions in by hand.
+    #[serde(default = "default_herdr_sessions")]
+    pub herdr_sessions: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -38,6 +42,10 @@ pub struct WorktreeTool {
     /// "dirty_files"}, ...]}`.
     #[serde(default = "default_list")]
     pub list: Vec<String>,
+}
+
+fn default_herdr_sessions() -> Vec<String> {
+    ["flow", "default"].map(str::to_owned).to_vec()
 }
 
 fn default_list() -> Vec<String> {

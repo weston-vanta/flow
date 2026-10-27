@@ -1,0 +1,1 @@
+{"id":"cli:agent:list","error":{"code":"server_not_running","message":"no herdr server is running at /home/dev/.config/herdr/herdr.sock; run `herdr session attach default` to start or attach it"}}

@@ -147,4 +147,5 @@ ssh_alias = "cde-b.example"
     assert_eq!(config.monorepo.path, Path::new("/workspaces/example-repo"));
     assert_eq!(config.monorepo.default_branch, "main");
     assert_eq!(config.worktree_tool.create, ["wt", "create", "{branch}"]);
+    assert_eq!(config.herdr_sessions, ["flow", "default"]);
 }

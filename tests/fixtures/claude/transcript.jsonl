@@ -1,0 +1,5 @@
+{"type":"user","message":{"role":"user","content":"Tidy the docs folder."},"timestamp":"2026-10-23T22:00:00.000Z","sessionId":"00000000-0000-4000-8000-000000000001"}
+{"type":"system","subtype":"away_summary","content":"Started tidying the docs folder.","timestamp":"2026-10-23T22:10:00.000Z","sessionId":"00000000-0000-4000-8000-000000000001"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Moved the guides into one folder."}]},"timestamp":"2026-10-23T22:30:00.000Z","sessionId":"00000000-0000-4000-8000-000000000001"}
+{"type":"system","subtype":"away_summary","content":"Moved the guides into one folder and fixed the links between them; waiting for a review of the new index page.","timestamp":"2026-10-23T22:51:58.805Z","sessionId":"00000000-0000-4000-8000-000000000001"}
+{"type":"user","message":{"role":"user","content":"Thanks."},"timestamp":"2026-10-23T23:00:00.000Z","sessionId":"00000000-0000-4000-8000-000000000001"}

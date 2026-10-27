@@ -112,6 +112,14 @@ fn on(cde: &str, stdout: &str) -> Value {
     json!({"cde": cde, "status": 0, "stdout": stdout})
 }
 
+/// `herdr --session default agent list` on `cde` with no default server running.
+fn default_session_stopped(cde: &str) -> Value {
+    json!({
+        "cde": cde, "status": 1, "stdout": "",
+        "stderr": include_str!("fixtures/herdr/agent_list_server_not_running.json"),
+    })
+}
+
 /// Every probe of `cde-a` succeeding, in call order.
 fn cde_a_probes() -> Vec<Value> {
     vec![
@@ -120,6 +128,7 @@ fn cde_a_probes() -> Vec<Value> {
         on("cde-a", LOADAVG),
         on("cde-a", SERVER_RUNNING),
         on("cde-a", AGENT_LIST),
+        default_session_stopped("cde-a"),
     ]
 }
 
@@ -220,6 +229,7 @@ fn refresh_parses_worktrees_load_and_joins_prs() {
             &words(&["cat", "/proc/loadavg"]),
             &words(&["herdr", "--session", "flow", "status", "server"]),
             &words(&["herdr", "--session", "flow", "agent", "list"]),
+            &words(&["herdr", "--session", "default", "agent", "list"]),
             &in_monorepo(&[
                 "gh",
                 "pr",

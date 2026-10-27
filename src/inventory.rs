@@ -10,7 +10,7 @@ use anyhow::{Context, anyhow, bail};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use crate::herdr::{Agent, Herdr};
+use crate::herdr::{self, Agent, Herdr};
 use crate::paths::StateDir;
 use crate::runner::{Output, Runner};
 use crate::state::config::{Cde, WorktreeTool};
@@ -50,7 +50,7 @@ pub struct CdeInventory {
     /// Why the worktree tool's list failed; `busy` and `dirty_files` are then unknown.
     #[serde(default)]
     pub tool_error: Option<String>,
-    /// Why herdr could not be asked for agents; `agents` is then empty.
+    /// Why herdr could not be asked for some session's agents; `agents` then lacks them.
     #[serde(default)]
     pub herdr_error: Option<String>,
     /// Why open PRs could not be listed; `prs` then holds the previously cached PRs.
@@ -76,6 +76,16 @@ pub struct Pr {
     pub url: String,
     /// GitHub's state name, such as `OPEN`.
     pub state: String,
+}
+
+/// The agents herdr reports on one CDE across sessions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HerdrAgents {
+    pub agents: Vec<Agent>,
+    /// Why some session could not be asked; its agents are missing from `agents`.
+    pub error: Option<String>,
+    /// ssh could not reach the CDE, so the sessions after the failing one were not asked.
+    pub unreachable: bool,
 }
 
 /// The CDE did not answer: ssh itself failed, or no probe could run at all.
@@ -109,15 +119,16 @@ struct GhPr {
     state: String,
 }
 
-/// Probes `cde` for its worktrees, load, and herdr agents. Fails with `Unreachable` when ssh
-/// fails on the first call or no probe runs at all, and with another error when git cannot list
-/// the worktrees. The worktree tool and herdr failing are recorded on the inventory instead.
-/// `prs` is left empty for `join_prs`.
+/// Probes `cde` for its worktrees, load, and the agents in `herdr_sessions`. Fails with
+/// `Unreachable` when ssh fails on the first call or no probe runs at all, and with another
+/// error when git cannot list the worktrees. The worktree tool and herdr failing are recorded on
+/// the inventory instead. `prs` is left empty for `join_prs`.
 pub fn refresh(
     runner: &Arc<dyn Runner>,
     cde: &Cde,
     monorepo: &Path,
     tool: &WorktreeTool,
+    herdr_sessions: &[String],
     now: Timestamp,
 ) -> anyhow::Result<CdeInventory> {
     let git_argv = words(&["git", "-C", &monorepo.display().to_string()])
@@ -162,11 +173,11 @@ pub fn refresh(
         .filter(|output| output.status == 0)
         .and_then(|output| parse_load1(&output.stdout));
 
-    let herdr = Herdr::new(runner.clone());
-    let (agents, herdr_error) = match herdr.ensure_server(cde).and_then(|()| herdr.agents(cde)) {
-        Ok(agents) => (agents, None),
-        Err(err) => (Vec::new(), Some(format!("{err:#}"))),
-    };
+    let HerdrAgents {
+        agents,
+        error: herdr_error,
+        ..
+    } = herdr_agents(runner, cde, herdr_sessions);
 
     Ok(CdeInventory {
         name: cde.name.clone(),
@@ -181,6 +192,72 @@ pub fn refresh(
         herdr_error,
         pr_error: None,
     })
+}
+
+/// The agents in each of `sessions` on `cde`, in session order. flow's own session is started
+/// when it is not running; another session without a server has no agents. A session whose
+/// server cannot be asked is recorded in `error`, and asking stops at the first session ssh
+/// cannot reach.
+pub fn herdr_agents(runner: &Arc<dyn Runner>, cde: &Cde, sessions: &[String]) -> HerdrAgents {
+    let mut agents = Vec::new();
+    let mut errors = Vec::new();
+    let mut unreachable = false;
+    for session in sessions {
+        let herdr = Herdr::with_session(runner.clone(), session);
+        let found = if session == herdr::SESSION {
+            herdr.ensure_server(cde).and_then(|()| herdr.agents(cde))
+        } else {
+            herdr
+                .agents_if_running(cde)
+                .map(Option::unwrap_or_default)
+                .with_context(|| format!("herdr session {session}"))
+        };
+        match found {
+            Ok(found) => agents.extend(found),
+            Err(err) => {
+                errors.push(format!("{err:#}"));
+                if herdr::is_unreachable(&err) {
+                    unreachable = true;
+                    break;
+                }
+            }
+        }
+    }
+    HerdrAgents {
+        agents,
+        error: (!errors.is_empty()).then(|| errors.join("; ")),
+        unreachable,
+    }
+}
+
+/// `cached` with its agents replaced by `found` as of `now`, or, with nothing cached, an
+/// inventory of only those agents. Nothing else in a cached inventory changes.
+pub fn with_agents(
+    cde: &Cde,
+    cached: Option<CdeInventory>,
+    found: HerdrAgents,
+    now: Timestamp,
+) -> CdeInventory {
+    match cached {
+        Some(cached) => CdeInventory {
+            seen: now,
+            agents: found.agents,
+            ..cached
+        },
+        None => CdeInventory {
+            name: cde.name.clone(),
+            env_id: cde.env_id.clone(),
+            seen: now,
+            reachable: true,
+            load1: None,
+            worktrees: Vec::new(),
+            agents: found.agents,
+            prs: Vec::new(),
+            tool_error: None,
+            herdr_error: found.error,
+            pr_error: None,
+        },
+    }
 }
 
 /// The inventory of a CDE that did not answer: the cached worktrees, agents, PRs, and PR error as
@@ -468,6 +545,30 @@ detached
         }
     }
 
+    const SERVER_RUNNING: &str = "status: running\nprivate_protocol: 22\n";
+    const AGENT_LIST: &str = include_str!("../tests/fixtures/herdr/agent_list.json");
+    const AGENT_LIST_SERVER_NOT_RUNNING: &str =
+        include_str!("../tests/fixtures/herdr/agent_list_server_not_running.json");
+
+    fn sessions() -> Vec<String> {
+        words(&["flow", "default"])
+    }
+
+    fn ok(stdout: &str) -> Scripted {
+        Scripted {
+            stdout: stdout.to_owned(),
+            ..Scripted::default()
+        }
+    }
+
+    fn failed(status: i32, stderr: &str) -> Scripted {
+        Scripted {
+            status,
+            stderr: stderr.to_owned(),
+            ..Scripted::default()
+        }
+    }
+
     fn refresh_with(script: Vec<Scripted>) -> anyhow::Result<CdeInventory> {
         let runner: Arc<dyn Runner> = Arc::new(FakeRunner::new(script));
         refresh(
@@ -475,8 +576,44 @@ detached
             &cde(),
             Path::new("/workspaces/acme"),
             &tool(),
+            &sessions(),
             Timestamp::UNIX_EPOCH,
         )
+    }
+
+    fn herdr_agents_with(script: Vec<Scripted>) -> HerdrAgents {
+        let runner: Arc<dyn Runner> = Arc::new(FakeRunner::new(script));
+        herdr_agents(&runner, &cde(), &sessions())
+    }
+
+    #[test]
+    fn herdr_agents_span_sessions_and_skip_a_stopped_one() {
+        let both = herdr_agents_with(vec![ok(SERVER_RUNNING), ok(AGENT_LIST), ok(AGENT_LIST)]);
+        let sessions: Vec<&str> = both.agents.iter().map(|a| a.session.as_str()).collect();
+        assert_eq!(sessions, ["flow", "flow", "default", "default"]);
+        assert_eq!(both.error, None);
+
+        let stopped = herdr_agents_with(vec![
+            ok(SERVER_RUNNING),
+            ok(AGENT_LIST),
+            failed(1, AGENT_LIST_SERVER_NOT_RUNNING),
+        ]);
+        assert_eq!(stopped.agents.len(), 2);
+        assert_eq!(stopped.error, None);
+        assert!(!stopped.unreachable);
+    }
+
+    #[test]
+    fn herdr_agents_stop_at_an_unreachable_cde() {
+        let found = herdr_agents_with(vec![failed(
+            255,
+            "ssh: connect to host: Connection refused\n",
+        )]);
+        assert!(found.unreachable);
+        assert!(found.agents.is_empty());
+        let error = found.error.unwrap();
+        assert!(error.starts_with("cde unreachable: cde-a"), "{error}");
+        assert!(!error.contains("session default"), "{error}");
     }
 
     #[test]
@@ -487,19 +624,12 @@ detached
 
     #[test]
     fn tool_and_herdr_failures_are_recorded() {
-        let ok = |stdout: &str| Scripted {
-            stdout: stdout.to_owned(),
-            ..Scripted::default()
-        };
         let inventory = refresh_with(vec![
             ok(PORCELAIN),
-            Scripted {
-                status: 127,
-                stderr: "zsh: command not found: wt\n".to_owned(),
-                ..Scripted::default()
-            },
+            failed(127, "zsh: command not found: wt\n"),
             ok("1.75 0.38 0.68 2/1501 1003799\n"),
             ok("garbage\n"),
+            failed(1, AGENT_LIST_SERVER_NOT_RUNNING),
         ])
         .unwrap();
 
@@ -510,6 +640,7 @@ detached
         assert!(tool_error.contains("command not found: wt"), "{tool_error}");
         let herdr_error = inventory.herdr_error.unwrap();
         assert!(herdr_error.contains("herdr server status"), "{herdr_error}");
+        assert!(!herdr_error.contains("session default"), "{herdr_error}");
         assert!(inventory.agents.is_empty());
     }
 }

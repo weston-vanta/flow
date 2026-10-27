@@ -1,0 +1,391 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use assert_cmd::Command;
+use flow::paths::StateDir;
+use flow::state::Store;
+use flow::state::task::{ClaudeSession, Harness, HerdrTarget, State, TaskRecord};
+use jiff::Timestamp;
+use serde_json::{Value, json};
+
+const CONFIG: &str = r#"
+worktree_tool = { create = ["wt", "create", "{branch}"] }
+
+[monorepo]
+path = "/work/repo"
+default_branch = "main"
+
+[[cdes]]
+name = "cde-a"
+env_id = "env-0001"
+ssh_alias = "cde-a.example"
+
+[[cdes]]
+name = "cde-b"
+env_id = "env-0002"
+ssh_alias = "cde-b.example"
+"#;
+
+const SERVER_RUNNING: &str = "status: running\nversion: 0.9.5\nendpoint_compatible: yes\n\
+     private_protocol: 22\nprivate_protocol_compatible: yes\n\
+     socket: /home/dev/.config/herdr/sessions/flow/herdr.sock\n";
+
+const FLOW_AGENTS: &str = r#"{"id":"cli:agent:list","result":{"agents":[{"agent":"claude","agent_status":"working","cwd":"/work/repo.wt/feature","pane_id":"w1:p1","terminal_title":"✳ Build feature","terminal_title_stripped":"Build feature","workspace_id":"w1"}],"type":"agent_list"}}"#;
+
+const DEFAULT_AGENTS: &str = r#"{"id":"cli:agent:list","result":{"agents":[{"agent":"claude","agent_status":"idle","cwd":"/work/repo","pane_id":"w1:p1","terminal_title":"✳ Tidy docs","terminal_title_stripped":"Tidy docs","workspace_id":"w1"}],"type":"agent_list"}}"#;
+
+const HAND_SESSION_ID: &str = "00000000-0000-4000-8000-000000000001";
+const TASK_SESSION_ID: &str = "00000000-0000-4000-8000-000000000002";
+const TASK_ID: &str = "aaaaaaab";
+
+struct Fixture {
+    dir: tempfile::TempDir,
+    state: PathBuf,
+}
+
+impl Fixture {
+    /// A state dir with `CONFIG`, a Claude home holding the registry and transcript fixtures for
+    /// a hand session in `/work/repo`, and one task whose worker runs in flow's pane `w1:p1` on
+    /// `cde-a`.
+    fn new() -> Fixture {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        fs::create_dir(&state).unwrap();
+        fs::write(state.join("config.toml"), CONFIG).unwrap();
+
+        let claude_fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude");
+        let home = dir.path().join("claude");
+        fs::create_dir_all(home.join("sessions")).unwrap();
+        fs::copy(
+            claude_fixtures.join("sessions/1.json"),
+            home.join("sessions/1.json"),
+        )
+        .unwrap();
+        let project = home.join("projects/-work-repo");
+        fs::create_dir_all(&project).unwrap();
+        fs::copy(
+            claude_fixtures.join("transcript.jsonl"),
+            project.join(format!("{HAND_SESSION_ID}.jsonl")),
+        )
+        .unwrap();
+
+        let store = Store::open(&StateDir::resolve(dir.path()).unwrap());
+        store
+            .create_task(
+                TaskRecord {
+                    id: TASK_ID.to_owned(),
+                    parent: None,
+                    title: "Build feature".to_owned(),
+                    cde: "cde-a".to_owned(),
+                    worktree: PathBuf::from("/work/repo.wt/feature"),
+                    harness: Harness::Claude,
+                    created: Timestamp::now(),
+                    owner: "supervisor".to_owned(),
+                },
+                "brief",
+            )
+            .unwrap();
+        store
+            .set_status(TASK_ID, |status| {
+                status.state = State::Working;
+                status.herdr = Some(HerdrTarget {
+                    cde: "cde-a".to_owned(),
+                    workspace_id: "w1".to_owned(),
+                    pane_id: "w1:p1".to_owned(),
+                    agent: "claude".to_owned(),
+                });
+                status.claude_session = Some(ClaudeSession {
+                    session_id: TASK_SESSION_ID.to_owned(),
+                    transcript_path: home.join(format!("projects/x/{TASK_SESSION_ID}.jsonl")),
+                });
+            })
+            .unwrap();
+        Fixture { dir, state }
+    }
+
+    fn script_path(&self) -> PathBuf {
+        self.dir.path().join("runner.json")
+    }
+
+    fn flow(&self, script: &[Value]) -> Command {
+        fs::write(self.script_path(), Value::from(script.to_vec()).to_string()).unwrap();
+        let mut cmd = Command::cargo_bin("flow").expect("flow binary is built");
+        cmd.env("FLOW_STATE", &self.state)
+            .env("ONA_ID", "env-0001")
+            .env("FLOW_FAKE_RUNNER", self.script_path())
+            .env("HOME", self.dir.path())
+            .env("CLAUDE_CONFIG_DIR", self.dir.path().join("claude"));
+        cmd
+    }
+
+    fn calls(&self) -> Vec<(String, Vec<String>)> {
+        let mut log = self.script_path().into_os_string();
+        log.push(".calls.jsonl");
+        fs::read_to_string(log)
+            .unwrap_or_default()
+            .lines()
+            .map(|line| {
+                let call: Value = serde_json::from_str(line).unwrap();
+                (
+                    call["cde"].as_str().unwrap().to_owned(),
+                    serde_json::from_value(call["argv"].clone()).unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    fn cache_path(&self, env_id: &str) -> PathBuf {
+        self.state.join("cdes").join(format!("{env_id}.json"))
+    }
+
+    fn cached(&self, env_id: &str) -> Value {
+        serde_json::from_str(&fs::read_to_string(self.cache_path(env_id)).unwrap()).unwrap()
+    }
+
+    fn write_cache(&self, env_id: &str, inventory: &Value) {
+        fs::create_dir_all(self.state.join("cdes")).unwrap();
+        fs::write(self.cache_path(env_id), inventory.to_string()).unwrap();
+    }
+
+    fn follow_list(&self) -> Value {
+        let path = self.state.join("supervisor/follow.json");
+        serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    fn single_cde(&self) {
+        let config = CONFIG
+            .split("[[cdes]]")
+            .take(2)
+            .collect::<Vec<_>>()
+            .join("[[cdes]]");
+        fs::write(self.state.join("config.toml"), config).unwrap();
+    }
+}
+
+fn on(cde: &str, stdout: &str) -> Value {
+    json!({"cde": cde, "status": 0, "stdout": stdout})
+}
+
+fn default_not_running(cde: &str) -> Value {
+    json!({
+        "cde": cde, "status": 1, "stdout": "",
+        "stderr": include_str!("fixtures/herdr/agent_list_server_not_running.json"),
+    })
+}
+
+fn cde_a_agents() -> Vec<Value> {
+    vec![
+        on("cde-a", SERVER_RUNNING),
+        on("cde-a", FLOW_AGENTS),
+        on("cde-a", DEFAULT_AGENTS),
+    ]
+}
+
+fn words(items: &[&str]) -> Vec<String> {
+    items.iter().map(|w| (*w).to_owned()).collect()
+}
+
+fn stdout_of(cmd: &mut Command) -> String {
+    let out = cmd.assert().success().get_output().clone();
+    assert!(
+        out.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap()
+}
+
+/// A cached inventory of `cde-b` holding one hand session in pane `w5:p1`.
+fn cde_b_cache() -> Value {
+    json!({
+        "name": "cde-b", "env_id": "env-0002", "seen": "2026-10-26T09:00:00Z",
+        "reachable": true, "load1": 0.5,
+        "worktrees": [{"path": "/work/repo", "branch": "main", "busy": null, "dirty_files": null}],
+        "agents": [{
+            "pane_id": "w5:p1", "workspace_id": "w5", "agent": "claude", "status": "blocked",
+            "cwd": "/work/other", "title": "Upgrade toolchain", "session": "default",
+        }],
+        "prs": [], "tool_error": null, "herdr_error": null, "pr_error": null,
+    })
+}
+
+#[test]
+fn sessions_lists_adopted_with_summary() {
+    let fx = Fixture::new();
+    fx.single_cde();
+
+    let stdout = stdout_of(fx.flow(&cde_a_agents()).arg("sessions"));
+
+    assert_eq!(
+        stdout,
+        "cde-a  w1:p1  working  aaaaaaab  Build feature\n\
+         cde-a  w1:p1  idle     adopted   Tidy docs      Moved the guides into one folder and \
+         fixed the links between them; waiting for …\n"
+    );
+    let argvs: Vec<Vec<String>> = fx.calls().into_iter().map(|(_, argv)| argv).collect();
+    assert_eq!(
+        argvs,
+        [
+            words(&["herdr", "--session", "flow", "status", "server"]),
+            words(&["herdr", "--session", "flow", "agent", "list"]),
+            words(&["herdr", "--session", "default", "agent", "list"]),
+        ]
+    );
+
+    let cached = fx.cached("env-0001");
+    assert_eq!(cached["reachable"], true);
+    assert_eq!(cached["worktrees"], json!([]));
+    assert_eq!(cached["prs"], json!([]));
+    let sessions: Vec<&Value> = cached["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|agent| &agent["session"])
+        .collect();
+    assert_eq!(sessions, [&json!("flow"), &json!("default")]);
+
+    let json_out = stdout_of(fx.flow(&cde_a_agents()).args(["sessions", "--json"]));
+    let parsed: Value = serde_json::from_str(&json_out).unwrap();
+    assert_eq!(parsed[0]["task"], TASK_ID);
+    assert_eq!(parsed[1]["task"], Value::Null);
+    assert_eq!(parsed[1]["session"]["session_id"], HAND_SESSION_ID);
+    assert_eq!(parsed[1]["session"]["name"], "tidy-docs");
+    assert!(
+        parsed[1]["summary"]
+            .as_str()
+            .unwrap()
+            .ends_with("review of the new index page."),
+        "{json_out}"
+    );
+}
+
+#[test]
+fn sessions_update_only_agents_in_an_existing_cache() {
+    let fx = Fixture::new();
+    fx.single_cde();
+    let earlier = json!({
+        "name": "cde-a", "env_id": "env-0001", "seen": "2026-10-26T09:00:00Z",
+        "reachable": true, "load1": 1.25,
+        "worktrees": [{"path": "/work/repo", "branch": "main", "busy": null, "dirty_files": null}],
+        "agents": [],
+        "prs": [{"branch": "main", "number": 3, "url": "https://example.com/pull/3", "state": "OPEN"}],
+        "tool_error": "wt: command not found", "herdr_error": null, "pr_error": null,
+    });
+    fx.write_cache("env-0001", &earlier);
+    let script = [
+        on("cde-a", SERVER_RUNNING),
+        on("cde-a", FLOW_AGENTS),
+        default_not_running("cde-a"),
+    ];
+
+    let stdout = stdout_of(fx.flow(&script).arg("sessions"));
+
+    assert_eq!(stdout, "cde-a  w1:p1  working  aaaaaaab  Build feature\n");
+    let cached = fx.cached("env-0001");
+    assert_ne!(cached["seen"], earlier["seen"]);
+    assert_eq!(cached["agents"][0]["pane_id"], "w1:p1");
+    assert_eq!(cached["agents"].as_array().unwrap().len(), 1);
+    for unchanged in ["load1", "worktrees", "prs", "tool_error"] {
+        assert_eq!(cached[unchanged], earlier[unchanged], "{unchanged}");
+    }
+}
+
+#[test]
+fn sessions_fall_back_to_cache_for_unreachable_cde() {
+    let fx = Fixture::new();
+    fx.write_cache("env-0002", &cde_b_cache());
+    let mut script = vec![json!({
+        "cde": "cde-b", "status": 255, "stdout": "", "repeat": true,
+        "stderr": "ssh: Could not resolve hostname cde-b.example: Name or service not known\n",
+    })];
+    script.extend(cde_a_agents());
+
+    let out = fx
+        .flow(&script)
+        .arg("sessions")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert_eq!(stderr.lines().count(), 1, "{stderr}");
+    assert!(stderr.starts_with("cde unreachable: cde-b"), "{stderr}");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 3, "{stdout}");
+    assert_eq!(
+        lines[2],
+        "cde-b  w5:p1  blocked  adopted   Upgrade toolchain"
+    );
+    assert_eq!(fx.cached("env-0002"), cde_b_cache());
+}
+
+#[test]
+fn status_counts_adopted_sessions_from_cache() {
+    let fx = Fixture::new();
+    fx.write_cache("env-0002", &cde_b_cache());
+    let mut cde_a = cde_b_cache();
+    cde_a["name"] = json!("cde-a");
+    cde_a["env_id"] = json!("env-0001");
+    cde_a["agents"] = json!([
+        {"pane_id": "w1:p1", "workspace_id": "w1", "agent": "claude", "status": "working",
+         "cwd": "/work/repo.wt/feature", "title": "Build feature", "session": "flow"},
+        {"pane_id": "w1:p1", "workspace_id": "w1", "agent": "claude", "status": "idle",
+         "cwd": "/work/repo", "title": "Tidy docs", "session": "default"},
+    ]);
+    fx.write_cache("env-0001", &cde_a);
+
+    let stdout = stdout_of(fx.flow(&[]).arg("status"));
+
+    assert_eq!(
+        stdout.lines().last(),
+        Some("adopted: 2 sessions"),
+        "{stdout}"
+    );
+    let json_out = stdout_of(fx.flow(&[]).args(["status", "--json"]));
+    let parsed: Value = serde_json::from_str(&json_out).unwrap();
+    assert_eq!(parsed["adopted"], 2);
+    assert!(fx.calls().is_empty());
+}
+
+#[test]
+fn follow_checks_the_pane_and_is_idempotent() {
+    let fx = Fixture::new();
+    fx.write_cache("env-0002", &cde_b_cache());
+
+    stdout_of(fx.flow(&[]).args(["follow", "cde-b", "w5:p1"]));
+    stdout_of(fx.flow(&[]).args(["follow", "cde-b", "w5:p1"]));
+
+    assert_eq!(
+        fx.follow_list(),
+        json!({"follow": [{"cde": "cde-b", "pane_id": "w5:p1", "session": "default"}]})
+    );
+    fx.flow(&[])
+        .args(["follow", "cde-b", "w9:p9"])
+        .assert()
+        .code(2)
+        .stderr("no agent in pane w9:p9 on cde-b (run flow sessions)\n");
+    fx.flow(&[])
+        .args(["follow", "cde-a", "w5:p1"])
+        .assert()
+        .code(2)
+        .stderr("no agent in pane w5:p1 on cde-a (run flow sessions)\n");
+    assert!(fx.calls().is_empty());
+}
+
+#[test]
+fn unfollow_removes_a_followed_pane() {
+    let fx = Fixture::new();
+    fx.write_cache("env-0002", &cde_b_cache());
+    stdout_of(fx.flow(&[]).args(["follow", "cde-b", "w5:p1"]));
+
+    stdout_of(fx.flow(&[]).args(["unfollow", "cde-b", "w5:p1"]));
+
+    assert_eq!(fx.follow_list(), json!({"follow": []}));
+    fx.flow(&[])
+        .args(["unfollow", "cde-b", "w5:p1"])
+        .assert()
+        .code(2)
+        .stderr("not following w5:p1 on cde-b\n");
+}

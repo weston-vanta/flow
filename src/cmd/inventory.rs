@@ -105,6 +105,7 @@ fn refresh_one(
         cde,
         &config.monorepo.path,
         &config.worktree_tool,
+        &config.herdr_sessions,
         now,
     ) {
         Err(err) if err.is::<Unreachable>() => {
