@@ -18,8 +18,7 @@ send `--branch` work in that repo there.
   the inventory shows this machine busy, pass the least loaded host instead.
 - Work in a repo on a new branch: pass `--branch <name>`; flow creates the worktree with the
   repo's worktree tool, or with `git worktree add` from the repo's default branch when it has
-  none. When several repos are
-  configured, add `--repo <name>`.
+  none. When several repos are configured, add `--repo <name>`.
 - Work in some other existing directory on the host: pass `--dir <absolute path>`.
 - Work that needs no repo (research, preparation, an investigation): pass none of `--dir`,
   `--branch` or `--repo`. The worker runs in the task's own `work/` directory under
