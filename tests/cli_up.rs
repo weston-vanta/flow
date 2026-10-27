@@ -383,6 +383,7 @@ fn up_starts_fresh_session_when_resume_fails() {
         ok(WORKSPACE_CREATE),
         ok(PANE_RUN_OK),
         failed(AGENT_WAIT_TIMEOUT),
+        ok("$ claude --resume s9\nNo conversation found with session ID: s9\n$ \n"),
         ok(WORKSPACE_CLOSED),
     ];
     script.extend(fresh_start().into_iter().skip(1));
@@ -422,6 +423,46 @@ fn up_starts_fresh_session_when_resume_fails() {
             .unwrap()
             .ends_with(&format!("agent attach {NEW_PANE}\n"))
     );
+}
+
+#[test]
+fn up_keeps_the_session_when_a_resume_fails_for_another_reason() {
+    let fx = Fixture::new();
+    fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
+    let script = vec![
+        ok(NO_AGENTS),
+        ok(SERVER_RUNNING),
+        ok(WORKSPACE_CREATE),
+        ok(PANE_RUN_OK),
+        failed(AGENT_WAIT_TIMEOUT),
+        ok("$ claude --resume s9\n Loading conversation…\n"),
+    ];
+
+    let out = fx
+        .flow(&script)
+        .arg("up")
+        .assert()
+        .code(1)
+        .get_output()
+        .clone();
+
+    let calls = fx.calls();
+    assert_eq!(pane_run_lines(&calls).len(), 1, "{calls:?}");
+    assert!(
+        !has_subcommand(&calls, &["workspace", "close"]),
+        "{calls:?}"
+    );
+    assert!(
+        has_subcommand(&calls, &["agent", "read", NEW_PANE]),
+        "{calls:?}"
+    );
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(stderr.contains("did not start within"), "{stderr}");
+    assert!(stderr.contains("left open for inspection"), "{stderr}");
+    assert!(!stderr.contains("starting a fresh"), "{stderr}");
+    let lock = fx.lock().unwrap();
+    assert_eq!(lock.claude_session.as_deref(), Some("s9"));
+    assert_eq!(lock.herdr.pane_id, NEW_PANE);
 }
 
 #[test]

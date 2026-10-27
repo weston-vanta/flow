@@ -98,10 +98,11 @@ fn local_host(live: &[Host]) -> anyhow::Result<&Host> {
         })
 }
 
-/// Starts the supervisor on `here`, resuming the recorded session when there is one. A resume
-/// that does not come up is dropped from the lock and the start retried once without it, since
-/// a session `claude --resume` cannot find would otherwise fail every later `flow up` the same
-/// way.
+/// Starts the supervisor on `here`, resuming the recorded session when there is one. When a
+/// resume does not come up because Claude Code cannot find the session, the session is dropped
+/// from the lock and the start retried once without it, since it would otherwise fail every
+/// later `flow up` the same way. Any other failed resume keeps the session and leaves its
+/// workspace open for inspection.
 fn start(state: &StateDir, herdr: &Herdr, here: &Host) -> anyhow::Result<Lock> {
     herdr.ensure_server(here)?;
     let (lock, started) = launch(state, herdr, here)?;
@@ -112,6 +113,19 @@ fn start(state: &StateDir, herdr: &Herdr, here: &Host) -> anyhow::Result<Lock> {
     let Some(session) = &lock.claude_session else {
         return Err(err);
     };
+    let pane_text = match herdr.read(here, &lock.herdr.pane_id, handshake::PANE_LINES) {
+        Ok(text) => text,
+        Err(read_err) => {
+            eprintln!(
+                "could not read pane {} on {}: {read_err:#}",
+                lock.herdr.pane_id, here.name
+            );
+            String::new()
+        }
+    };
+    if !handshake::session_missing(&pane_text) {
+        return Err(err);
+    }
     eprintln!("{err:#}");
     eprintln!("resume of session {session} failed; starting a fresh supervisor session");
     if let Err(err) = herdr.close_workspace(here, &lock.herdr.workspace_id) {

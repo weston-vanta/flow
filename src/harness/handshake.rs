@@ -15,8 +15,8 @@ const START_TIMEOUT_MS: u64 = 60_000;
 /// milliseconds.
 const POLL_VAR: &str = "FLOW_HANDSHAKE_POLL_MS";
 const DEFAULT_POLL: Duration = Duration::from_secs(1);
-/// Enough of the pane to hold the whole trust dialog.
-const DIALOG_LINES: u32 = 40;
+/// Enough of the pane to hold the whole trust dialog, or Claude's last words before exiting.
+pub const PANE_LINES: u32 = 40;
 /// The trust dialog lists two options, so reaching `Yes` never takes more moves than this.
 const MAX_CURSOR_MOVES: usize = 3;
 
@@ -92,7 +92,7 @@ fn await_start_with(
     if status != AgentStatus::Blocked {
         return Ok(AgentStart::Running);
     }
-    let text = herdr.read(host, pane_id, DIALOG_LINES)?;
+    let text = herdr.read(host, pane_id, PANE_LINES)?;
     let Some(keys) = trust_dialog_keys(&text) else {
         return Ok(AgentStart::BlockedAtStart { pane_text: text });
     };
@@ -133,6 +133,16 @@ fn wait_for_agent(
         );
         left = timing.timeout.saturating_sub(started.elapsed());
     }
+}
+
+/// Whether `text`, read from a pane where `claude --resume` did not come up, shows that Claude
+/// Code could not find the conversation to resume: a line saying "no conversation found", or
+/// one saying "not found" about a resume or a session.
+pub fn session_missing(text: &str) -> bool {
+    text.lines().map(str::to_lowercase).any(|line| {
+        line.contains("no conversation found")
+            || (line.contains("not found") && (line.contains("resume") || line.contains("session")))
+    })
 }
 
 /// The keys that accept Claude's folder-trust dialog shown in `text`: enough `down`s to move
@@ -326,6 +336,23 @@ mod tests {
 
  Enter to confirm · Esc to cancel
 ";
+
+    #[test]
+    fn session_missing_reads_a_failed_resume() {
+        assert!(session_missing(
+            "$ claude --resume s9\nNo conversation found with session ID: s9\n$ "
+        ));
+        assert!(session_missing("Error: session s9 not found\n"));
+        assert!(session_missing("could not RESUME: not found\n"));
+        assert!(!session_missing(""));
+        assert!(!session_missing(
+            "$ claude --resume s9\n Loading conversation…\n"
+        ));
+        assert!(!session_missing("file not found: CLAUDE.md\n"));
+        assert!(!session_missing(
+            "resumed session s9\nError: file not found: CLAUDE.md\n"
+        ));
+    }
 
     #[test]
     fn trust_dialog_keys_moves_cursor_to_yes() {
