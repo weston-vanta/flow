@@ -14,7 +14,7 @@
 //! different one. A task an earlier run never read is replayed from `pending` and an empty
 //! event log, so a worker that finished or asked something before the watcher first saw its
 //! task still wakes the supervisor; only the very first run, with no `watch-state.json` yet,
-//! takes every task as it is.
+//! takes every task as it is. That run writes the file once a cycle has listed the tasks.
 //!
 //! A worker that stops, blocked or done in herdr's terms, after its task reported
 //! `needs-decision` or `blocked` is absorbed: it stopped to wait on the hold that already woke
@@ -199,6 +199,10 @@ struct Watcher<'a> {
     /// Whether a task this run has no `seen` entry for is replayed from `pending`, because an
     /// earlier run saved state and so would have read it had it existed then.
     replay_unseen: bool,
+    /// Whether `watch-state.json` exists for this run. The very first run writes it only after
+    /// a cycle that listed the tasks, so a first run that could not list them leaves the next
+    /// run a first run too, rather than one that replays every task it finds.
+    state_saved: bool,
     /// Whether the last cycle found anything to watch: an open task or a followed session, or
     /// a task list or follow list it could not read.
     watching: bool,
@@ -222,9 +226,6 @@ impl<'a> Watcher<'a> {
         std::fs::create_dir_all(&supervisor)
             .with_context(|| format!("creating {}", supervisor.display()))?;
         let (memory, replay_unseen) = load_watch_state(state)?;
-        if !replay_unseen {
-            write_watch_state(state, &memory)?;
-        }
         Ok(Watcher {
             state,
             store: Store::open(state),
@@ -234,6 +235,7 @@ impl<'a> Watcher<'a> {
             saved: memory.clone(),
             memory,
             replay_unseen,
+            state_saved: replay_unseen,
             watching: true,
             pruned: false,
             waits: BTreeMap::new(),
@@ -247,7 +249,9 @@ impl<'a> Watcher<'a> {
     /// One poll cycle: the wake reason when something woke the supervisor.
     fn cycle(&mut self) -> anyhow::Result<Option<String>> {
         let mut unread = false;
-        let tasks = self.store.list_tasks().unwrap_or_else(|err| {
+        let listed = self.store.list_tasks();
+        let tasks_listed = listed.is_ok();
+        let tasks = listed.unwrap_or_else(|err| {
             self.log(&format!("reading tasks: {err:#}"));
             unread = true;
             Vec::new()
@@ -305,12 +309,12 @@ impl<'a> Watcher<'a> {
                     }
                     queue::push(self.state, &reason, &obs)?;
                     self.log(&format!("wake {reason}"));
-                    self.save()?;
+                    self.save(tasks_listed)?;
                     return Ok(Some(reason));
                 }
             }
         }
-        self.save()?;
+        self.save(tasks_listed)?;
         Ok(None)
     }
 
@@ -616,12 +620,18 @@ impl<'a> Watcher<'a> {
         (since_secs >= self.settings.quiet_secs).then_some(since_secs)
     }
 
-    fn save(&mut self) -> anyhow::Result<()> {
-        if self.memory == self.saved {
+    /// Writes what changed since the last save; `tasks_listed` says whether this cycle read
+    /// the task list, without which a run that never saved writes nothing yet.
+    fn save(&mut self, tasks_listed: bool) -> anyhow::Result<()> {
+        if self.state_saved && self.memory == self.saved {
+            return Ok(());
+        }
+        if !self.state_saved && !tasks_listed {
             return Ok(());
         }
         write_watch_state(self.state, &self.memory)?;
         self.saved = self.memory.clone();
+        self.state_saved = true;
         Ok(())
     }
 
@@ -933,6 +943,33 @@ default_branch = "main"
     }
 
     #[test]
+    fn first_run_whose_listing_fails_stays_a_first_run() {
+        let fx = Fixture::new();
+        fx.task(false);
+        let status = Store::open(&fx.state)
+            .task_dir(TASK)
+            .unwrap()
+            .join("status.json");
+        let good = std::fs::read(&status).unwrap();
+        std::fs::write(&status, "{not json").unwrap();
+        let runner = fake(Vec::new());
+        assert_eq!(
+            fx.watcher(&runner, DEFAULT_QUIET_SECS).cycle().unwrap(),
+            None
+        );
+        assert!(!fx.state.root().join(WATCH_STATE_FILE).exists());
+
+        std::fs::write(&status, good).unwrap();
+        Store::open(&fx.state)
+            .set_status(TASK, |status| status.state = State::Done)
+            .unwrap();
+        let mut next = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+        assert!(!next.replay_unseen);
+        assert_eq!(next.cycle().unwrap(), None);
+        assert!(fx.state.root().join(WATCH_STATE_FILE).exists());
+    }
+
+    #[test]
     fn unreachable_hosts_no_wait_targets_are_forgotten_at_run_start() {
         let fx = Fixture::new();
         fx.task(true);
@@ -1027,9 +1064,10 @@ default_branch = "main"
         let supervisor = fx.state.root().join(SUPERVISOR_DIR);
         std::fs::create_dir_all(&supervisor).unwrap();
         std::fs::write(fx.state.root().join(WATCH_STATE_FILE), "{not json").unwrap();
-        let watcher = fx.watcher(&fake(Vec::new()), DEFAULT_QUIET_SECS);
+        let mut watcher = fx.watcher(&fake(Vec::new()), DEFAULT_QUIET_SECS);
         assert_eq!(watcher.memory, WatchState::default());
         assert!(!watcher.replay_unseen);
+        assert_eq!(watcher.cycle().unwrap(), None);
         let mut names: Vec<String> = std::fs::read_dir(&supervisor)
             .unwrap()
             .map(|entry| entry.unwrap().file_name().into_string().unwrap())
