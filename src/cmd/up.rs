@@ -135,7 +135,8 @@ fn launch(
 fn finish(lock: Lock, started: AgentStart) -> anyhow::Result<Lock> {
     if let AgentStart::BlockedAtStart { .. } = started {
         eprintln!(
-            "supervisor in pane {} is blocked on a prompt other than the trust dialog; answer              it once attached",
+            "supervisor in pane {} is blocked on a prompt other than the trust dialog; \
+             answer it once attached",
             lock.herdr.pane_id
         );
     }
