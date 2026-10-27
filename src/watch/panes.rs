@@ -1,7 +1,8 @@
 //! The herdr `agent wait` `flow watch` keeps running per watched pane: a task's worker or a
 //! followed adopted session. A wait ends on the statuses worth waking for; once one of those
 //! was read, the next wait ends on any other status instead, so a status already observed does
-//! not answer again at once.
+//! not answer again at once. After `working` the next wait also ends on any other status, so a
+//! worker known to be working is known to stop, idle included.
 
 use std::io::Read;
 use std::process::Child;
@@ -92,8 +93,10 @@ pub(super) struct PaneWait {
     herdr: Herdr,
     pub(super) child: Option<Child>,
     /// The status the last wait ended on; the next one waits for a change from it when it is
-    /// one worth waking for, since that was already observed.
+    /// one worth waking for, since that was already observed, or `working`.
     settled: Option<AgentStatus>,
+    /// The agent's status as of the last wait that ended, `None` once a wait could not tell.
+    known: Option<AgentStatus>,
     retry_at: Option<Instant>,
     /// Set once herdr no longer knows the pane; nothing more is asked about it.
     gone: bool,
@@ -116,20 +119,28 @@ impl PaneWait {
             herdr,
             child: None,
             settled: None,
+            known: None,
             retry_at: None,
             gone: false,
         }
+    }
+
+    /// Whether herdr last reported the agent `working` and no wait since ended otherwise.
+    pub(super) fn working(&self) -> bool {
+        self.known == Some(AgentStatus::Working)
     }
 
     /// The statuses the next wait ends on.
     fn until(&self) -> Vec<AgentStatus> {
         let wake = self.spec.wake_statuses();
         match self.settled {
-            Some(settled) if wake.contains(&settled) => WAITABLE_STATUSES
-                .iter()
-                .copied()
-                .filter(|status| *status != settled)
-                .collect(),
+            Some(settled) if wake.contains(&settled) || settled == AgentStatus::Working => {
+                WAITABLE_STATUSES
+                    .iter()
+                    .copied()
+                    .filter(|status| *status != settled)
+                    .collect()
+            }
             _ => wake.to_vec(),
         }
     }
@@ -171,11 +182,13 @@ impl PaneWait {
         match herdr::wait_end(exit.code(), &stdout) {
             WaitEnd::Reached(status) => {
                 self.settled = Some(status);
+                self.known = Some(status);
                 Polled::Reached(status)
             }
             WaitEnd::TimedOut => Polled::TimedOut,
             WaitEnd::Gone => {
                 self.gone = true;
+                self.known = None;
                 Polled::Gone
             }
             WaitEnd::Unreachable => self.back_off(Polled::Unreachable),
@@ -189,6 +202,7 @@ impl PaneWait {
 
     fn back_off(&mut self, polled: Polled) -> Polled {
         self.child = None;
+        self.known = None;
         self.retry_at = Some(Instant::now() + RETRY_AFTER);
         polled
     }
@@ -263,7 +277,7 @@ mod tests {
     }
 
     #[test]
-    fn until_after_a_non_wake_status_waits_for_wake_statuses() {
+    fn until_after_working_waits_for_any_other_status() {
         let (mut wait, _) = task_wait(vec![answer(0, BLOCKED), answer(0, WORKING)]);
         assert!(matches!(
             run_once(&mut wait),
@@ -274,7 +288,30 @@ mod tests {
             run_once(&mut wait),
             Polled::Reached(AgentStatus::Working)
         ));
+        assert_eq!(
+            wait.until(),
+            [AgentStatus::Idle, AgentStatus::Blocked, AgentStatus::Done]
+        );
+    }
+
+    #[test]
+    fn until_after_idle_waits_for_wake_statuses() {
+        let (mut wait, _) = task_wait(Vec::new());
+        wait.settled = Some(AgentStatus::Idle);
         assert_eq!(wait.until(), [AgentStatus::Blocked, AgentStatus::Done]);
+    }
+
+    #[test]
+    fn working_is_known_until_a_wait_ends_otherwise() {
+        let (mut wait, _) = task_wait(vec![answer(0, WORKING), answer(255, "")]);
+        assert!(!wait.working());
+        assert!(matches!(
+            run_once(&mut wait),
+            Polled::Reached(AgentStatus::Working)
+        ));
+        assert!(wait.working());
+        assert!(matches!(run_once(&mut wait), Polled::Unreachable));
+        assert!(!wait.working());
     }
 
     #[test]

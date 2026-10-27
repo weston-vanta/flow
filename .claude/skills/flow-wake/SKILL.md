@@ -23,8 +23,10 @@ one reason; handle every row.
   a question the worker asked through flow. Check `flow task events <id>`; if you cannot tell
   what it waits on, `flow task hold <id> --on user --what "..."` and tell the user which pane
   (`flow task show <id>`) to attach to.
-- `agent-done: <id>`: the worker's session stopped without reporting through flow. Check
-  `flow task events <id>`, then steer it to continue or to report its status.
+- `agent-done: <id>`: the worker's session stopped while its task still reads `working` or
+  `pending`, without reporting through flow. Check `flow task events <id>`, then steer it to
+  continue or to report its status. A worker that stops after reporting `needs-decision` or
+  `blocked` is waiting on its hold and does not wake you.
 - `agent-gone: <id>`: the worker's pane or session disappeared. Check `flow sessions`. If the
   work cannot continue, `flow task orphan <id> --reason "<last known: branch pushed or not>"`
   and ask the user whether to redispatch. Never tear down what is left.

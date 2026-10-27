@@ -16,6 +16,10 @@
 //! task still wakes the supervisor; only the very first run, with no `watch-state.json` yet,
 //! takes every task as it is.
 //!
+//! A worker that stops, blocked or done in herdr's terms, after its task reported
+//! `needs-decision` or `blocked` is absorbed: it stopped to wait on the hold that already woke
+//! the supervisor. A task whose worker herdr last reported `working` does not count as quiet.
+//!
 //! A run with nothing to watch, no open task and no followed session, ends after its first
 //! cycle rather than waiting for the heartbeat.
 
@@ -127,6 +131,24 @@ fn quiet(
             last_event: status.last_event,
         },
     )
+}
+
+/// The task's state when `obs` is its worker stopping, blocked or done, after the task already
+/// reported `needs-decision` or `blocked`: the worker stopped to wait for the answer, and the
+/// status change already woke the supervisor.
+fn escalated(obs: &Observation, tasks: &[(TaskRecord, Status)]) -> Option<State> {
+    let Observation::AgentState {
+        task,
+        status: herdr::AgentStatus::Blocked | herdr::AgentStatus::Done,
+    } = obs
+    else {
+        return None;
+    };
+    tasks
+        .iter()
+        .find(|(rec, _)| rec.id == *task)
+        .map(|(_, status)| status.state)
+        .filter(|state| matches!(state, State::NeedsDecision | State::Blocked))
 }
 
 /// A working-directory check under way for a quiet task.
@@ -251,6 +273,14 @@ impl<'a> Watcher<'a> {
             follow,
         };
         for (obs, progress) in observed {
+            if let Some(state) = escalated(&obs, &tasks) {
+                self.advance(progress, false);
+                self.log(&format!(
+                    "absorb {} (task is {state})",
+                    serde_json::to_string(&obs)?
+                ));
+                continue;
+            }
             let verdict = self
                 .memory
                 .reported
@@ -477,7 +507,8 @@ impl<'a> Watcher<'a> {
     }
 
     /// `Quiet` observations for working or pending tasks without a hold whose last event is
-    /// older than the quiet threshold, unless a wake already reported that quiet spell. Each
+    /// older than the quiet threshold and whose worker herdr does not report `working`, unless
+    /// a wake already reported that quiet spell. Each
     /// such task's working directory is searched for writes after its last event, at most once per
     /// `WORKTREE_CHECK_INTERVAL`, by a check that runs across cycles; the observation comes
     /// when it ends, and only if the task is still quiet the same way.
@@ -499,7 +530,7 @@ impl<'a> Watcher<'a> {
             let still_quiet = tasks
                 .iter()
                 .find(|(rec, status)| rec.id == task && status.last_event == running.last_event)
-                .and_then(|(_, status)| Some((status, self.quiet_since(status, now)?)));
+                .and_then(|(_, status)| Some((status, self.quiet_since(&task, status, now)?)));
             let Some((status, since_secs)) = still_quiet else {
                 continue;
             };
@@ -528,7 +559,7 @@ impl<'a> Watcher<'a> {
             observed.push(quiet(&task, status, since_secs, worktree_written));
         }
         for (rec, status) in tasks {
-            let Some(since_secs) = self.quiet_since(status, now) else {
+            let Some(since_secs) = self.quiet_since(&rec.id, status, now) else {
                 continue;
             };
             if self.memory.quiet_reported.get(&rec.id) == Some(&status.last_event)
@@ -566,9 +597,12 @@ impl<'a> Watcher<'a> {
     }
 
     /// How long the task has been quiet, when it may count as quiet at all: working or
-    /// pending, without a hold, and past the threshold.
-    fn quiet_since(&self, status: &Status, now: Timestamp) -> Option<u64> {
+    /// pending, without a hold, not reported `working` by herdr, and past the threshold.
+    fn quiet_since(&self, task: &str, status: &Status, now: Timestamp) -> Option<u64> {
         if !matches!(status.state, State::Working | State::Pending) || status.hold.is_some() {
+            return None;
+        }
+        if self.waits.get(task).is_some_and(PaneWait::working) {
             return None;
         }
         let since_secs =
@@ -660,6 +694,8 @@ default_branch = "main"
     const TASK: &str = "aaaaaaab";
     const IDLE: &str = r#"{"id":"cli:agent:wait","result":{"agent":{"agent":"claude","agent_status":"idle","pane_id":"w1:p1","workspace_id":"w1"},"type":"agent_info"}}"#;
     const BLOCKED: &str = r#"{"id":"cli:agent:wait","result":{"agent":{"agent":"claude","agent_status":"blocked","pane_id":"w1:p1","workspace_id":"w1"},"type":"agent_info"}}"#;
+    const WORKING: &str = r#"{"id":"cli:agent:wait","result":{"agent":{"agent":"claude","agent_status":"working","pane_id":"w1:p1","workspace_id":"w1"},"type":"agent_info"}}"#;
+    const DONE: &str = r#"{"id":"cli:agent:wait","result":{"agent":{"agent":"claude","agent_status":"done","pane_id":"w1:p1","workspace_id":"w1"},"type":"agent_info"}}"#;
     const NOT_FOUND: &str = r#"{"error":{"code":"agent_not_found","message":"agent target w1:p1 not found"},"id":"cli:agent:wait"}"#;
 
     struct Fixture {
@@ -909,6 +945,51 @@ default_branch = "main"
             .map(String::as_str)
             .collect();
         assert_eq!(unreachable, ["host-a"]);
+    }
+
+    #[test]
+    fn worker_stopping_after_it_escalated_is_absorbed() {
+        for (state, answer_json) in [(State::NeedsDecision, DONE), (State::Blocked, BLOCKED)] {
+            let fx = Fixture::new();
+            fx.task(true);
+            Store::open(&fx.state)
+                .set_status(TASK, |status| status.state = state)
+                .unwrap();
+            let runner = fake(vec![answer(0, answer_json), answer(0, answer_json)]);
+            assert_eq!(
+                two_cycles(&mut fx.watcher(&runner, DEFAULT_QUIET_SECS)),
+                None
+            );
+
+            let ev = Event {
+                ts: Timestamp::now(),
+                source: "cli".to_owned(),
+                kind: "hold.set".to_owned(),
+                data: serde_json::json!({}),
+            };
+            Store::open(&fx.state).append_event(TASK, &ev).unwrap();
+            assert_eq!(
+                two_cycles(&mut fx.watcher(&runner, DEFAULT_QUIET_SECS)),
+                None
+            );
+            let log = std::fs::read_to_string(fx.state.root().join(WATCH_LOG_FILE)).unwrap();
+            assert!(
+                log.lines().any(|line| line.contains("absorb")
+                    && line.contains(r#""type":"agent-state""#)
+                    && line.contains(&format!("task is {state}"))),
+                "{log}"
+            );
+        }
+    }
+
+    #[test]
+    fn quiet_is_not_reported_while_herdr_reports_the_worker_working() {
+        let fx = Fixture::new();
+        fx.task(true);
+        let runner = fake(vec![answer(0, WORKING), answer(0, "")]);
+        let mut watcher = fx.watcher(&runner, 0);
+        assert_eq!(two_cycles(&mut watcher), None);
+        assert_eq!(runner.calls().len(), 2);
     }
 
     #[test]
