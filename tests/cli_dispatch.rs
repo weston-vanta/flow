@@ -387,6 +387,29 @@ fn dispatch_creates_task_and_starts_agent() {
 }
 
 #[test]
+fn dispatch_launch_line_names_the_state_dir_behind_a_symlink() {
+    let fx = Fixture::new();
+    let link = fx.dir.path().join("state-link");
+    std::os::unix::fs::symlink(&fx.state, &link).unwrap();
+
+    fx.flow(&starts_working(Vec::new()))
+        .env("FLOW_STATE", &link)
+        .args(dispatch_args(&["--dir", WORKTREE]))
+        .assert()
+        .success();
+
+    let calls = fx.calls();
+    let runs = herdr_calls(&calls, &["pane", "run"]);
+    let target = fs::canonicalize(&fx.state).unwrap();
+    assert!(
+        runs[0][6].starts_with(&format!("env 'FLOW_STATE={}' claude ", target.display())),
+        "{:?}",
+        runs[0][6]
+    );
+    assert!(!runs[0][6].contains("state-link"), "{:?}", runs[0][6]);
+}
+
+#[test]
 fn dispatch_with_branch_runs_worktree_tool() {
     let fx = Fixture::new();
     let created = "/workspaces/acme-worktrees/feature-x";

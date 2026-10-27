@@ -260,6 +260,27 @@ fn up_creates_supervisor_when_no_lock() {
 }
 
 #[test]
+fn up_launch_line_names_the_state_dir_behind_a_symlink() {
+    let fx = Fixture::new();
+    let link = fx.dir.path().join("state-link");
+    std::os::unix::fs::symlink(&fx.state, &link).unwrap();
+
+    fx.flow(&fresh_start())
+        .env("FLOW_STATE", &link)
+        .arg("up")
+        .assert()
+        .success();
+
+    let line = pane_run_line(&fx.calls());
+    let target = fs::canonicalize(&fx.state).unwrap();
+    assert!(
+        line.starts_with(&format!("env 'FLOW_STATE={}' ", target.display())),
+        "{line}"
+    );
+    assert!(!line.contains("state-link"), "{line}");
+}
+
+#[test]
 fn up_resumes_known_session() {
     let fx = Fixture::new();
     fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
