@@ -431,19 +431,60 @@ fn dispatch_answers_the_trust_dialog() {
     let waits = herdr_calls(&calls, &["agent", "wait"]);
     assert_eq!(waits.len(), 2, "{calls:?}");
     assert_eq!(
-        waits[1][5..],
-        [
-            PANE,
-            "--until",
-            "idle",
-            "--until",
-            "working",
-            "--timeout",
-            "60000"
-        ]
+        waits[1][5..10],
+        [PANE, "--until", "idle", "--until", "working"]
+    );
+    assert!(
+        wait_timeout(waits[1]) <= 60_000,
+        "the whole start shares one timeout: {:?}",
+        waits[1]
     );
     let (_, status) = fx.store().task(&fx.only_task()).unwrap();
     assert_eq!(status.state, State::Working);
+}
+
+/// The `--timeout` an `agent wait` call passes, in milliseconds.
+fn wait_timeout(argv: &[String]) -> u64 {
+    let at = argv.iter().position(|word| word == "--timeout").unwrap();
+    argv[at + 1].parse().unwrap()
+}
+
+#[test]
+fn dispatch_waits_until_herdr_sees_the_worker() {
+    let fx = Fixture::new();
+    let not_found = r#"{"error":{"code":"agent_not_found","message":"agent target w3:p1 not found"},"id":"cli:agent:wait"}"#;
+    let script = vec![
+        ok(SERVER_RUNNING),
+        ok(NO_AGENTS),
+        ok(WORKSPACE_CREATE),
+        ok(PANE_RUN_OK),
+        failed(not_found),
+        failed(not_found),
+        wait_reports("blocked"),
+        ok(TRUST_DIALOG),
+        ok(""),
+        wait_reports("idle"),
+    ];
+
+    fx.flow(&script)
+        .env("FLOW_HANDSHAKE_POLL_MS", "10")
+        .args(dispatch_args(&["--dir", WORKTREE]))
+        .assert()
+        .success();
+
+    let calls = fx.calls();
+    let waits = herdr_calls(&calls, &["agent", "wait"]);
+    assert_eq!(waits.len(), 4, "{calls:?}");
+    assert_eq!(wait_timeout(waits[0]), 60_000);
+    assert!(wait_timeout(waits[2]) < 60_000, "{:?}", waits[2]);
+    let keys = herdr_calls(&calls, &["pane", "send-keys"]);
+    assert_eq!(keys.len(), 1, "{calls:?}");
+    assert_eq!(keys[0][5..], [PANE, "down", "enter"]);
+    let id = fx.only_task();
+    let (_, status) = fx.store().task(&id).unwrap();
+    assert_eq!(status.state, State::Working);
+    assert_eq!(status.hold, None);
+    assert!(!fx.events(&id).iter().any(|ev| ev.kind == "dispatch.failed"));
 }
 
 #[test]

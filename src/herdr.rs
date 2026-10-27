@@ -381,6 +381,25 @@ impl Herdr {
         Ok(Some(result.agent.agent_status))
     }
 
+    /// `wait`, telling apart a pane where herdr sees no agent (yet), which `wait` reports as an
+    /// error.
+    pub fn wait_for_agent(
+        &self,
+        host: &Host,
+        pane_id: &str,
+        until: &[AgentStatus],
+        timeout_ms: Option<u64>,
+    ) -> anyhow::Result<Waited> {
+        let argv = self.wait_argv(pane_id, until, timeout_ms);
+        let output = match self.call_or_code(host, &argv, &[TIMEOUT_CODE, AGENT_NOT_FOUND_CODE])? {
+            Ok(output) => output,
+            Err(TIMEOUT_CODE) => return Ok(Waited::TimedOut),
+            Err(_) => return Ok(Waited::NoAgent),
+        };
+        let result: AgentResult = parse_result(host, &argv, &output)?;
+        Ok(Waited::Reached(result.agent.agent_status))
+    }
+
     /// Starts the `wait` call without blocking on it. herdr's stderr is folded into the child's
     /// stdout, which `wait_end` reads once the child exits.
     pub fn spawn_wait(
@@ -521,8 +540,19 @@ impl Herdr {
         &self,
         host: &Host,
         argv: &[String],
-        code: &str,
+        code: &'static str,
     ) -> anyhow::Result<Option<Output>> {
+        Ok(self.call_or_code(host, argv, &[code])?.ok())
+    }
+
+    /// Runs `argv` on `host`: `Err(code)` when herdr fails with one of `codes`, an error for
+    /// any other non-zero exit.
+    fn call_or_code(
+        &self,
+        host: &Host,
+        argv: &[String],
+        codes: &[&'static str],
+    ) -> anyhow::Result<Result<Output, &'static str>> {
         let output = self.runner.run(host, argv, None)?;
         let command = argv.join(" ");
         let stderr = output.stderr.trim();
@@ -530,10 +560,12 @@ impl Herdr {
             bail!("{UNREACHABLE_PREFIX} {} (`{command}`): {stderr}", host.name);
         }
         if output.status == 0 {
-            return Ok(Some(output));
+            return Ok(Ok(output));
         }
-        if error_code(stderr).as_deref() == Some(code) {
-            return Ok(None);
+        if let Some(code) = error_code(stderr)
+            && let Some(code) = codes.iter().find(|known| **known == code)
+        {
+            return Ok(Err(*code));
         }
         bail!(
             "`{command}` on {} exited {}: {stderr}",
@@ -550,6 +582,17 @@ impl Herdr {
 /// The argv that attaches a terminal to the agent in `pane_id` of herdr session `session`.
 pub fn attach_argv(session: &str, pane_id: &str) -> Vec<String> {
     words(&["herdr", "--session", session, "agent", "attach", pane_id])
+}
+
+/// How a `wait_for_agent` call ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Waited {
+    /// The agent reached this status.
+    Reached(AgentStatus),
+    /// The wait's `--timeout` passed first.
+    TimedOut,
+    /// herdr sees no agent in the pane: it has not detected one yet, or the pane is gone.
+    NoAgent,
 }
 
 /// How a `spawn_wait` child ended.

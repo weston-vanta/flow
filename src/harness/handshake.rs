@@ -1,13 +1,20 @@
 //! Bringing up Claude Code after typing its command line into a herdr pane: waiting for it to
 //! start and accepting the folder-trust dialog it shows in a directory it has not seen.
 
-use anyhow::bail;
+use std::thread;
+use std::time::{Duration, Instant};
 
-use crate::herdr::{AgentStatus, Herdr, KEY_DOWN, KEY_ENTER};
+use anyhow::{Context, bail};
+
+use crate::herdr::{AgentStatus, Herdr, KEY_DOWN, KEY_ENTER, Waited};
 use crate::state::config::Host;
 
-/// How long the agent gets to start, and again to settle after the trust dialog.
+/// How long the whole start may take, trust dialog included, counted from the first wait.
 const START_TIMEOUT_MS: u64 = 60_000;
+/// Overrides how long to wait between asks while herdr does not see the agent yet, in
+/// milliseconds.
+const POLL_VAR: &str = "FLOW_HANDSHAKE_POLL_MS";
+const DEFAULT_POLL: Duration = Duration::from_secs(1);
 /// Enough of the pane to hold the whole trust dialog.
 const DIALOG_LINES: u32 = 40;
 /// The trust dialog lists two options, so reaching `Yes` never takes more moves than this.
@@ -22,24 +29,58 @@ pub enum AgentStart {
     BlockedAtStart { pane_text: String },
 }
 
-/// Waits for the agent just launched in `pane_id` to come up. Claude shows a folder-trust
-/// dialog in a directory it has not seen, and herdr reports it `blocked`; keys sent before then
-/// are lost. When the blocked pane shows that dialog, this selects its `Yes` option and waits
-/// again.
+/// Waits for the agent just launched in `pane_id` to come up. herdr does not see an agent in
+/// the pane until Claude Code has started there, which can take many seconds, so until then
+/// this asks again. Claude shows a folder-trust dialog in a directory it has not seen, and
+/// herdr reports it `blocked`; keys sent before then are lost. When the blocked pane shows that
+/// dialog, this selects its `Yes` option and waits again.
 pub fn await_start(
     herdr: &Herdr,
     host: &Host,
     workspace_id: &str,
     pane_id: &str,
 ) -> anyhow::Result<AgentStart> {
-    let wait = |until: &[AgentStatus]| -> anyhow::Result<AgentStatus> {
-        match herdr.wait(host, pane_id, until, Some(START_TIMEOUT_MS))? {
+    await_start_with(herdr, host, workspace_id, pane_id, &Timing::from_env()?)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Timing {
+    timeout: Duration,
+    poll: Duration,
+}
+
+impl Timing {
+    fn from_env() -> anyhow::Result<Timing> {
+        let poll = match std::env::var(POLL_VAR) {
+            Ok(ms) => Duration::from_millis(
+                ms.parse()
+                    .with_context(|| format!("parsing ${POLL_VAR} {ms:?} as milliseconds"))?,
+            ),
+            Err(_) => DEFAULT_POLL,
+        };
+        Ok(Timing {
+            timeout: Duration::from_millis(START_TIMEOUT_MS),
+            poll,
+        })
+    }
+}
+
+fn await_start_with(
+    herdr: &Herdr,
+    host: &Host,
+    workspace_id: &str,
+    pane_id: &str,
+    timing: &Timing,
+) -> anyhow::Result<AgentStart> {
+    let mut started = None;
+    let mut wait = |until: &[AgentStatus]| -> anyhow::Result<AgentStatus> {
+        match wait_for_agent(herdr, host, pane_id, until, timing, &mut started)? {
             Some(status) => Ok(status),
             None => bail!(
                 "agent in pane {pane_id} on {} did not start within {} s; workspace \
                  {workspace_id} is left open for inspection",
                 host.name,
-                START_TIMEOUT_MS / 1000
+                timing.timeout.as_secs()
             ),
         }
     };
@@ -58,6 +99,40 @@ pub fn await_start(
     herdr.pane_send_keys(host, pane_id, &keys)?;
     wait(&[AgentStatus::Idle, AgentStatus::Working])?;
     Ok(AgentStart::Running)
+}
+
+/// The status the agent in `pane_id` reaches among `until` before `timing.timeout` has passed
+/// since the first wait, which sets `started`. While herdr sees no agent there this asks again
+/// every `timing.poll`. `None` once the time is up.
+fn wait_for_agent(
+    herdr: &Herdr,
+    host: &Host,
+    pane_id: &str,
+    until: &[AgentStatus],
+    timing: &Timing,
+    started: &mut Option<Instant>,
+) -> anyhow::Result<Option<AgentStatus>> {
+    let started = *started.get_or_insert_with(Instant::now);
+    let mut left = timing.timeout.saturating_sub(started.elapsed());
+    loop {
+        if left.is_zero() {
+            return Ok(None);
+        }
+        // Rounded up, so the first wait passes the whole timeout; herdr's `--timeout 0` would
+        // mean no timeout at all.
+        let timeout_ms = u64::try_from(left.as_nanos().div_ceil(1_000_000)).unwrap_or(u64::MAX);
+        match herdr.wait_for_agent(host, pane_id, until, Some(timeout_ms))? {
+            Waited::Reached(status) => return Ok(Some(status)),
+            Waited::TimedOut => return Ok(None),
+            Waited::NoAgent => {}
+        }
+        thread::sleep(
+            timing
+                .poll
+                .min(timing.timeout.saturating_sub(started.elapsed())),
+        );
+        left = timing.timeout.saturating_sub(started.elapsed());
+    }
 }
 
 /// The keys that accept Claude's folder-trust dialog shown in `text`: enough `down`s to move
@@ -102,7 +177,140 @@ fn is_cursor_line(line: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
     use super::*;
+    use crate::runner::{FakeRunner, Scripted};
+
+    const NOT_FOUND: &str = r#"{"error":{"code":"agent_not_found","message":"agent target w3:p1 not found"},"id":"cli:agent:wait"}"#;
+    const AGENT_GET: &str = include_str!("../../tests/fixtures/herdr/agent_get.json");
+    const PANE: &str = "w3:p1";
+
+    fn host() -> Host {
+        Host {
+            name: "host-a".to_owned(),
+            env_id: "env-0001".to_owned(),
+            ssh_alias: "host-a.example".to_owned(),
+            local_marker_env: None,
+        }
+    }
+
+    fn ok(stdout: &str) -> Scripted {
+        Scripted {
+            stdout: stdout.to_owned(),
+            ..Scripted::default()
+        }
+    }
+
+    fn not_found(repeat: bool) -> Scripted {
+        Scripted {
+            status: 1,
+            stderr: NOT_FOUND.to_owned(),
+            repeat,
+            ..Scripted::default()
+        }
+    }
+
+    fn wait_reports(status: &str) -> Scripted {
+        assert!(AGENT_GET.contains(r#""agent_status":"working""#));
+        ok(&AGENT_GET.replace(
+            r#""agent_status":"working""#,
+            &format!(r#""agent_status":"{status}""#),
+        ))
+    }
+
+    fn fast() -> Timing {
+        Timing {
+            timeout: Duration::from_millis(300),
+            poll: Duration::from_millis(5),
+        }
+    }
+
+    /// The `--timeout` value of every `agent wait` call, in order.
+    fn wait_timeouts(fake: &FakeRunner) -> Vec<u64> {
+        fake.calls()
+            .iter()
+            .filter(|call| call.argv.get(3..5) == Some(&["agent".to_owned(), "wait".to_owned()]))
+            .map(|call| {
+                let at = call
+                    .argv
+                    .iter()
+                    .position(|word| word == "--timeout")
+                    .unwrap();
+                call.argv[at + 1].parse().unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn await_start_waits_for_herdr_to_see_the_agent() {
+        let fake = Arc::new(FakeRunner::new(vec![
+            not_found(false),
+            wait_reports("blocked"),
+            ok(DIALOG_ON_NO),
+            ok(""),
+            wait_reports("idle"),
+        ]));
+        let herdr = Herdr::new(fake.clone());
+
+        let start = await_start_with(&herdr, &host(), "w3", PANE, &fast()).unwrap();
+
+        assert!(matches!(start, AgentStart::Running), "{start:?}");
+        let calls = fake.calls();
+        let keys: Vec<_> = calls
+            .iter()
+            .filter(|call| {
+                call.argv.get(3..5) == Some(&["pane".to_owned(), "send-keys".to_owned()])
+            })
+            .collect();
+        assert_eq!(keys.len(), 1, "{calls:?}");
+        assert_eq!(keys[0].argv[5..], [PANE, KEY_DOWN, KEY_ENTER]);
+        let timeouts = wait_timeouts(&fake);
+        assert_eq!(timeouts.len(), 3, "{calls:?}");
+        assert_eq!(timeouts[0], 300, "the first attempt gets the whole timeout");
+        assert!(
+            timeouts[1] < 300 && timeouts[2] <= timeouts[1] && timeouts[2] > 0,
+            "later waits get what is left: {timeouts:?}"
+        );
+    }
+
+    #[test]
+    fn await_start_gives_up_when_the_agent_never_appears() {
+        let fake = Arc::new(FakeRunner::new(vec![not_found(true)]));
+        let herdr = Herdr::new(fake.clone());
+        let timing = fast();
+
+        let started = std::time::Instant::now();
+        let err = await_start_with(&herdr, &host(), "w3", PANE, &timing).unwrap_err();
+
+        let err = format!("{err:#}");
+        assert!(err.contains("did not start within"), "{err}");
+        assert!(err.contains("workspace w3 is left open"), "{err}");
+        assert!(
+            started.elapsed() >= timing.timeout,
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(wait_timeouts(&fake).len() > 1, "it retried");
+    }
+
+    #[test]
+    fn await_start_fails_on_other_wait_errors() {
+        let fake = Arc::new(FakeRunner::new(vec![Scripted {
+            status: 1,
+            stderr:
+                r#"{"error":{"code":"invalid_target","message":"bad pane"},"id":"cli:agent:wait"}"#
+                    .to_owned(),
+            ..Scripted::default()
+        }]));
+        let herdr = Herdr::new(fake.clone());
+
+        let err = await_start_with(&herdr, &host(), "w3", PANE, &fast()).unwrap_err();
+
+        assert!(format!("{err:#}").contains("invalid_target"), "{err:#}");
+        assert_eq!(fake.calls().len(), 1);
+    }
 
     const DIALOG_ON_NO: &str = "\
 => /workspaces/acme-worktrees/search-index
