@@ -555,6 +555,45 @@ fn dispatch_waits_until_herdr_sees_the_worker() {
 }
 
 #[test]
+fn dispatch_retries_a_wait_that_gives_no_answer() {
+    let fx = Fixture::new();
+    let script = vec![
+        ok(SERVER_RUNNING),
+        ok(NO_AGENTS),
+        ok(WORKSPACE_CREATE),
+        ok(PANE_RUN_OK),
+        failed(""),
+        failed(""),
+        wait_reports("idle"),
+    ];
+
+    let out = fx
+        .flow(&script)
+        .env("FLOW_HANDSHAKE_POLL_MS", "10")
+        .args(dispatch_args(&["--dir", WORKTREE]))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert_eq!(
+        stderr,
+        format!("herdr gave no answer for pane {PANE} on host-a; retrying\n"),
+    );
+    let calls = fx.calls();
+    assert_eq!(
+        herdr_calls(&calls, &["agent", "wait"]).len(),
+        3,
+        "{calls:?}"
+    );
+    let id = fx.only_task();
+    let (_, status) = fx.store().task(&id).unwrap();
+    assert_eq!(status.state, State::Working);
+    assert!(!fx.events(&id).iter().any(|ev| ev.kind == "dispatch.failed"));
+}
+
+#[test]
 fn dispatch_records_an_unexpected_block_without_sending_keys() {
     let fx = Fixture::new();
     let pane_text = "Choose a theme:\n ❯ Dark\n   Light\n";

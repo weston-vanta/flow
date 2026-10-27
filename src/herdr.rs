@@ -34,6 +34,9 @@ const AGENT_NOT_FOUND_CODE: &str = "agent_not_found";
 const WORKSPACE_NOT_FOUND_CODE: &str = "workspace_not_found";
 /// The `error.code` herdr reports when no server runs for the session.
 const SERVER_NOT_RUNNING_CODE: &str = "server_not_running";
+/// Not a herdr code: `call_or_code` returns it for a non-zero exit with nothing on stdout or
+/// stderr, when the caller lists it.
+const NO_ANSWER: &str = "no_answer";
 /// How every error from a call that ssh could not deliver starts.
 const UNREACHABLE_PREFIX: &str = "host unreachable:";
 
@@ -401,8 +404,8 @@ impl Herdr {
         Ok(Some(result.agent.agent_status))
     }
 
-    /// `wait`, telling apart a pane where herdr sees no agent (yet), which `wait` reports as an
-    /// error.
+    /// `wait`, telling apart a pane where herdr sees no agent (yet) and a wait that exited
+    /// non-zero without a word, both of which `wait` reports as errors.
     pub fn wait_for_agent(
         &self,
         host: &Host,
@@ -411,9 +414,11 @@ impl Herdr {
         timeout_ms: Option<u64>,
     ) -> anyhow::Result<Waited> {
         let argv = self.wait_argv(pane_id, until, timeout_ms);
-        let output = match self.call_or_code(host, &argv, &[TIMEOUT_CODE, AGENT_NOT_FOUND_CODE])? {
+        let codes = [TIMEOUT_CODE, AGENT_NOT_FOUND_CODE, NO_ANSWER];
+        let output = match self.call_or_code(host, &argv, &codes)? {
             Ok(output) => output,
             Err(TIMEOUT_CODE) => return Ok(Waited::TimedOut),
+            Err(NO_ANSWER) => return Ok(Waited::NoAnswer),
             Err(_) => return Ok(Waited::NoAgent),
         };
         let result: AgentResult = parse_result(host, &argv, &output)?;
@@ -576,8 +581,9 @@ impl Herdr {
         Ok(self.call_or_code(host, argv, &[code])?.ok())
     }
 
-    /// Runs `argv` on `host`: `Err(code)` when herdr fails with one of `codes`, an error for
-    /// any other non-zero exit.
+    /// Runs `argv` on `host`: `Err(code)` when herdr fails with one of `codes`, or when it exits
+    /// non-zero with no output and `codes` holds `NO_ANSWER`; an error for any other non-zero
+    /// exit.
     fn call_or_code(
         &self,
         host: &Host,
@@ -598,8 +604,17 @@ impl Herdr {
         {
             return Ok(Err(*code));
         }
+        let silent = stderr.is_empty() && output.stdout.trim().is_empty();
+        if silent && codes.contains(&NO_ANSWER) {
+            return Ok(Err(NO_ANSWER));
+        }
+        let reason = if silent {
+            " (no output)".to_owned()
+        } else {
+            format!(": {stderr}")
+        };
         bail!(
-            "`{command}` on {} exited {}: {stderr}",
+            "`{command}` on {} exited {}{reason}",
             host.name,
             output.status
         );
@@ -624,6 +639,9 @@ pub enum Waited {
     TimedOut,
     /// herdr sees no agent in the pane: it has not detected one yet, or the pane is gone.
     NoAgent,
+    /// The wait exited non-zero with nothing on stdout or stderr, saying nothing about the
+    /// agent.
+    NoAnswer,
 }
 
 /// How a `spawn_wait` child ended.
@@ -1408,6 +1426,19 @@ mod tests {
         assert!(!err.starts_with("host unreachable:"), "{err}");
         assert!(err.contains("agent wait w9:p1"), "{err}");
         assert!(err.contains("agent_not_found"), "{err}");
+    }
+
+    #[test]
+    fn failed_command_without_output_says_so() {
+        let (herdr, _) = herdr(vec![Scripted {
+            status: 1,
+            ..Scripted::default()
+        }]);
+        let err = herdr
+            .wait(&host(), "w9:p1", &[AgentStatus::Done], None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.ends_with("exited 1 (no output)"), "{err}");
     }
 
     #[test]

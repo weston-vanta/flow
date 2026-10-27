@@ -138,12 +138,13 @@ fn await_start_with(
     Ok(AgentStart::Running)
 }
 
-/// One start's progress across its waits: when the first began, and whether the wait for herdr
-/// to see the agent has been announced.
+/// One start's progress across its waits: when the first began, whether the wait for herdr
+/// to see the agent has been announced, and whether a wait without an answer has been.
 #[derive(Default)]
 struct Clock {
     started: Option<Instant>,
     announced: bool,
+    no_answer_noted: bool,
 }
 
 /// How `wait_for_agent` ended.
@@ -157,7 +158,8 @@ enum Polled {
 /// The status the agent in `pane_id` reaches among `until` before `timing.timeout` has passed
 /// since the first wait, which starts `clock`. While herdr sees no agent there this checks the
 /// pane against `stop_early` and asks again every `timing.poll`, saying once on stderr what it
-/// waits for when that takes a while.
+/// waits for when that takes a while. A wait that exits without a word is asked again the same
+/// way, which is said once on stderr too.
 fn wait_for_agent(
     herdr: &Herdr,
     host: &Host,
@@ -180,6 +182,15 @@ fn wait_for_agent(
             Waited::Reached(status) => return Ok(Polled::Reached(status)),
             Waited::TimedOut => return Ok(Polled::TimedOut),
             Waited::NoAgent => {}
+            Waited::NoAnswer => {
+                if !clock.no_answer_noted {
+                    eprintln!(
+                        "herdr gave no answer for pane {pane_id} on {}; retrying",
+                        host.name
+                    );
+                    clock.no_answer_noted = true;
+                }
+            }
         }
         if !clock.announced && started.elapsed() >= NOTICE_AFTER {
             eprintln!(
@@ -423,6 +434,36 @@ mod tests {
         let err = await_start_with(&herdr, &host(), "w3", PANE, None, &fast()).unwrap_err();
 
         assert!(format!("{err:#}").contains("invalid_target"), "{err:#}");
+        assert_eq!(fake.calls().len(), 1);
+    }
+
+    #[test]
+    fn await_start_retries_a_wait_that_gives_no_answer() {
+        let silent = Scripted {
+            status: 1,
+            ..Scripted::default()
+        };
+        let fake = Arc::new(FakeRunner::new(vec![silent, wait_reports("idle")]));
+        let herdr = Herdr::new(fake.clone());
+
+        let start = await_start_with(&herdr, &host(), "w3", PANE, None, &fast()).unwrap();
+
+        assert!(matches!(start, AgentStart::Running), "{start:?}");
+        assert_eq!(wait_timeouts(&fake).len(), 2);
+    }
+
+    #[test]
+    fn await_start_fails_on_a_wait_that_exits_with_text() {
+        let fake = Arc::new(FakeRunner::new(vec![Scripted {
+            status: 1,
+            stderr: "herdr: socket closed\n".to_owned(),
+            ..Scripted::default()
+        }]));
+        let herdr = Herdr::new(fake.clone());
+
+        let err = await_start_with(&herdr, &host(), "w3", PANE, None, &fast()).unwrap_err();
+
+        assert!(format!("{err:#}").contains("socket closed"), "{err:#}");
         assert_eq!(fake.calls().len(), 1);
     }
 
