@@ -18,11 +18,6 @@ name = "example-repo"
 path = "/work/repo"
 default_branch = "main"
 worktree_tool = { create = ["wt", "create", "{branch}"] }
-
-[[hosts]]
-name = "host-a"
-env_id = "env-0001"
-ssh_alias = "host-a.example"
 "#;
 
 const HOST: &str = "env-0001";

@@ -14,6 +14,7 @@ use crate::harness::handshake::{self, AgentStart};
 use crate::harness::{ClaudeAdapter, HarnessAdapter, brief};
 use crate::herdr::{Agent, Herdr};
 use crate::host;
+use crate::inventory;
 use crate::paths::StateDir;
 use crate::runner::{self, Runner};
 use crate::state::config::{Config, Host, Repo};
@@ -66,11 +67,15 @@ pub fn run(state: &StateDir, args: &DispatchArgs) -> anyhow::Result<()> {
         .canonical()
         .with_context(|| format!("resolving {}", state.root().display()))?;
     let config = Config::load(state)?;
+    let hosts = inventory::hosts(state)?;
     let host = match &args.host {
-        Some(name) => host::find(&config, name),
-        None => host::local(&config),
+        Some(name) => host::find(&hosts, name),
+        None => host::local(&hosts),
     }
     .map_err(|err| Refused(format!("{err:#}")))?;
+    if !inventory::live_hosts(state)?.contains(host) {
+        return Err(Refused(format!("host {} is gone", host.name)).into());
+    }
     let store = Store::open(state);
     if let Some(parent) = &args.parent {
         store

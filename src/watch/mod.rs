@@ -32,10 +32,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::adopt::{FollowList, Followed};
 use crate::herdr::{self, Herdr};
+use crate::inventory;
 use crate::paths::StateDir;
 use crate::runner::Runner;
 use crate::state::Store;
-use crate::state::config::Config;
+use crate::state::config::Host;
 use crate::state::events::EVENTS_FILE;
 use crate::state::fs::{append_line, write_atomic};
 use crate::state::task::{State, Status, TaskRecord};
@@ -142,7 +143,8 @@ enum Progress {
 struct Watcher<'a> {
     state: &'a StateDir,
     store: Store,
-    config: Config,
+    /// The known hosts as of this run's start.
+    hosts: Vec<Host>,
     runner: Arc<dyn Runner>,
     settings: Settings,
     memory: WatchState,
@@ -168,7 +170,7 @@ impl<'a> Watcher<'a> {
         Ok(Watcher {
             state,
             store: Store::open(state),
-            config: Config::load(state)?,
+            hosts: inventory::hosts(state)?,
             runner,
             settings: settings.clone(),
             saved: memory.clone(),
@@ -352,11 +354,8 @@ impl<'a> Watcher<'a> {
             if self.waits.contains_key(&key) {
                 continue;
             }
-            let Some(host) = self.config.hosts.iter().find(|host| host.name == spec.host) else {
-                self.log(&format!(
-                    "{key}: no host named {:?} in config.toml",
-                    spec.host
-                ));
+            let Some(host) = self.hosts.iter().find(|host| host.name == spec.host) else {
+                self.log(&format!("{key}: no known host named {:?}", spec.host));
                 continue;
             };
             let herdr = Herdr::with_session(self.runner.clone(), &spec.session);
@@ -473,7 +472,7 @@ impl<'a> Watcher<'a> {
                 continue;
             }
             self.quiet_checked.insert(rec.id.clone(), Instant::now());
-            let host = self.config.hosts.iter().find(|host| host.name == rec.host);
+            let host = self.hosts.iter().find(|host| host.name == rec.host);
             let Some(host) = host else {
                 observed.push(quiet(&rec.id, status, since_secs, false));
                 continue;
@@ -569,6 +568,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::inventory::HostInventory;
     use crate::runner::{FakeRunner, Scripted};
     use crate::state::events::Event;
     use crate::state::task::{Harness, HerdrTarget};
@@ -579,11 +579,6 @@ mod tests {
 name = "example-repo"
 path = "/work/repo"
 default_branch = "main"
-
-[[hosts]]
-name = "host-a"
-env_id = "env-0001"
-ssh_alias = "host-a.example"
 "#;
     const TASK: &str = "aaaaaaab";
     const IDLE: &str = r#"{"id":"cli:agent:wait","result":{"agent":{"agent":"claude","agent_status":"idle","pane_id":"w1:p1","workspace_id":"w1"},"type":"agent_info"}}"#;
@@ -602,6 +597,13 @@ ssh_alias = "host-a.example"
             std::fs::create_dir(&root).unwrap();
             std::fs::write(root.join("config.toml"), CONFIG).unwrap();
             let state = StateDir::resolve(dir.path()).unwrap();
+            let host = Host {
+                name: "host-a".to_owned(),
+                env_id: "env-0001".to_owned(),
+                ssh_alias: "host-a.example".to_owned(),
+                local_marker_env: None,
+            };
+            inventory::save(&state, &HostInventory::new(&host, Timestamp::now())).unwrap();
             Fixture { _dir: dir, state }
         }
 

@@ -51,7 +51,8 @@ pub enum Command {
     },
     /// Show worktrees, agents, and PRs per host
     Inventory {
-        /// Probe every configured host and list open PRs before showing them
+        /// Discover hosts from Ona (or the static list), probe each running one, and list open
+        /// PRs before showing them
         #[arg(long)]
         refresh: bool,
         /// Print raw JSON instead of the compact view
@@ -286,7 +287,7 @@ pub enum TaskCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum HostCommand {
-    /// List configured hosts, marking the one this runs on
+    /// List known hosts from the cache, gone ones last, marking the one this runs on
     List {
         /// Print raw JSON instead of the compact view
         #[arg(long)]

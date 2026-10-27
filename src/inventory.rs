@@ -1,5 +1,8 @@
 //! Per-host inventory: worktrees, load, herdr agents, and open PRs, cached in
-//! `state/hosts/<env_id>.json` so the supervisor can pick a task's natural home.
+//! `state/hosts/<env_id>.json` so the supervisor can pick a task's natural home. The cached
+//! records are also the host set: every host flow knows has one.
+
+pub mod discovery;
 
 use std::fs;
 use std::io;
@@ -11,6 +14,7 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::herdr::{self, Agent, Herdr};
+use crate::ona;
 use crate::paths::StateDir;
 use crate::runner::{Output, Runner};
 use crate::state::config::{Host, Repo, WorktreeTool};
@@ -44,6 +48,21 @@ const PR_LIST_ARGV: [&str; 11] = [
 pub struct HostInventory {
     pub name: String,
     pub env_id: String,
+    /// The ssh alias the host is reached by. Records cached before hosts were discovered leave
+    /// it empty, which means the Ona alias of `env_id`.
+    #[serde(default)]
+    pub ssh_alias: String,
+    /// The environment's free-text name in Ona, for a discovered host.
+    #[serde(default)]
+    pub ona_name: Option<String>,
+    /// The environment's Ona phase at the last listing, for a discovered host. Only running
+    /// hosts are probed.
+    #[serde(default)]
+    pub ona_phase: Option<String>,
+    /// The host has left the host set: Ona no longer lists it, or the static list dropped it.
+    /// Its record is kept for the tasks that ran there.
+    #[serde(default)]
+    pub gone: bool,
     /// When the host last answered. An unreachable host keeps the time of its cached inventory.
     pub seen: Timestamp,
     pub reachable: bool,
@@ -65,6 +84,50 @@ pub struct HostInventory {
     /// Configured repos with no checkout on this host; `worktrees` has none of theirs.
     #[serde(default)]
     pub missing_repos: Vec<String>,
+}
+
+impl HostInventory {
+    /// A record of `host` with nothing probed yet: unreachable, seen `now`, empty.
+    pub fn new(host: &Host, now: Timestamp) -> HostInventory {
+        HostInventory {
+            name: host.name.clone(),
+            env_id: host.env_id.clone(),
+            ssh_alias: host.ssh_alias.clone(),
+            ona_name: None,
+            ona_phase: None,
+            gone: false,
+            seen: now,
+            reachable: false,
+            load1: None,
+            worktrees: Vec::new(),
+            agents: Vec::new(),
+            prs: Vec::new(),
+            tool_error: None,
+            herdr_error: None,
+            pr_error: None,
+            missing_repos: Vec::new(),
+        }
+    }
+
+    /// The host this record describes.
+    pub fn host(&self) -> Host {
+        Host {
+            name: self.name.clone(),
+            env_id: self.env_id.clone(),
+            ssh_alias: if self.ssh_alias.is_empty() {
+                ona::ssh_alias(&self.env_id)
+            } else {
+                self.ssh_alias.clone()
+            },
+            local_marker_env: None,
+        }
+    }
+
+    /// Whether `inventory --refresh` probes this host: it is not gone, and Ona last listed it
+    /// running when Ona lists it at all.
+    pub fn should_probe(&self) -> bool {
+        !self.gone && self.ona_phase.as_deref().is_none_or(ona::is_running)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -243,18 +306,14 @@ pub fn refresh(
     } = herdr_agents(runner, host, herdr_sessions);
 
     Ok(HostInventory {
-        name: host.name.clone(),
-        env_id: host.env_id.clone(),
-        seen: now,
         reachable: true,
         load1,
         worktrees,
         agents,
-        prs: Vec::new(),
         tool_error: (!tool_errors.is_empty()).then(|| tool_errors.join("; ")),
         herdr_error,
-        pr_error: None,
         missing_repos,
+        ..HostInventory::new(host, now)
     })
 }
 
@@ -310,49 +369,28 @@ pub fn with_agents(
             ..cached
         },
         None => HostInventory {
-            name: host.name.clone(),
-            env_id: host.env_id.clone(),
-            seen: now,
             reachable: true,
-            load1: None,
-            worktrees: Vec::new(),
             agents: found.agents,
-            prs: Vec::new(),
-            tool_error: None,
             herdr_error: found.error,
-            pr_error: None,
-            missing_repos: Vec::new(),
+            ..HostInventory::new(host, now)
         },
     }
 }
 
-/// The inventory of a host that did not answer: the cached worktrees, agents, PRs, PR error, and
-/// missing repos as of the cached `seen`, or an empty inventory seen `now` when nothing is cached.
+/// The inventory of a host that did not answer: the cached record as of its `seen`, without its
+/// load and its worktree tool and herdr errors, or an empty one seen `now` when nothing is cached.
 pub fn unreachable(host: &Host, cached: Option<HostInventory>, now: Timestamp) -> HostInventory {
-    let (seen, worktrees, agents, prs, pr_error, missing_repos) = match cached {
-        Some(cached) => (
-            cached.seen,
-            cached.worktrees,
-            cached.agents,
-            cached.prs,
-            cached.pr_error,
-            cached.missing_repos,
-        ),
-        None => (now, Vec::new(), Vec::new(), Vec::new(), None, Vec::new()),
-    };
-    HostInventory {
-        name: host.name.clone(),
-        env_id: host.env_id.clone(),
-        seen,
-        reachable: false,
-        load1: None,
-        worktrees,
-        agents,
-        prs,
-        tool_error: None,
-        herdr_error: None,
-        pr_error,
-        missing_repos,
+    match cached {
+        Some(cached) => HostInventory {
+            name: host.name.clone(),
+            env_id: host.env_id.clone(),
+            reachable: false,
+            load1: None,
+            tool_error: None,
+            herdr_error: None,
+            ..cached
+        },
+        None => HostInventory::new(host, now),
     }
 }
 
@@ -398,6 +436,23 @@ pub fn load(state: &StateDir, env_id: &str) -> anyhow::Result<Option<HostInvento
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(err) => Err(err).with_context(|| format!("reading {}", path.display())),
     }
+}
+
+/// The host of every cached record, sorted by name with the gone ones after the live ones, so a
+/// lookup by name finds a live host before a gone one of the same name.
+pub fn hosts(state: &StateDir) -> anyhow::Result<Vec<Host>> {
+    let mut records = load_all(state)?;
+    records.sort_by_key(|record| record.gone);
+    Ok(records.iter().map(HostInventory::host).collect())
+}
+
+/// The host of every cached record not marked gone, sorted by name.
+pub fn live_hosts(state: &StateDir) -> anyhow::Result<Vec<Host>> {
+    Ok(load_all(state)?
+        .iter()
+        .filter(|record| !record.gone)
+        .map(HostInventory::host)
+        .collect())
 }
 
 /// Every cached inventory, sorted by host name.

@@ -8,7 +8,7 @@ use jiff::Timestamp;
 
 use crate::herdr::Agent;
 use crate::host;
-use crate::inventory::{self, HostInventory, Unreachable, Worktree};
+use crate::inventory::{self, HostInventory, Unreachable, Worktree, discovery};
 use crate::paths::StateDir;
 use crate::render;
 use crate::runner::{self, Runner};
@@ -18,9 +18,10 @@ const DETACHED: &str = "(detached)";
 const NO_LOAD: &str = "-";
 const ERROR_WIDTH: usize = 160;
 
-/// Prints the cached inventory of every host, refreshing every configured host first when
-/// `refresh` is set. A host that cannot be refreshed keeps its cache and fails the command once
-/// the rest are rendered; an unreachable host is recorded as such and does not fail it.
+/// Prints the cached inventory of every host, first discovering the host set and refreshing
+/// every probed host when `refresh` is set. A host that cannot be refreshed keeps its cache and
+/// fails the command once the rest are rendered; an unreachable host is recorded as such and
+/// does not fail it, and neither does Ona being unavailable.
 pub fn run(state: &StateDir, refresh: bool, json: bool) -> anyhow::Result<()> {
     let config = Config::load(state)?;
     let failed = if refresh {
@@ -43,19 +44,29 @@ pub fn run(state: &StateDir, refresh: bool, json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Refreshes every configured host in parallel, then joins the user's open PRs, listed once per
-/// repo, to each reachable host's worktrees, and writes each inventory. A repo whose PRs cannot
-/// be listed keeps each host's cached PRs of that repo. Returns the hosts that failed.
+/// Brings the host records in step with Ona or the static list, then refreshes every probed host
+/// in parallel, joins the user's open PRs, listed once per repo, to each reachable host's
+/// worktrees, and writes each inventory. A repo whose PRs cannot be listed keeps each host's
+/// cached PRs of that repo. Returns the hosts that failed.
 fn refresh_all(state: &StateDir, config: &Config) -> anyhow::Result<Vec<String>> {
-    let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
     let now = Timestamp::now();
+    let discovered = discovery::discover(state, &config.hosts, now)?;
+    if let Some(warning) = &discovered.warning {
+        eprintln!("{warning}");
+    }
+    let targets: Vec<(Host, HostInventory)> = discovered
+        .records
+        .into_iter()
+        .filter(HostInventory::should_probe)
+        .map(|record| (record.host(), record))
+        .collect();
+    let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
     let results: Vec<(&Host, anyhow::Result<HostInventory>)> = thread::scope(|scope| {
-        let handles: Vec<_> = config
-            .hosts
+        let handles: Vec<_> = targets
             .iter()
-            .map(|host| {
+            .map(|(host, record)| {
                 let runner = &runner;
-                scope.spawn(move || (host, refresh_one(state, runner, config, host, now)))
+                scope.spawn(move || (host, refresh_one(runner, config, host, record, now)))
             })
             .collect();
         handles
@@ -114,29 +125,32 @@ fn refresh_all(state: &StateDir, config: &Config) -> anyhow::Result<Vec<String>>
     Ok(failed)
 }
 
-/// `host`'s fresh inventory, or its cached one marked unreachable when it does not answer.
+/// `host`'s fresh inventory keeping what discovery recorded in `record`, or `record` marked
+/// unreachable when the host does not answer.
 fn refresh_one(
-    state: &StateDir,
     runner: &Arc<dyn Runner>,
     config: &Config,
     host: &Host,
+    record: &HostInventory,
     now: Timestamp,
 ) -> anyhow::Result<HostInventory> {
     match inventory::refresh(runner, host, &config.repos, &config.herdr_sessions, now) {
+        Ok(fresh) => Ok(HostInventory {
+            ssh_alias: record.ssh_alias.clone(),
+            ona_name: record.ona_name.clone(),
+            ona_phase: record.ona_phase.clone(),
+            ..fresh
+        }),
         Err(err) if err.is::<Unreachable>() => {
             eprintln!("{err:#}");
-            Ok(inventory::unreachable(
-                host,
-                inventory::load(state, &host.env_id)?,
-                now,
-            ))
+            Ok(inventory::unreachable(host, Some(record.clone()), now))
         }
-        result => result,
+        Err(err) => Err(err),
     }
 }
 
 /// The user's open PRs per configured repo, `(repo name, PRs)` in config order. Each repo is
-/// listed on this machine when it is a reachable configured host with the repo checked out, else
+/// listed on this machine when it is a reachable host with the repo checked out, else
 /// on the first reachable host that has it (gh's login is shared across hosts). A repo's entry
 /// holds the reason when no reachable host has it or its listing fails.
 fn list_prs(
@@ -168,14 +182,25 @@ fn list_prs(
         .collect()
 }
 
-/// Each inventory's block, separated by blank lines; worktrees are grouped under a `repo <name>`
-/// line per repo when `by_repo` is set.
+/// Each live host's block, separated by blank lines, then a `gone: <names>` line naming the
+/// hosts that left the host set; worktrees are grouped under a `repo <name>` line per repo when
+/// `by_repo` is set.
 fn render_all(inventories: &[HostInventory], by_repo: bool, now: Timestamp) -> String {
-    inventories
+    let (gone, live): (Vec<&HostInventory>, Vec<&HostInventory>) =
+        inventories.iter().partition(|inv| inv.gone);
+    let mut out = live
         .iter()
         .map(|inv| render_block(inv, by_repo, now))
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+    if !gone.is_empty() {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        let names: Vec<&str> = gone.iter().map(|inv| inv.name.as_str()).collect();
+        out.push_str(&format!("gone: {}\n", names.join(", ")));
+    }
+    out
 }
 
 /// The header `name  reachable|unreachable  load <load1>  <N> worktrees  <N> agents  (seen

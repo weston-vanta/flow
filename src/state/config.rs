@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -9,7 +10,10 @@ use crate::paths::StateDir;
 /// Operator configuration from `state/config.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Config {
-    pub hosts: Vec<Host>,
+    /// Where the host set comes from, and overrides for discovered hosts. The hosts themselves
+    /// are the cached records in `state/hosts/`.
+    #[serde(default)]
+    pub hosts: HostsConfig,
     /// The repositories tasks can get worktrees of, checked out at the same path on every host.
     #[serde(default)]
     pub repos: Vec<Repo>,
@@ -17,6 +21,29 @@ pub struct Config {
     /// sessions the user starts sessions in by hand.
     #[serde(default = "default_herdr_sessions")]
     pub herdr_sessions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct HostsConfig {
+    pub source: HostSource,
+    /// Ona environment ids that are never hosts.
+    pub exclude: Vec<String>,
+    /// Ona environment id to host name, in place of the slug of the environment's name.
+    pub names: BTreeMap<String, String>,
+    /// The host set when `source = "static"`; unused otherwise.
+    #[serde(rename = "static")]
+    pub static_hosts: Vec<Host>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HostSource {
+    /// Every environment the Ona CLI lists is a host.
+    #[default]
+    Ona,
+    /// The hosts are `static_hosts`.
+    Static,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -53,6 +80,23 @@ pub struct WorktreeTool {
     pub list: Vec<String>,
 }
 
+const HOSTS_ARRAY_MOVED: &str = "the [[hosts]] list is now [[hosts.static]] under [hosts] with \
+     source = \"static\"; remove it to discover hosts from Ona";
+
+fn parse(text: &str) -> anyhow::Result<Config> {
+    match toml::from_str(text) {
+        Ok(config) => Ok(config),
+        Err(err) => {
+            let hosts_is_array = toml::from_str::<toml::Table>(text)
+                .is_ok_and(|table| table.get("hosts").is_some_and(toml::Value::is_array));
+            if hosts_is_array {
+                bail!(HOSTS_ARRAY_MOVED);
+            }
+            Err(err.into())
+        }
+    }
+}
+
 fn default_herdr_sessions() -> Vec<String> {
     ["flow", "default"].map(str::to_owned).to_vec()
 }
@@ -66,7 +110,7 @@ impl Config {
         let path = state.root().join("config.toml");
         let text =
             fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+        parse(&text).with_context(|| format!("parsing {}", path.display()))
     }
 
     /// The repo named `name`, or with no name the only configured repo.
@@ -98,15 +142,8 @@ mod tests {
 
     use super::*;
 
-    const HOSTS: &str = r#"
-[[hosts]]
-name = "host-a"
-env_id = "env-0001"
-ssh_alias = "host-a.example"
-"#;
-
     fn parse(repos: &str) -> Config {
-        toml::from_str(&format!("{repos}{HOSTS}")).unwrap()
+        super::parse(repos).unwrap()
     }
 
     #[test]
@@ -170,5 +207,41 @@ worktrees_dir = "/work/other.wt"
             Some(["wt", "--json", "list"].map(str::to_owned).to_vec()),
             "the tool's list command defaults to wt's"
         );
+    }
+
+    #[test]
+    fn config_hosts_default_to_ona_discovery() {
+        let config = parse("");
+        assert_eq!(config.hosts, HostsConfig::default());
+        assert_eq!(config.hosts.source, HostSource::Ona);
+
+        let config = parse(
+            r#"
+[hosts]
+source = "static"
+exclude = ["env-0009"]
+names = { env-0001 = "main-box" }
+
+[[hosts.static]]
+name = "host-a"
+env_id = "env-0001"
+ssh_alias = "host-a.example"
+"#,
+        );
+        assert_eq!(config.hosts.source, HostSource::Static);
+        assert_eq!(config.hosts.exclude, ["env-0009"]);
+        assert_eq!(config.hosts.names["env-0001"], "main-box");
+        assert_eq!(config.hosts.static_hosts[0].ssh_alias, "host-a.example");
+
+        let err = super::parse(
+            r#"
+[[hosts]]
+name = "host-a"
+env_id = "env-0001"
+ssh_alias = "host-a.example"
+"#,
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("[[hosts.static]]"), "{err:#}");
     }
 }

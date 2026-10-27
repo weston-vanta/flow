@@ -9,24 +9,26 @@ use super::attach;
 use crate::harness::handshake::{self, AgentStart};
 use crate::herdr::{self, Herdr};
 use crate::host;
+use crate::inventory;
 use crate::paths::StateDir;
 use crate::runner::{self, Runner};
-use crate::state::config::{Config, Host};
+use crate::state::config::Host;
 use crate::state::task::HerdrTarget;
 use crate::supervisor::{self, Lock, SUPERVISOR_CWD, SUPERVISOR_ENV, SUPERVISOR_NAME};
 
 const AGENT_KIND: &str = "claude";
 
 pub fn run(state: &StateDir) -> anyhow::Result<()> {
-    let config = Config::load(state)?;
     let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
     let herdr = Herdr::new(runner);
+    let hosts = inventory::hosts(state)?;
     if let Some(lock) = supervisor::load(state)?
-        && let Some(host) = live_host(&config, &herdr, &lock)?
+        && let Some(host) = live_host(&hosts, &herdr, &lock)?
     {
         return attach::exec(&lock, host);
     }
-    let here = local_host(&config)?;
+    let live = inventory::live_hosts(state)?;
+    let here = local_host(&live)?;
     let lock = start(state, &herdr, here)?;
     attach::exec(&lock, here)
 }
@@ -34,13 +36,13 @@ pub fn run(state: &StateDir) -> anyhow::Result<()> {
 /// The host running the supervisor `lock` names, when its pane still holds an agent. Fails when
 /// that host cannot be reached, since the supervisor may well be alive there.
 fn live_host<'a>(
-    config: &'a Config,
+    hosts: &'a [Host],
     herdr: &Herdr,
     lock: &Lock,
 ) -> anyhow::Result<Option<&'a Host>> {
-    let Some(host) = attach::host(config, lock) else {
+    let Some(host) = attach::host(hosts, lock) else {
         eprintln!(
-            "supervisor host {} is not in config.toml; starting a new supervisor here",
+            "supervisor host {} is not a known host; starting a new supervisor here",
             lock.host_env_id
         );
         return Ok(None);
@@ -63,16 +65,16 @@ fn live_host<'a>(
     Ok(live.then_some(host))
 }
 
-fn local_host(config: &Config) -> anyhow::Result<&Host> {
+/// The host in `live` this process runs on.
+fn local_host(live: &[Host]) -> anyhow::Result<&Host> {
     let local_env_id = host::local_env_id();
-    config
-        .hosts
-        .iter()
+    live.iter()
         .find(|c| host::is_local(c, local_env_id.as_deref()))
         .ok_or_else(|| {
             anyhow!(
-                "this machine is not a host in config.toml ($ONA_ID is {}); flow up starts the \
-                 supervisor only on a configured host",
+                "this machine is not a known host ($ONA_ID is {}); flow up starts the \
+                 supervisor only on a known host; run `flow inventory --refresh` to discover \
+                 hosts",
                 local_env_id.as_deref().unwrap_or("unset")
             )
         })

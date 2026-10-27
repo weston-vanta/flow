@@ -1,8 +1,8 @@
-//! Which host this process runs on, and lookups over the configured hosts.
+//! Which host this process runs on, and lookups over the known hosts (`inventory::hosts`).
 
 use anyhow::anyhow;
 
-use crate::state::config::{Config, Host};
+use crate::state::config::Host;
 
 const LOCAL_ENV_ID_VAR: &str = "ONA_ID";
 
@@ -18,23 +18,25 @@ pub fn is_local(host: &Host, local_env_id: Option<&str>) -> bool {
     local_env_id == Some(host.env_id.as_str())
 }
 
-/// The configured host named `name`.
-pub fn find<'a>(config: &'a Config, name: &str) -> anyhow::Result<&'a Host> {
-    config
-        .hosts
-        .iter()
-        .find(|host| host.name == name)
-        .ok_or_else(|| anyhow!("no host named {name:?} in config.toml"))
+/// The host named `name` in `hosts`; the first one when several share it.
+pub fn find<'a>(hosts: &'a [Host], name: &str) -> anyhow::Result<&'a Host> {
+    hosts.iter().find(|host| host.name == name).ok_or_else(|| {
+        anyhow!("no host named {name:?}; run `flow inventory --refresh` to discover hosts")
+    })
 }
 
-/// The configured host this process runs on, found by `$ONA_ID`.
-pub fn local(config: &Config) -> anyhow::Result<&Host> {
+/// The host in `hosts` this process runs on, found by `$ONA_ID`.
+pub fn local(hosts: &[Host]) -> anyhow::Result<&Host> {
     let env_id = local_env_id().ok_or_else(|| {
         anyhow!("${LOCAL_ENV_ID_VAR} is not set, so this machine is unknown; pass --host")
     })?;
-    config
-        .hosts
+    hosts
         .iter()
         .find(|host| is_local(host, Some(&env_id)))
-        .ok_or_else(|| anyhow!("this machine ({env_id}) is not a configured host"))
+        .ok_or_else(|| {
+            anyhow!(
+                "this machine ({env_id}) is not a known host; run `flow inventory --refresh` \
+                 to discover hosts"
+            )
+        })
 }

@@ -21,12 +21,13 @@ use crate::state::task::{Status, TaskRecord};
 const ADOPTED: &str = "adopted";
 const SUMMARY_WIDTH: usize = 80;
 
-/// Lists every herdr agent on every configured host, asking herdr now. A host that answers gets
+/// Lists every herdr agent on every live host, asking herdr now. A host that answers gets
 /// its cached agents and herdr error replaced; one that does not shows its cached agents.
 pub fn run(state: &StateDir, json: bool) -> anyhow::Result<()> {
     let config = Config::load(state)?;
     let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
-    let inventories = live_inventories(state, &runner, &config, Timestamp::now())?;
+    let hosts = inventory::live_hosts(state)?;
+    let inventories = live_inventories(state, &runner, &config, &hosts, Timestamp::now())?;
     let tasks = Store::open(state).list_tasks()?;
     let claude_home = adopt::claude_home()?;
     let registry = adopt::registry_sessions(&claude_home)?;
@@ -48,6 +49,7 @@ pub fn run(state: &StateDir, json: bool) -> anyhow::Result<()> {
 pub fn count_adopted(state: &StateDir, tasks: &[(TaskRecord, Status)]) -> anyhow::Result<usize> {
     Ok(inventory::load_all(state)?
         .iter()
+        .filter(|inv| !inv.gone)
         .flat_map(|inv| adopt::match_agents(&inv.name, &inv.agents, tasks, &[]))
         .filter(|adopted| adopted.task.is_none())
         .count())
@@ -59,7 +61,7 @@ pub fn count_adopted(state: &StateDir, tasks: &[(TaskRecord, Status)]) -> anyhow
 pub fn run_follow(state: &StateDir, host: &str, pane_id: &str) -> anyhow::Result<()> {
     let agents: Vec<Agent> = inventory::load_all(state)?
         .into_iter()
-        .filter(|inv| inv.name == host)
+        .filter(|inv| !inv.gone && inv.name == host)
         .flat_map(|inv| inv.agents)
         .filter(|agent| agent.pane_id == pane_id)
         .collect();
@@ -98,16 +100,16 @@ pub fn run_unfollow(state: &StateDir, host: &str, pane_id: &str) -> anyhow::Resu
     Ok(())
 }
 
-/// Every configured host's inventory with live agents, asked in parallel, in config order.
+/// Each of `hosts`' inventory with live agents, asked in parallel, in the order given.
 fn live_inventories(
     state: &StateDir,
     runner: &Arc<dyn Runner>,
     config: &Config,
+    hosts: &[Host],
     now: Timestamp,
 ) -> anyhow::Result<Vec<HostInventory>> {
     thread::scope(|scope| {
-        let handles: Vec<_> = config
-            .hosts
+        let handles: Vec<_> = hosts
             .iter()
             .map(|host| scope.spawn(move || live_inventory(state, runner, config, host, now)))
             .collect();

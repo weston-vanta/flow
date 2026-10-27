@@ -1,0 +1,31 @@
+[
+  {
+    "id": "00000000-0000-4000-8000-000000000001",
+    "metadata": {
+      "name": "Primary",
+      "creator": { "id": "00000000-0000-4000-8000-0000000000aa", "principal": "PRINCIPAL_USER" },
+      "createdAt": "2026-10-01T09:00:00Z"
+    },
+    "spec": { "desiredPhase": "ENVIRONMENT_PHASE_RUNNING" },
+    "status": {
+      "phase": "ENVIRONMENT_PHASE_RUNNING",
+      "content": {
+        "contentLocationInMachine": "/workspaces/example-repo",
+        "git": { "branch": "main" }
+      }
+    }
+  },
+  {
+    "id": "00000000-0000-4000-8000-000000000002",
+    "metadata": { "name": "Side Project", "createdAt": "2026-10-02T09:00:00Z" },
+    "status": { "phase": "ENVIRONMENT_PHASE_RUNNING", "content": {} }
+  },
+  {
+    "id": "00000000-0000-4000-8000-000000000003",
+    "metadata": { "name": "Scratch Box", "createdAt": "2026-10-03T09:00:00Z" },
+    "status": {
+      "phase": "ENVIRONMENT_PHASE_STOPPED",
+      "content": { "contentLocationInMachine": "/workspaces/example-repo" }
+    }
+  }
+]

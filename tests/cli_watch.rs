@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command as StdCommand, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -21,16 +21,22 @@ path = "/work/repo"
 default_branch = "main"
 worktree_tool = { create = ["wt", "create", "{branch}"] }
 
-[[hosts]]
-name = "host-a"
-env_id = "env-0001"
-ssh_alias = "host-a.example"
-
-[[hosts]]
-name = "host-b"
-env_id = "env-0002"
-ssh_alias = "host-b.example"
 "#;
+
+/// Writes cached records of `host-a` (env `env-0001`) and `host-b` (env `env-0002`), the hosts
+/// discovery would have found.
+fn write_hosts(state: &Path) {
+    let hosts = state.join("hosts");
+    fs::create_dir_all(&hosts).unwrap();
+    for (name, env_id) in [("host-a", "env-0001"), ("host-b", "env-0002")] {
+        let record = serde_json::json!({
+            "name": name, "env_id": env_id, "ssh_alias": format!("{name}.example"),
+            "seen": "2026-10-26T09:00:00Z", "reachable": true, "load1": null,
+            "worktrees": [], "agents": [], "prs": [],
+        });
+        fs::write(hosts.join(format!("{env_id}.json")), record.to_string()).unwrap();
+    }
+}
 
 const TASK: &str = "aaaaaaab";
 const OTHER_TASK: &str = "aaaaaaac";
@@ -49,6 +55,7 @@ impl Fixture {
         let state = dir.path().join("state");
         fs::create_dir(&state).unwrap();
         fs::write(state.join("config.toml"), CONFIG).unwrap();
+        write_hosts(&state);
         let fixture = Fixture { dir, state };
         fixture.script(&[]);
         fixture

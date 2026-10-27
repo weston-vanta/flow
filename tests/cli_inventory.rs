@@ -11,12 +11,15 @@ path = "/workspaces/acme"
 default_branch = "main"
 worktree_tool = { create = ["wt", "create", "{branch}"] }
 
-[[hosts]]
+[hosts]
+source = "static"
+
+[[hosts.static]]
 name = "host-a"
 env_id = "env-0001"
 ssh_alias = "host-a.example"
 
-[[hosts]]
+[[hosts.static]]
 name = "host-b"
 env_id = "env-0002"
 ssh_alias = "host-b.example"
@@ -73,8 +76,22 @@ impl Fixture {
         let mut cmd = Command::cargo_bin("flow").expect("flow binary is built");
         cmd.env("FLOW_STATE", &self.state)
             .env("ONA_ID", "env-0001")
-            .env("FLOW_FAKE_RUNNER", self.script_path());
+            .env("FLOW_FAKE_RUNNER", self.script_path())
+            .env("FLOW_FAKE_ONA", self.ona_path());
         cmd
+    }
+
+    /// The Ona listing `flow` reads; missing until `write_ona`, so listing fails by default.
+    fn ona_path(&self) -> PathBuf {
+        self.dir.path().join("ona.json")
+    }
+
+    fn write_ona(&self, listing: &Value) {
+        fs::write(self.ona_path(), listing.to_string()).unwrap();
+    }
+
+    fn use_ona_fixture(&self) {
+        fs::copy(ona_fixture(), self.ona_path()).unwrap();
     }
 
     /// `(host, argv)` of every runner call.
@@ -122,13 +139,18 @@ fn default_session_stopped(host: &str) -> Value {
 
 /// Every probe of `host-a` succeeding, in call order.
 fn host_a_probes() -> Vec<Value> {
+    probes("host-a")
+}
+
+/// Every probe of `host` succeeding, in call order.
+fn probes(host: &str) -> Vec<Value> {
     vec![
-        on("host-a", PORCELAIN),
-        on("host-a", WT_LIST),
-        on("host-a", LOADAVG),
-        on("host-a", SERVER_RUNNING),
-        on("host-a", AGENT_LIST),
-        default_session_stopped("host-a"),
+        on(host, PORCELAIN),
+        on(host, WT_LIST),
+        on(host, LOADAVG),
+        on(host, SERVER_RUNNING),
+        on(host, AGENT_LIST),
+        default_session_stopped(host),
     ]
 }
 
@@ -148,10 +170,10 @@ fn stdout_of(cmd: &mut Command) -> String {
 
 fn single_host_config(fx: &Fixture) {
     let config = CONFIG
-        .split("[[hosts]]")
+        .split("[[hosts.static]]")
         .take(2)
         .collect::<Vec<_>>()
-        .join("[[hosts]]");
+        .join("[[hosts.static]]");
     fs::write(fx.state.join("config.toml"), config).unwrap();
 }
 
@@ -424,7 +446,10 @@ name = "other-repo"
 path = "/work/other"
 default_branch = "main"
 
-[[hosts]]
+[hosts]
+source = "static"
+
+[[hosts.static]]
 name = "host-a"
 env_id = "env-0001"
 ssh_alias = "host-a.example"
@@ -569,12 +594,15 @@ name = "other-repo"
 path = "/work/other"
 default_branch = "main"
 
-[[hosts]]
+[hosts]
+source = "static"
+
+[[hosts.static]]
 name = "host-a"
 env_id = "env-0001"
 ssh_alias = "host-a.example"
 
-[[hosts]]
+[[hosts.static]]
 name = "host-b"
 env_id = "env-0002"
 ssh_alias = "host-b.example"
@@ -703,10 +731,10 @@ branch refs/heads/fix-y
 fn inventory_reports_a_repo_no_host_has() {
     let fx = Fixture::new();
     let config = TWO_REPOS_TWO_HOSTS
-        .split("[[hosts]]")
+        .split("[[hosts.static]]")
         .take(2)
         .collect::<Vec<_>>()
-        .join("[[hosts]]");
+        .join("[[hosts.static]]");
     fs::write(fx.state.join("config.toml"), config).unwrap();
     let mut script = host_a_without_other(other_git_failed(
         "fatal: not a git repository (or any of the parent directories): .git\n",
@@ -755,4 +783,235 @@ fn inventory_fails_a_host_whose_repo_git_cannot_read() {
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert!(stderr.contains("Permission denied"), "{stderr}");
     assert!(stderr.contains("could not refresh host-a"), "{stderr}");
+}
+
+const PRIMARY: &str = "00000000-0000-4000-8000-000000000001";
+const SIDE_PROJECT: &str = "00000000-0000-4000-8000-000000000002";
+const SCRATCH_BOX: &str = "00000000-0000-4000-8000-000000000003";
+
+/// Repos only: hosts come from Ona.
+const ONA_CONFIG: &str = r#"
+[[repos]]
+name = "example-repo"
+path = "/workspaces/acme"
+default_branch = "main"
+worktree_tool = { create = ["wt", "create", "{branch}"] }
+"#;
+
+fn ona_fixture() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ona/environment_list.json")
+}
+
+/// A cached record of a host that has never been probed.
+fn bare_record(name: &str, env_id: &str, ssh_alias: &str) -> Value {
+    json!({
+        "name": name, "env_id": env_id, "ssh_alias": ssh_alias,
+        "seen": "2026-10-20T09:00:00Z", "reachable": true, "load1": null,
+        "worktrees": [], "agents": [], "prs": [],
+    })
+}
+
+/// Host names of every runner call, deduplicated and sorted.
+fn called_hosts(fx: &Fixture) -> Vec<String> {
+    let mut hosts: Vec<String> = fx.calls().into_iter().map(|(host, _)| host).collect();
+    hosts.sort();
+    hosts.dedup();
+    hosts
+}
+
+fn stderr_of(cmd: &mut Command) -> String {
+    let out = cmd.assert().success().get_output().clone();
+    String::from_utf8(out.stderr).unwrap()
+}
+
+#[test]
+fn refresh_adds_new_hosts_and_marks_gone() {
+    let fx = Fixture::new();
+    fs::write(fx.state.join("config.toml"), ONA_CONFIG).unwrap();
+    fx.use_ona_fixture();
+    fx.write_cache(PRIMARY, &bare_record("old-name", PRIMARY, ""));
+    fx.write_cache("env-retired", &bare_record("retired", "env-retired", ""));
+    let mut script = probes("primary");
+    script.extend(probes("side-project"));
+    script.push(on("primary", PR_LIST));
+
+    let stdout = stdout_of(
+        fx.flow(&script)
+            .env("ONA_ID", PRIMARY)
+            .args(["inventory", "--refresh"]),
+    );
+
+    let primary = fx.cached(PRIMARY);
+    assert_eq!(primary["name"], "primary");
+    assert_eq!(primary["ona_name"], "Primary");
+    assert_eq!(
+        primary["ssh_alias"],
+        format!("{PRIMARY}.ona.environment").as_str()
+    );
+    assert_eq!(primary["ona_phase"], "ENVIRONMENT_PHASE_RUNNING");
+    assert_eq!(primary["gone"], false);
+    assert_eq!(primary["reachable"], true);
+    assert_eq!(primary["worktrees"].as_array().unwrap().len(), 3);
+    assert_eq!(primary["prs"][0]["number"], 12);
+
+    let added = fx.cached(SIDE_PROJECT);
+    assert_eq!(added["name"], "side-project");
+    assert_eq!(added["ona_name"], "Side Project");
+    assert_eq!(added["gone"], false);
+    assert_eq!(added["reachable"], true);
+
+    let stopped = fx.cached(SCRATCH_BOX);
+    assert_eq!(stopped["name"], "scratch-box");
+    assert_eq!(stopped["ona_phase"], "ENVIRONMENT_PHASE_STOPPED");
+    assert_eq!(stopped["reachable"], false);
+    assert_eq!(stopped["gone"], false);
+    assert_eq!(stopped["worktrees"], json!([]));
+
+    let retired = fx.cached("env-retired");
+    assert_eq!(retired["gone"], true);
+    assert_eq!(retired["name"], "retired");
+
+    assert_eq!(
+        called_hosts(&fx),
+        ["primary", "side-project"],
+        "stopped and gone hosts are not probed"
+    );
+    let headers: Vec<&str> = stdout
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with(' '))
+        .collect();
+    assert_eq!(headers.len(), 4, "{stdout}");
+    assert!(headers[0].starts_with("primary  reachable  "), "{stdout}");
+    assert!(
+        headers[1].starts_with("scratch-box  unreachable  "),
+        "{stdout}"
+    );
+    assert!(
+        headers[2].starts_with("side-project  reachable  "),
+        "{stdout}"
+    );
+    assert_eq!(headers[3], "gone: retired", "{stdout}");
+
+    let listed = stdout_of(fx.flow(&[]).args(["host", "list"]));
+    let names: Vec<&str> = listed
+        .lines()
+        .map(|line| line.split_whitespace().next().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        ["primary", "scratch-box", "side-project", "retired"],
+        "{listed}"
+    );
+}
+
+#[test]
+fn refresh_without_ona_keeps_cached_hosts() {
+    let fx = Fixture::new();
+    fs::write(fx.state.join("config.toml"), ONA_CONFIG).unwrap();
+    fx.write_cache(
+        "env-0001",
+        &bare_record("host-a", "env-0001", "host-a.example"),
+    );
+    fx.write_cache(
+        "env-0002",
+        &bare_record("host-b", "env-0002", "host-b.example"),
+    );
+    let script = || {
+        let mut script = probes("host-a");
+        script.extend(probes("host-b"));
+        script.push(on("host-a", PR_LIST));
+        script
+    };
+
+    let stderr = stderr_of(fx.flow(&script()).args(["inventory", "--refresh"]));
+
+    let lines: Vec<&str> = stderr.lines().collect();
+    assert_eq!(lines.len(), 1, "{stderr}");
+    assert!(lines[0].starts_with("ona: "), "{stderr}");
+    assert!(lines[0].ends_with("; using 2 cached hosts"), "{stderr}");
+    assert_eq!(called_hosts(&fx), ["host-a", "host-b"]);
+    for (env_id, name, alias) in [
+        ("env-0001", "host-a", "host-a.example"),
+        ("env-0002", "host-b", "host-b.example"),
+    ] {
+        let cached = fx.cached(env_id);
+        assert_eq!(cached["name"], name);
+        assert_eq!(cached["ssh_alias"], alias);
+        assert_eq!(cached["gone"], false);
+        assert_eq!(cached["reachable"], true);
+    }
+
+    fx.write_ona(&json!([{
+        "id": "env-0001",
+        "metadata": {"name": "Renamed"},
+        "status": {"phase": "ENVIRONMENT_PHASE_RUNNING"},
+    }]));
+    let stderr = stderr_of(fx.flow(&script()).args(["inventory", "--refresh"]));
+
+    assert_eq!(
+        stderr,
+        "ona: only the current environment is visible; run gitpod login\n"
+    );
+    assert_eq!(fx.cached("env-0001")["name"], "host-a");
+    assert_eq!(fx.cached("env-0002")["gone"], false);
+}
+
+#[test]
+fn static_hosts_bypass_discovery() {
+    let fx = Fixture::new();
+    fx.write_cache("env-0001", &bare_record("old-name", "env-0001", ""));
+    fx.write_cache("env-retired", &bare_record("retired", "env-retired", ""));
+    let mut script = host_a_probes();
+    script.extend(probes("host-b"));
+    script.push(on("host-a", PR_LIST));
+
+    stdout_of(fx.flow(&script).args(["inventory", "--refresh"]));
+
+    let host_a = fx.cached("env-0001");
+    assert_eq!(host_a["name"], "host-a");
+    assert_eq!(host_a["ssh_alias"], "host-a.example");
+    assert_eq!(host_a["gone"], false);
+    assert_eq!(host_a["ona_name"], Value::Null);
+    assert_eq!(fx.cached("env-0002")["ssh_alias"], "host-b.example");
+    assert_eq!(fx.cached("env-retired")["gone"], true);
+    assert_eq!(called_hosts(&fx), ["host-a", "host-b"]);
+}
+
+#[test]
+fn name_overrides_apply() {
+    let fx = Fixture::new();
+    let config = format!(
+        r#"{ONA_CONFIG}
+[hosts]
+exclude = ["{SCRATCH_BOX}"]
+
+[hosts.names]
+"{PRIMARY}" = "side-project"
+"#
+    );
+    fs::write(fx.state.join("config.toml"), config).unwrap();
+    fx.use_ona_fixture();
+    let mut script = probes("side-project");
+    script.extend(probes("side-project-2"));
+    script.push(on("side-project", PR_LIST));
+
+    stdout_of(
+        fx.flow(&script)
+            .env("ONA_ID", PRIMARY)
+            .args(["inventory", "--refresh"]),
+    );
+
+    let primary = fx.cached(PRIMARY);
+    assert_eq!(primary["name"], "side-project");
+    assert_eq!(primary["ona_name"], "Primary");
+    let second = fx.cached(SIDE_PROJECT);
+    assert_eq!(
+        second["name"], "side-project-2",
+        "a name taken by a lower id gets a suffix"
+    );
+    assert!(
+        !fx.cache_path(SCRATCH_BOX).exists(),
+        "an excluded environment gets no record"
+    );
+    assert_eq!(called_hosts(&fx), ["side-project", "side-project-2"]);
 }

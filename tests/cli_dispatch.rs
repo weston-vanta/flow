@@ -14,11 +14,6 @@ name = "example-repo"
 path = "/workspaces/acme"
 default_branch = "main"
 worktree_tool = { create = ["wt", "create", "{branch}"] }
-
-[[hosts]]
-name = "host-a"
-env_id = "env-0001"
-ssh_alias = "host-a.example"
 "#;
 
 const AGENT_LIST: &str = include_str!("fixtures/herdr/agent_list.json");
@@ -61,7 +56,21 @@ impl Fixture {
         let state = dir.path().join("state");
         fs::create_dir(&state).unwrap();
         fs::write(state.join("config.toml"), CONFIG).unwrap();
-        Fixture { dir, state }
+        let fx = Fixture { dir, state };
+        fx.write_host("host-a", "env-0001", false);
+        fx
+    }
+
+    /// A cached record of `name` (env `env_id`) as discovery leaves it, marked gone when `gone`.
+    fn write_host(&self, name: &str, env_id: &str, gone: bool) {
+        let hosts = self.state.join("hosts");
+        fs::create_dir_all(&hosts).unwrap();
+        let record = json!({
+            "name": name, "env_id": env_id, "ssh_alias": format!("{name}.example"),
+            "gone": gone, "seen": "2026-10-26T09:00:00Z", "reachable": true, "load1": null,
+            "worktrees": [], "agents": [], "prs": [],
+        });
+        fs::write(hosts.join(format!("{env_id}.json")), record.to_string()).unwrap();
     }
 
     fn script_path(&self) -> PathBuf {
@@ -553,23 +562,6 @@ fn dispatch_unknown_host_exits_2() {
     assert!(fx.calls().is_empty());
 }
 
-const TWO_HOSTS: &str = r#"
-[[repos]]
-name = "example-repo"
-path = "/workspaces/acme"
-default_branch = "main"
-
-[[hosts]]
-name = "host-a"
-env_id = "env-0001"
-ssh_alias = "host-a.example"
-
-[[hosts]]
-name = "host-b"
-env_id = "env-0002"
-ssh_alias = "host-b.example"
-"#;
-
 const TWO_REPOS: &str = r#"
 [[repos]]
 name = "example-repo"
@@ -581,11 +573,6 @@ worktree_tool = { create = ["wt", "create", "{branch}"] }
 name = "other-repo"
 path = "/work/other"
 default_branch = "trunk"
-
-[[hosts]]
-name = "host-a"
-env_id = "env-0001"
-ssh_alias = "host-a.example"
 "#;
 
 const CHECKOUT_SENTENCE: &str =
@@ -593,7 +580,8 @@ const CHECKOUT_SENTENCE: &str =
 
 #[test]
 fn dispatch_defaults_to_the_local_host() {
-    let fx = Fixture::with_config(TWO_HOSTS);
+    let fx = Fixture::new();
+    fx.write_host("host-b", "env-0002", false);
 
     let out = fx
         .flow(&starts_working(Vec::new()))
@@ -615,7 +603,8 @@ fn dispatch_defaults_to_the_local_host() {
     assert_eq!(rec.cwd, Path::new(WORKTREE));
     assert_eq!(rec.repo, None);
 
-    let unset = Fixture::with_config(TWO_HOSTS);
+    let unset = Fixture::new();
+    unset.write_host("host-b", "env-0002", false);
     let out = unset
         .flow(&[])
         .env_remove("ONA_ID")
@@ -644,9 +633,31 @@ fn dispatch_refuses_unknown_local_host() {
 
     assert_eq!(
         String::from_utf8(out.stderr).unwrap(),
-        "this machine (env-9999) is not a configured host\n"
+        "this machine (env-9999) is not a known host; run `flow inventory --refresh` to \
+         discover hosts\n"
     );
     assert!(fx.calls().is_empty());
+    assert!(!fx.state.join("tasks").exists());
+}
+
+#[test]
+fn dispatch_refuses_a_gone_host() {
+    let fx = Fixture::new();
+    fx.write_host("host-b", "env-0002", true);
+
+    let out = fx
+        .flow(&[])
+        .args(local_dispatch_args(&["--host", "host-b"]))
+        .assert()
+        .code(2)
+        .get_output()
+        .clone();
+
+    assert_eq!(
+        String::from_utf8(out.stderr).unwrap(),
+        "host host-b is gone\n"
+    );
+    assert!(fx.calls_on("host-b").is_empty());
     assert!(!fx.state.join("tasks").exists());
 }
 

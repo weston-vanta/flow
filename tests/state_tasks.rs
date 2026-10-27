@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use flow::paths::StateDir;
 use flow::state::Store;
-use flow::state::config::Config;
+use flow::state::config::{Config, HostSource};
 use flow::state::events::{self, Event};
 use flow::state::task::{Harness, State, TaskRecord};
 use jiff::Timestamp;
@@ -120,13 +120,16 @@ path = "/workspaces/example-repo"
 default_branch = "main"
 worktree_tool = { create = ["wt", "create", "{branch}"] }
 
-[[hosts]]
+[hosts]
+source = "static"
+
+[[hosts.static]]
 name = "host-a"
 env_id = "env-0001"
 ssh_alias = "host-a.example"
 local_marker_env = ["EXAMPLE_ENV_ID", "env-0001"]
 
-[[hosts]]
+[[hosts.static]]
 name = "host-b"
 env_id = "env-0002"
 ssh_alias = "host-b.example"
@@ -136,15 +139,17 @@ ssh_alias = "host-b.example"
 
     let config = Config::load(&state).unwrap();
 
-    let names: Vec<_> = config.hosts.iter().map(|host| host.name.as_str()).collect();
+    let hosts = &config.hosts.static_hosts;
+    assert_eq!(config.hosts.source, HostSource::Static);
+    let names: Vec<_> = hosts.iter().map(|host| host.name.as_str()).collect();
     assert_eq!(names, ["host-a", "host-b"]);
-    assert_eq!(config.hosts[0].env_id, "env-0001");
-    assert_eq!(config.hosts[0].ssh_alias, "host-a.example");
+    assert_eq!(hosts[0].env_id, "env-0001");
+    assert_eq!(hosts[0].ssh_alias, "host-a.example");
     assert_eq!(
-        config.hosts[0].local_marker_env,
+        hosts[0].local_marker_env,
         Some(("EXAMPLE_ENV_ID".to_owned(), "env-0001".to_owned()))
     );
-    assert_eq!(config.hosts[1].local_marker_env, None);
+    assert_eq!(hosts[1].local_marker_env, None);
     let repo = config.repo(None).unwrap();
     assert_eq!(repo.name, "example-repo");
     assert_eq!(repo.path, Path::new("/workspaces/example-repo"));

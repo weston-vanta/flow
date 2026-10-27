@@ -8,10 +8,10 @@ use serde_json::json;
 
 use crate::herdr::{AgentStatus, Herdr};
 use crate::host;
+use crate::inventory;
 use crate::paths::StateDir;
 use crate::runner;
 use crate::state::Store;
-use crate::state::config::Config;
 use crate::state::events::Event;
 
 const EVENT_SOURCE: &str = "supervisor";
@@ -27,8 +27,8 @@ pub fn run(state: &StateDir, id: &str, text: &str) -> anyhow::Result<()> {
     let target = status
         .herdr
         .ok_or_else(|| anyhow!("task {id} has no herdr target"))?;
-    let config = Config::load(state)?;
-    let host = host::find(&config, &target.host)?;
+    let hosts = inventory::hosts(state)?;
+    let host = host::find(&hosts, &target.host)?;
     let herdr = Herdr::new(Arc::from(runner::from_env()?));
     let reached = herdr.prompt(host, &target.pane_id, text, &DELIVERED)?;
     store.append_event(

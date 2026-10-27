@@ -4,6 +4,7 @@ pub mod harness;
 pub mod herdr;
 pub mod host;
 pub mod inventory;
+pub mod ona;
 pub mod paths;
 pub mod render;
 pub mod runner;

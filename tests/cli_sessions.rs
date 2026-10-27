@@ -15,16 +15,22 @@ path = "/work/repo"
 default_branch = "main"
 worktree_tool = { create = ["wt", "create", "{branch}"] }
 
-[[hosts]]
-name = "host-a"
-env_id = "env-0001"
-ssh_alias = "host-a.example"
-
-[[hosts]]
-name = "host-b"
-env_id = "env-0002"
-ssh_alias = "host-b.example"
 "#;
+
+/// Writes cached records of `host-a` (env `env-0001`) and `host-b` (env `env-0002`), the hosts
+/// discovery would have found.
+fn write_hosts(state: &Path) {
+    let hosts = state.join("hosts");
+    fs::create_dir_all(&hosts).unwrap();
+    for (name, env_id) in [("host-a", "env-0001"), ("host-b", "env-0002")] {
+        let record = serde_json::json!({
+            "name": name, "env_id": env_id, "ssh_alias": format!("{name}.example"),
+            "seen": "2026-10-26T09:00:00Z", "reachable": true, "load1": null,
+            "worktrees": [], "agents": [], "prs": [],
+        });
+        fs::write(hosts.join(format!("{env_id}.json")), record.to_string()).unwrap();
+    }
+}
 
 const SERVER_RUNNING: &str = "status: running\nversion: 0.9.5\nendpoint_compatible: yes\n\
      private_protocol: 22\nprivate_protocol_compatible: yes\n\
@@ -52,6 +58,7 @@ impl Fixture {
         let state = dir.path().join("state");
         fs::create_dir(&state).unwrap();
         fs::write(state.join("config.toml"), CONFIG).unwrap();
+        write_hosts(&state);
 
         let claude_fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude");
         let home = dir.path().join("claude");
@@ -154,12 +161,7 @@ impl Fixture {
     }
 
     fn single_host(&self) {
-        let config = CONFIG
-            .split("[[hosts]]")
-            .take(2)
-            .collect::<Vec<_>>()
-            .join("[[hosts]]");
-        fs::write(self.state.join("config.toml"), config).unwrap();
+        fs::remove_file(self.cache_path("env-0002")).unwrap();
     }
 }
 

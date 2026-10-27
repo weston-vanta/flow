@@ -6,32 +6,29 @@ use std::process::Command;
 use anyhow::{Context, anyhow};
 
 use crate::host;
+use crate::inventory;
 use crate::paths::StateDir;
 use crate::runner;
-use crate::state::config::{Config, Host};
+use crate::state::config::Host;
 use crate::supervisor::{self, Lock};
 
 pub fn run(state: &StateDir) -> anyhow::Result<()> {
-    let config = Config::load(state)?;
     let lock = supervisor::load(state)?.ok_or_else(|| {
         anyhow!("no supervisor recorded in state/supervisor/lock.json; run `flow up` to start one")
     })?;
-    let host = host(&config, &lock).ok_or_else(|| {
+    let hosts = inventory::hosts(state)?;
+    let host = host(&hosts, &lock).ok_or_else(|| {
         anyhow!(
-            "supervisor host {} is not in config.toml; run `flow up` to start a new \
-             supervisor",
+            "supervisor host {} is not a known host; run `flow up` to start a new supervisor",
             lock.host_env_id
         )
     })?;
     exec(&lock, host)
 }
 
-/// The configured host the lock says the supervisor runs on.
-pub(crate) fn host<'a>(config: &'a Config, lock: &Lock) -> Option<&'a Host> {
-    config
-        .hosts
-        .iter()
-        .find(|host| host.env_id == lock.host_env_id)
+/// The host in `hosts` the lock says the supervisor runs on.
+pub(crate) fn host<'a>(hosts: &'a [Host], lock: &Lock) -> Option<&'a Host> {
+    hosts.iter().find(|host| host.env_id == lock.host_env_id)
 }
 
 /// Runs the attach command in place of this process, so it owns the terminal. Under the fake

@@ -10,25 +10,45 @@ name = "example-repo"
 path = "/workspaces/example-repo"
 default_branch = "main"
 worktree_tool = { create = ["wt", "create", "{branch}"] }
-
-[[hosts]]
-name = "host-a"
-env_id = "env-0001"
-ssh_alias = "host-a.example"
-
-[[hosts]]
-name = "host-b"
-env_id = "env-0002"
-ssh_alias = "host-b.example"
 "#;
 
-/// A temp dir holding `state/config.toml` with `host-a` (env `env-0001`) and `host-b`.
+/// A temp dir holding `state/config.toml` and cached records of `host-a` (env `env-0001`,
+/// running and reachable) and `host-b` (static, unreachable), both seen five minutes ago.
 fn setup() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");
     fs::create_dir(&state).unwrap();
     fs::write(state.join("config.toml"), CONFIG).unwrap();
+    write_record(
+        &state,
+        &json!({
+            "name": "host-a", "env_id": "env-0001", "ssh_alias": "host-a.example",
+            "reachable": true, "ona_phase": "ENVIRONMENT_PHASE_RUNNING",
+        }),
+    );
+    write_record(
+        &state,
+        &json!({
+            "name": "host-b", "env_id": "env-0002", "ssh_alias": "host-b.example",
+            "reachable": false,
+        }),
+    );
     (dir, state)
+}
+
+/// Writes `fields` over a bare record seen five minutes ago to `state/hosts/<env_id>.json`.
+fn write_record(state: &Path, fields: &serde_json::Value) {
+    let seen = jiff::Timestamp::now() - jiff::SignedDuration::from_mins(5);
+    let mut record = json!({
+        "seen": seen.to_string(), "load1": null, "worktrees": [], "agents": [], "prs": [],
+    });
+    for (key, value) in fields.as_object().unwrap() {
+        record[key] = value.clone();
+    }
+    let hosts = state.join("hosts");
+    fs::create_dir_all(&hosts).unwrap();
+    let env_id = record["env_id"].as_str().unwrap().to_owned();
+    fs::write(hosts.join(format!("{env_id}.json")), record.to_string()).unwrap();
 }
 
 /// `flow` on `state`, running as the host whose env id is `env-0001` (`host-a`).
@@ -47,7 +67,40 @@ fn host_list_marks_the_local_host() {
         .args(["host", "list"])
         .assert()
         .success()
-        .stdout("host-a  env-0001  local\nhost-b  env-0002\n");
+        .stdout(
+            "host-a  env-0001  running  5m  reachable    local\n\
+             host-b  env-0002  -        5m  unreachable\n",
+        );
+}
+
+#[test]
+fn host_list_shows_gone_last() {
+    let (_dir, state) = setup();
+    write_record(
+        &state,
+        &json!({
+            "name": "aaa-retired", "env_id": "env-0000", "ssh_alias": "",
+            "reachable": true, "gone": true, "ona_phase": "ENVIRONMENT_PHASE_RUNNING",
+        }),
+    );
+    write_record(
+        &state,
+        &json!({
+            "name": "host-c", "env_id": "env-0003", "ssh_alias": "",
+            "reachable": false, "ona_phase": "ENVIRONMENT_PHASE_STOPPED",
+        }),
+    );
+
+    flow(&state)
+        .args(["host", "list"])
+        .assert()
+        .success()
+        .stdout(
+            "host-a       env-0001  running  5m  reachable    local\n\
+             host-b       env-0002  -        5m  unreachable\n\
+             host-c       env-0003  stopped  5m  unreachable\n\
+             aaa-retired  env-0000  gone     5m  reachable\n",
+        );
 }
 
 #[test]
@@ -60,12 +113,18 @@ fn host_list_json() {
         .get_output()
         .stdout
         .clone();
-    let listed: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    let mut listed: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    for view in listed.as_array_mut().unwrap() {
+        assert!(view["seen"].is_string(), "{view}");
+        view.as_object_mut().unwrap().remove("seen");
+    }
     assert_eq!(
         listed,
         json!([
-            {"name": "host-a", "env_id": "env-0001", "ssh_alias": "host-a.example", "local": true},
-            {"name": "host-b", "env_id": "env-0002", "ssh_alias": "host-b.example", "local": false},
+            {"name": "host-a", "env_id": "env-0001", "ssh_alias": "host-a.example", "local": true,
+             "phase": "ENVIRONMENT_PHASE_RUNNING", "reachable": true, "gone": false},
+            {"name": "host-b", "env_id": "env-0002", "ssh_alias": "host-b.example", "local": false,
+             "phase": null, "reachable": false, "gone": false},
         ])
     );
 }
