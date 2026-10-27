@@ -84,7 +84,7 @@ Operator:
 Supervisor:
 
 - `flow dispatch --title <title> --criteria <text> (--brief <text> | --brief-file <file>) [--host <name>] [--dir <path> | --branch <name> [--repo <name>]] [--parent <id>] [--allow-shared-dir]`: start a worker session for a new task.
-- `flow steer <id> <text>`: send a message to a task's worker and log it.
+- `flow steer <id> <text>`: send a message to a task's worker and log it; a `needs-decision` or `blocked` task reads `working` again.
 - `flow task show <id> [--json]`: a task's fields and the head of its brief.
 - `flow task brief <id>`: a task's brief in full.
 - `flow task events <id> [--last <N>] [--json]`: a task's event log.

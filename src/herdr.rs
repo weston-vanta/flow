@@ -30,6 +30,8 @@ pub const KEY_DOWN: &str = "down";
 const TIMEOUT_CODE: &str = "timeout";
 /// The `error.code` herdr reports when a target pane does not exist.
 const AGENT_NOT_FOUND_CODE: &str = "agent_not_found";
+/// The `error.code` herdr reports when a target workspace does not exist.
+const WORKSPACE_NOT_FOUND_CODE: &str = "workspace_not_found";
 /// The `error.code` herdr reports when no server runs for the session.
 const SERVER_NOT_RUNNING_CODE: &str = "server_not_running";
 /// How every error from a call that ssh could not deliver starts.
@@ -333,9 +335,15 @@ impl Herdr {
         Ok((created.workspace.workspace_id, created.root_pane.pane_id))
     }
 
-    pub fn close_workspace(&self, host: &Host, workspace_id: &str) -> anyhow::Result<()> {
-        self.call_json::<Ack>(host, &self.argv(&["workspace", "close", workspace_id]))?;
-        Ok(())
+    /// Closes `workspace_id`; `false` when herdr no longer knows it, so there was nothing to
+    /// close.
+    pub fn close_workspace(&self, host: &Host, workspace_id: &str) -> anyhow::Result<bool> {
+        let argv = self.argv(&["workspace", "close", workspace_id]);
+        let Some(output) = self.call_unless(host, &argv, WORKSPACE_NOT_FOUND_CODE)? else {
+            return Ok(false);
+        };
+        parse_result::<Ack>(host, &argv, &output)?;
+        Ok(true)
     }
 
     /// Starts agent `kind` named `name` in `pane_id`, passing it `args`. herdr returns once the
@@ -1051,6 +1059,16 @@ mod tests {
                 "server",
             ])
         );
+    }
+
+    #[test]
+    fn close_workspace_reports_a_workspace_already_gone() {
+        let closed = r#"{"id":"cli:workspace:close","result":{"type":"ok"}}"#;
+        let missing = r#"{"error":{"code":"workspace_not_found","message":"workspace w9 not found"},"id":"cli:workspace:close"}"#;
+        let (herdr, _) = herdr(vec![ok(closed), failed(missing), failed("boom")]);
+        assert!(herdr.close_workspace(&host(), "w2").unwrap());
+        assert!(!herdr.close_workspace(&host(), "w9").unwrap());
+        assert!(herdr.close_workspace(&host(), "w9").is_err());
     }
 
     #[test]

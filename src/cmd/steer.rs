@@ -1,4 +1,6 @@
-//! `flow steer`: sends the supervisor's message to a task's worker and logs it.
+//! `flow steer`: sends the supervisor's message to a task's worker and logs it. Steering a task
+//! that reported `needs-decision` or `blocked` hands it back to the worker: it reads `working`
+//! again, and a hold on the supervisor is lifted, as when the worker reports `working` itself.
 
 use std::sync::Arc;
 
@@ -13,14 +15,16 @@ use crate::paths::StateDir;
 use crate::runner;
 use crate::state::Store;
 use crate::state::events::Event;
+use crate::state::task::{HoldOn, State};
 
 const EVENT_SOURCE: &str = "supervisor";
 /// The prompt counts as delivered once the worker starts on it, or blocks on it; waiting for
 /// the worker's turn to end could hold the supervisor for hours.
 const DELIVERED: [AgentStatus; 2] = [AgentStatus::Working, AgentStatus::Blocked];
 
-/// Prompts the worker in the task's herdr pane with `text`, appends a `steer` event, and
-/// prints `steered <id> (<pane>): <status>`.
+/// Prompts the worker in the task's herdr pane with `text`, appends a `steer` event, moves a
+/// `needs-decision` or `blocked` task back to `working`, and prints
+/// `steered <id> (<pane>): <status>`.
 pub fn run(state: &StateDir, id: &str, text: &str) -> anyhow::Result<()> {
     let store = Store::open(state);
     let (_, status) = store.task(id)?;
@@ -40,6 +44,18 @@ pub fn run(state: &StateDir, id: &str, text: &str) -> anyhow::Result<()> {
             data: json!({ "text": text }),
         },
     )?;
+    store.set_status(id, |status| {
+        if matches!(status.state, State::NeedsDecision | State::Blocked) {
+            status.state = State::Working;
+            if status
+                .hold
+                .as_ref()
+                .is_some_and(|hold| hold.on == HoldOn::Supervisor)
+            {
+                status.hold = None;
+            }
+        }
+    })?;
     super::print(&format!(
         "steered {id} ({}): {}\n",
         target.pane_id,

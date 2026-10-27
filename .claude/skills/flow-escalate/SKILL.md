@@ -46,7 +46,8 @@ hold on the user and say what is needed.
 ## Steering
 
 - `flow steer <id> <text>` prompts the worker's herdr pane and logs a `steer` event. It
-  returns once the worker starts on the message.
+  returns once the worker starts on the message. A `needs-decision` or `blocked` task reads
+  `working` again afterwards, and a hold on you is lifted; a hold on the user stays.
 - herdr refuses to prompt a worker blocked at a harness prompt (such as a permission dialog);
   hold on the user and tell them which pane to attach to.
 - Keep steer messages self-contained: the worker has its brief and its own context, not yours.

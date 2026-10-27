@@ -5,7 +5,7 @@ use assert_cmd::Command;
 use flow::paths::StateDir;
 use flow::state::Store;
 use flow::state::events;
-use flow::state::task::{Harness, HerdrTarget, TaskRecord};
+use flow::state::task::{Harness, HerdrTarget, Hold, HoldOn, State, TaskRecord};
 use flow::supervisor::{self, Lock};
 use jiff::Timestamp;
 use serde_json::{Value, json};
@@ -550,6 +550,60 @@ fn steer_prompts_pane_and_logs_event() {
     assert_eq!(ev.kind, "steer");
     assert_eq!(ev.source, "supervisor");
     assert_eq!(ev.data, json!({"text": "Use the existing retry helper."}));
+}
+
+#[test]
+fn steer_hands_an_escalated_task_back_to_its_worker() {
+    let prompted = AGENT_GET.replace("agent_info", "agent_prompted");
+    let cases = [
+        (
+            State::NeedsDecision,
+            Some(HoldOn::Supervisor),
+            State::Working,
+            None,
+        ),
+        (
+            State::Blocked,
+            Some(HoldOn::Supervisor),
+            State::Working,
+            None,
+        ),
+        (
+            State::NeedsDecision,
+            Some(HoldOn::User),
+            State::Working,
+            Some(HoldOn::User),
+        ),
+        (State::Working, None, State::Working, None),
+        (State::Pending, None, State::Pending, None),
+    ];
+    for (before, hold, after, hold_after) in cases {
+        let fx = Fixture::new();
+        let store = create_task_with_pane(&fx);
+        store
+            .set_status(TASK, |status| {
+                status.state = before;
+                status.hold = hold.map(|on| Hold {
+                    on,
+                    what: "Retry forever?".to_owned(),
+                    since: Timestamp::now(),
+                });
+            })
+            .unwrap();
+
+        fx.flow(&[ok(&prompted)])
+            .args(["steer", TASK, "Give up after five tries."])
+            .assert()
+            .success();
+
+        let (_, status) = store.task(TASK).unwrap();
+        assert_eq!(status.state, after, "steering a {before} task");
+        assert_eq!(
+            status.hold.map(|hold| hold.on),
+            hold_after,
+            "steering a {before} task"
+        );
+    }
 }
 
 #[test]

@@ -456,8 +456,35 @@ fn close_closes_a_done_task_workspace_and_keeps_the_record() {
     assert_eq!(ev.source, "supervisor");
     assert_eq!(
         ev.data,
-        json!({"host": "host-a", "workspace_id": "w2", "pane_id": "w2:p1", "forced": false})
+        json!({
+            "host": "host-a", "workspace_id": "w2", "pane_id": "w2:p1",
+            "forced": false, "already_gone": false,
+        })
     );
+}
+
+#[test]
+fn close_of_a_workspace_already_gone_still_retires_the_pane() {
+    let missing = json!({
+        "status": 1,
+        "stdout": "",
+        "stderr": r#"{"error":{"code":"workspace_not_found","message":"workspace w2 not found"},"id":"cli:workspace:close"}"#,
+    });
+    let (_repo, state, store, script) = setup_close(State::Done, &[missing]);
+
+    let out = stdout(
+        flow(&state)
+            .env("FLOW_FAKE_RUNNER", &script)
+            .args(["task", "close", TASK]),
+    );
+
+    assert_eq!(out, format!("closed {TASK} (workspace already gone)\n"));
+    assert_eq!(runner_calls(&script).len(), 1);
+    let (_, status) = store.task(TASK).unwrap();
+    assert_eq!(status.herdr, None);
+    let ev = last_event(&store, TASK);
+    assert_eq!(ev.kind, "close");
+    assert_eq!(ev.data["already_gone"], true);
 }
 
 #[test]

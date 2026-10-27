@@ -19,7 +19,8 @@ use crate::state::task::State;
 const EVENT_SOURCE: &str = "supervisor";
 
 /// Closes the herdr workspace of task `id`, appends a `close` event and clears the task's
-/// herdr target, then prints `closed <id> (workspace <ws> on <host>)`. Refuses a task still
+/// herdr target, then prints `closed <id> (workspace <ws> on <host>)`, or `closed <id>
+/// (workspace already gone)` when herdr no longer knows the workspace. Refuses a task still
 /// `working` or `pending` unless `force`, and one with no herdr target.
 pub fn run(state: &StateDir, id: &str, force: bool) -> anyhow::Result<()> {
     let store = Store::open(state);
@@ -38,7 +39,7 @@ pub fn run(state: &StateDir, id: &str, force: bool) -> anyhow::Result<()> {
     let hosts = inventory::hosts(state)?;
     let host = host::find(&hosts, &target.host)?;
     let herdr = Herdr::new(Arc::from(runner::from_env()?));
-    herdr.close_workspace(host, &target.workspace_id)?;
+    let closed = herdr.close_workspace(host, &target.workspace_id)?;
     store.set_status(id, |status| status.herdr = None)?;
     store.append_event(
         id,
@@ -51,9 +52,13 @@ pub fn run(state: &StateDir, id: &str, force: bool) -> anyhow::Result<()> {
                 "workspace_id": target.workspace_id,
                 "pane_id": target.pane_id,
                 "forced": force,
+                "already_gone": !closed,
             }),
         },
     )?;
+    if !closed {
+        return super::print(&format!("closed {id} (workspace already gone)\n"));
+    }
     super::print(&format!(
         "closed {id} (workspace {} on {})\n",
         target.workspace_id, target.host
