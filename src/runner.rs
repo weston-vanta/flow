@@ -156,7 +156,8 @@ impl Runner for LocalSshRunner {
 
 /// The argv that runs `argv` on `host`: `argv` itself when `host` is local, else an ssh call
 /// multiplexed through a control socket in `control_dir`. The remote side runs the command
-/// under `zsh -lc` because a non-login ssh command lacks `~/.local/bin` on PATH.
+/// under `zsh -lc`, which reads `.zshenv` and `.zprofile` (not `.zshrc`), so it gets the
+/// PATH those files set, `~/.local/bin` included.
 pub fn build_argv(
     host: &Host,
     local_env_id: Option<&str>,

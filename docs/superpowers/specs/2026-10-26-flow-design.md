@@ -84,7 +84,9 @@ Checked on 2026-10-23 and 2026-10-26 from one of the user's CDEs.
   multiplexing; the `gitpod environment ssh` wrapper takes 4 to 5 s per call. The login
   token lives in `~/.ona/configuration.yaml` on the local host (lost on recycle), expires
   in 8 h, and carries a refresh token whose unattended behavior is unverified.
-- A non-login ssh command does not have `~/.local/bin` on PATH; `zsh -lc` does.
+- `zsh -lc` is a login shell but not an interactive one: it reads `.zshenv` and
+  `.zprofile`, not `.zshrc`, so `~/.local/bin` must be exported from `.zshenv` (the
+  dotfiles do this). flow runs remote commands under `zsh -lc` for that reason.
 - `herdr` 0.9.5 (protocol 22) is installed in `~/.local/bin` (local disk, lost on recycle)
   and running on the probe CDE. It reports native agent state (`idle`, `working`,
   `blocked`, `done`, `unknown`) per pane from terminal content, supports
