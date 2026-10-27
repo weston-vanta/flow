@@ -334,7 +334,8 @@ pub fn run(cli: Cli, state: &StateDir) -> anyhow::Result<ExitCode> {
             WakeCommand::Drain => cmd::wake::run_drain(state),
             WakeCommand::Ack { through } => cmd::wake::run_ack(state, through),
         },
-        Command::Guard | Command::Up | Command::Attach => {
+        Command::Guard => return cmd::guard::run(state),
+        Command::Up | Command::Attach => {
             anyhow::bail!("not implemented")
         }
     };

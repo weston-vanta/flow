@@ -3,6 +3,7 @@
 
 pub mod cde;
 pub mod dispatch;
+pub mod guard;
 pub mod hook;
 pub mod inventory;
 pub mod requests;

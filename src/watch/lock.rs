@@ -71,6 +71,13 @@ pub fn acquire(state: &StateDir, pid: u32) -> anyhow::Result<Option<Guard>> {
     Ok(None)
 }
 
+/// Whether a live holder has the lock: it exists and is not stale. Reads only; never takes or
+/// removes the lock.
+pub fn held_live(state: &StateDir) -> anyhow::Result<bool> {
+    let dir = state.root().join(LOCK_DIR);
+    Ok(!is_stale(&dir, &this_host())?)
+}
+
 impl Guard {
     /// Marks the lock as still held, so it does not go stale by age.
     pub fn touch(&self) -> anyhow::Result<()> {
@@ -173,6 +180,31 @@ mod tests {
         let old = SystemTime::now() - STALE_AFTER - Duration::from_secs(1);
         File::open(&dir).unwrap().set_modified(old).unwrap();
         assert!(acquire(&state, std::process::id()).unwrap().is_some());
+    }
+
+    #[test]
+    fn held_live_is_true_while_a_live_pid_holds_it() {
+        let (_dir, state) = state();
+        let guard = acquire(&state, std::process::id()).unwrap().unwrap();
+        assert!(held_live(&state).unwrap());
+        assert!(state.root().join(LOCK_DIR).join(OWNER_FILE).exists());
+        drop(guard);
+        assert!(!held_live(&state).unwrap());
+    }
+
+    #[test]
+    fn held_live_is_false_without_a_lock() {
+        let (_dir, state) = state();
+        assert!(!held_live(&state).unwrap());
+        assert!(!state.root().join(LOCK_DIR).exists());
+    }
+
+    #[test]
+    fn held_live_is_false_for_a_dead_pid_on_this_host() {
+        let (_dir, state) = state();
+        std::mem::forget(acquire(&state, dead_pid()).unwrap().unwrap());
+        assert!(!held_live(&state).unwrap());
+        assert!(state.root().join(LOCK_DIR).exists());
     }
 
     #[test]
