@@ -5,7 +5,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use anyhow::Context;
+use anyhow::{Context, bail};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -60,13 +60,40 @@ pub fn pending(state: &StateDir) -> anyhow::Result<Vec<Wake>> {
     Ok(wakes)
 }
 
-/// Records every wake up to and including `seq` as handled.
+/// Records every wake up to and including `seq` as handled, under the queue's lock. Refuses a
+/// `seq` past the newest wake, which would hide wakes not yet queued, and one below the
+/// current ack, which would bring handled wakes back.
 pub fn ack_through(state: &StateDir, seq: u64) -> anyhow::Result<()> {
-    let path = ack_path(state);
-    let dir = path.parent().expect("the ack file has a parent directory");
+    let path = queue_path(state);
+    let dir = path
+        .parent()
+        .expect("the queue file has a parent directory");
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    write_atomic(&path, format!("{seq}\n").as_bytes())
-        .with_context(|| format!("writing {}", path.display()))
+    let refusal = with_lock(&path, || {
+        let newest = read_queue(&path)
+            .map_err(io::Error::other)?
+            .last()
+            .map_or(0, |wake| wake.seq);
+        if seq > newest {
+            return Ok(Some(format!(
+                "cannot ack through {seq}: the newest wake is {newest}"
+            )));
+        }
+        let acked = acked(state).map_err(io::Error::other)?;
+        if seq < acked {
+            return Ok(Some(format!(
+                "cannot ack through {seq}: wakes through {acked} are already acknowledged"
+            )));
+        }
+        let ack = ack_path(state);
+        write_atomic(&ack, format!("{seq}\n").as_bytes())?;
+        Ok(None)
+    })
+    .with_context(|| format!("acknowledging wakes in {}", path.display()))?;
+    match refusal {
+        Some(refusal) => bail!(refusal),
+        None => Ok(()),
+    }
 }
 
 /// The highest acknowledged sequence number; 0 before any ack.
@@ -164,6 +191,38 @@ mod tests {
         ack_through(&state, 3).unwrap();
         assert!(pending(&state).unwrap().is_empty());
         assert_eq!(push(&state, "fourth", &obs).unwrap(), 4);
+    }
+
+    #[test]
+    fn ack_beyond_the_newest_wake_is_refused() {
+        let (_dir, state) = state();
+        for _ in 0..3 {
+            push(&state, "heartbeat", &Observation::Heartbeat).unwrap();
+        }
+        let err = ack_through(&state, 10).unwrap_err();
+        assert_eq!(
+            format!("{err:#}"),
+            "cannot ack through 10: the newest wake is 3"
+        );
+        assert_eq!(pending(&state).unwrap().len(), 3);
+        push(&state, "heartbeat", &Observation::Heartbeat).unwrap();
+        assert_eq!(pending(&state).unwrap().len(), 4);
+    }
+
+    #[test]
+    fn ack_never_moves_back() {
+        let (_dir, state) = state();
+        for _ in 0..3 {
+            push(&state, "heartbeat", &Observation::Heartbeat).unwrap();
+        }
+        ack_through(&state, 3).unwrap();
+        ack_through(&state, 3).unwrap();
+        let err = ack_through(&state, 1).unwrap_err();
+        assert_eq!(
+            format!("{err:#}"),
+            "cannot ack through 1: wakes through 3 are already acknowledged"
+        );
+        assert!(pending(&state).unwrap().is_empty());
     }
 
     #[test]

@@ -161,6 +161,9 @@ pub fn build_argv(
         "-o".to_owned(),
         "BatchMode=yes".to_owned(),
         "-o".to_owned(),
+        // A stopped CDE then fails within seconds instead of hanging on the TCP connect.
+        "ConnectTimeout=10".to_owned(),
+        "-o".to_owned(),
         "ControlMaster=auto".to_owned(),
         "-o".to_owned(),
         format!("ControlPath={}", control_path.display()),
@@ -368,6 +371,8 @@ mod tests {
                 "ssh",
                 "-o",
                 "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=10",
                 "-o",
                 "ControlMaster=auto",
                 "-o",

@@ -7,17 +7,21 @@
 //! `state/supervisor/watch-state.json` carries what one run hands the next: how far each
 //! task's files were read, so a change made between runs still wakes the next one, and what
 //! earlier wakes reported, so a condition that persists wakes once rather than on every turn
-//! end.
+//! end. A reported worker status is news again once its task's event log grows, since herdr
+//! reports only the current status and a worker that went blocked, working, and blocked again
+//! between runs reads the same. An adopted session has no event log, so the same gap remains
+//! for it: a repeat of its reported status between runs is absorbed until herdr reports a
+//! different one.
 
 pub mod classify;
+mod files;
 pub mod lock;
+mod panes;
 pub mod queue;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io;
 use std::path::Path;
-use std::process::Child;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -27,41 +31,27 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::adopt::{FollowList, Followed};
-use crate::herdr::{self, AgentStatus, Herdr, WaitEnd};
+use crate::herdr::{self, Herdr};
 use crate::paths::StateDir;
 use crate::runner::Runner;
 use crate::state::Store;
-use crate::state::config::{Cde, Config};
-use crate::state::events::{EVENTS_FILE, Event};
+use crate::state::config::Config;
+use crate::state::events::EVENTS_FILE;
 use crate::state::fs::{append_line, write_atomic};
 use crate::state::task::{State, Status, TaskRecord};
 use classify::{Observation, Reported, Thresholds, Verdict, classify};
+use files::{Checked, NewEvents, Seen, WorktreeCheck, file_len, new_events};
 use lock::Guard;
+use panes::{PaneWait, Polled, WaitSpec, WaitTarget};
 
 const SUPERVISOR_DIR: &str = "supervisor";
 const WATCH_STATE_FILE: &str = "supervisor/watch-state.json";
 const WATCH_LOG_FILE: &str = "supervisor/watch.log";
 /// How often one quiet task's worktree is searched for writes.
 const WORKTREE_CHECK_INTERVAL: Duration = Duration::from_secs(10 * 60);
-/// How long a herdr wait that could not run waits before it is started again.
-const RETRY_AFTER: Duration = Duration::from_secs(30);
 /// `--once` runs this many cycles, one poll interval apart, so the herdr waits the first
 /// starts can answer in the second.
 const ONCE_CYCLES: u32 = 2;
-/// The exit code ssh uses for its own failures.
-const SSH_FAILURE_STATUS: i32 = 255;
-/// The worker statuses worth waking for.
-const TASK_WAKE_STATUSES: &[AgentStatus] = &[AgentStatus::Blocked, AgentStatus::Done];
-/// The adopted-session statuses worth waking for.
-const ADOPTED_WAKE_STATUSES: &[AgentStatus] =
-    &[AgentStatus::Idle, AgentStatus::Blocked, AgentStatus::Done];
-/// The statuses a wait for a change from one of them ends on.
-const WAITABLE_STATUSES: &[AgentStatus] = &[
-    AgentStatus::Idle,
-    AgentStatus::Working,
-    AgentStatus::Blocked,
-    AgentStatus::Done,
-];
 
 #[derive(Debug, Clone)]
 pub struct Settings {
@@ -94,6 +84,34 @@ pub fn run(
     }
 }
 
+/// A `Quiet` observation for `task`, recording its quiet spell when it wakes.
+fn quiet(
+    task: &str,
+    status: &Status,
+    since_secs: u64,
+    worktree_written: bool,
+) -> (Observation, Progress) {
+    (
+        Observation::Quiet {
+            task: task.to_owned(),
+            since_secs,
+            worktree_written,
+        },
+        Progress::QuietReported {
+            task: task.to_owned(),
+            last_event: status.last_event,
+        },
+    )
+}
+
+/// A worktree check under way for a quiet task.
+struct RunningCheck {
+    check: WorktreeCheck,
+    cde: String,
+    /// The task's `last_event` when the check started.
+    last_event: Timestamp,
+}
+
 /// What one watch run hands the next.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 struct WatchState {
@@ -105,13 +123,6 @@ struct WatchState {
     /// Per task, how far its files have been read.
     #[serde(default)]
     seen: BTreeMap<String, Seen>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-struct Seen {
-    state: State,
-    /// Bytes of `events.jsonl` read.
-    events: u64,
 }
 
 /// What handling an observation, absorbed or woken, moves forward.
@@ -138,6 +149,7 @@ struct Watcher<'a> {
     saved: WatchState,
     waits: BTreeMap<String, PaneWait>,
     quiet_checked: HashMap<String, Instant>,
+    worktree_checks: BTreeMap<String, RunningCheck>,
     /// Problems already logged, so a persistent one is logged once per run.
     logged: HashSet<String>,
     started: Instant,
@@ -163,6 +175,7 @@ impl<'a> Watcher<'a> {
             memory,
             waits: BTreeMap::new(),
             quiet_checked: HashMap::new(),
+            worktree_checks: BTreeMap::new(),
             logged: HashSet::new(),
             started: Instant::now(),
         })
@@ -204,6 +217,11 @@ impl<'a> Watcher<'a> {
                 }
                 Verdict::Wake(reason) => {
                     self.advance(progress, true);
+                    if let Observation::AgentState { task, .. } | Observation::AgentGone { task } =
+                        &obs
+                    {
+                        self.record_report_events(task);
+                    }
                     queue::push(self.state, &reason, &obs)?;
                     self.log(&format!("wake {reason}"));
                     self.save()?;
@@ -213,6 +231,18 @@ impl<'a> Watcher<'a> {
         }
         self.save()?;
         Ok(None)
+    }
+
+    /// Notes how long the task's event log was when a wake reported its worker, so new events
+    /// make the same status news again.
+    fn record_report_events(&mut self, task: &str) {
+        match self.store.task_dir(task) {
+            Ok(dir) => {
+                let events = file_len(&dir.join(EVENTS_FILE));
+                self.memory.reported.record_events(task, events);
+            }
+            Err(err) => self.log(&format!("{err:#}")),
+        }
     }
 
     fn advance(&mut self, progress: Progress, woke: bool) {
@@ -266,6 +296,9 @@ impl<'a> Watcher<'a> {
             }
             match new_events(&events_path, seen.events) {
                 Ok(NewEvents::Lines(lines)) => {
+                    if let Some((_, end)) = lines.last() {
+                        self.memory.reported.events_grew(&rec.id, *end);
+                    }
                     for (kind, end) in lines {
                         seen.events = end;
                         let task = rec.id.clone();
@@ -375,21 +408,61 @@ impl<'a> Watcher<'a> {
         observed
     }
 
-    /// A `Quiet` observation for each working or pending task without a hold whose last event
-    /// is older than the quiet threshold, unless a wake already reported that quiet spell. The
-    /// task's worktree is searched for writes after the last event, at most once per
-    /// `WORKTREE_CHECK_INTERVAL`.
+    /// `Quiet` observations for working or pending tasks without a hold whose last event is
+    /// older than the quiet threshold, unless a wake already reported that quiet spell. Each
+    /// such task's worktree is searched for writes after its last event, at most once per
+    /// `WORKTREE_CHECK_INTERVAL`, by a check that runs across cycles; the observation comes
+    /// when it ends, and only if the task is still quiet the same way.
     fn quiet_tasks(&mut self, tasks: &[(TaskRecord, Status)]) -> Vec<(Observation, Progress)> {
         let now = Timestamp::now();
         let mut observed = Vec::new();
-        for (rec, status) in tasks {
-            if !matches!(status.state, State::Working | State::Pending) || status.hold.is_some() {
-                continue;
+        let mut ended = Vec::new();
+        for (task, running) in &mut self.worktree_checks {
+            match running.check.poll() {
+                Checked::Running => {}
+                checked => ended.push((task.clone(), checked)),
             }
-            let since_secs =
-                u64::try_from(now.as_second() - status.last_event.as_second()).unwrap_or(0);
-            if since_secs < self.settings.quiet_secs
-                || self.memory.quiet_reported.get(&rec.id) == Some(&status.last_event)
+        }
+        for (task, checked) in ended {
+            let running = self
+                .worktree_checks
+                .remove(&task)
+                .expect("an ended check is running");
+            let still_quiet = tasks
+                .iter()
+                .find(|(rec, status)| rec.id == task && status.last_event == running.last_event)
+                .and_then(|(_, status)| Some((status, self.quiet_since(status, now)?)));
+            let Some((status, since_secs)) = still_quiet else {
+                continue;
+            };
+            let worktree_written = match checked {
+                Checked::Running => unreachable!("only ended checks are handled"),
+                Checked::Written(written) => {
+                    self.memory.reported.reachable(&running.cde);
+                    written
+                }
+                Checked::Unreachable => {
+                    let cde = running.cde;
+                    observed.push((Observation::CdeUnreachable { cde }, Progress::Nothing));
+                    continue;
+                }
+                Checked::TimedOut => {
+                    self.log(&format!("{task}: worktree check timed out"));
+                    false
+                }
+                Checked::Failed(problem) => {
+                    self.log(&format!("{task}: worktree check failed: {problem}"));
+                    false
+                }
+            };
+            observed.push(quiet(&task, status, since_secs, worktree_written));
+        }
+        for (rec, status) in tasks {
+            let Some(since_secs) = self.quiet_since(status, now) else {
+                continue;
+            };
+            if self.memory.quiet_reported.get(&rec.id) == Some(&status.last_event)
+                || self.worktree_checks.contains_key(&rec.id)
                 || self
                     .quiet_checked
                     .get(&rec.id)
@@ -398,53 +471,39 @@ impl<'a> Watcher<'a> {
                 continue;
             }
             self.quiet_checked.insert(rec.id.clone(), Instant::now());
-            let worktree_written = match self.worktree_written(rec, status.last_event) {
-                Ok(written) => written,
-                Err(cde) => {
-                    observed.push((Observation::CdeUnreachable { cde }, Progress::Nothing));
-                    continue;
-                }
+            let cde = self.config.cdes.iter().find(|cde| cde.name == rec.cde);
+            let Some(cde) = cde.filter(|_| !rec.worktree.as_os_str().is_empty()) else {
+                observed.push(quiet(&rec.id, status, since_secs, false));
+                continue;
             };
-            observed.push((
-                Observation::Quiet {
-                    task: rec.id.clone(),
-                    since_secs,
-                    worktree_written,
-                },
-                Progress::QuietReported {
-                    task: rec.id.clone(),
-                    last_event: status.last_event,
-                },
-            ));
+            match WorktreeCheck::start(&*self.runner, cde, &rec.worktree, status.last_event) {
+                Ok(check) => {
+                    let running = RunningCheck {
+                        check,
+                        cde: cde.name.clone(),
+                        last_event: status.last_event,
+                    };
+                    self.worktree_checks.insert(rec.id.clone(), running);
+                }
+                Err(err) => {
+                    let cde = cde.name.clone();
+                    self.log(&format!("checking {}: {err:#}", rec.worktree.display()));
+                    observed.push((Observation::CdeUnreachable { cde }, Progress::Nothing));
+                }
+            }
         }
         observed
     }
 
-    /// Whether any file in the task's worktree, `.git` aside, changed after `since`; `false`
-    /// for a task without a worktree or on an unknown CDE. `Err` names the CDE when it could not
-    /// be reached.
-    fn worktree_written(&mut self, rec: &TaskRecord, since: Timestamp) -> Result<bool, String> {
-        if rec.worktree.as_os_str().is_empty() {
-            return Ok(false);
+    /// How long the task has been quiet, when it may count as quiet at all: working or
+    /// pending, without a hold, and past the threshold.
+    fn quiet_since(&self, status: &Status, now: Timestamp) -> Option<u64> {
+        if !matches!(status.state, State::Working | State::Pending) || status.hold.is_some() {
+            return None;
         }
-        let Some(cde) = self.config.cdes.iter().find(|cde| cde.name == rec.cde) else {
-            return Ok(false);
-        };
-        let argv = worktree_write_argv(&rec.worktree, since);
-        match self.runner.run(cde, &argv, None) {
-            Ok(output) if output.status == SSH_FAILURE_STATUS && output.stdout.is_empty() => {
-                Err(cde.name.clone())
-            }
-            Ok(output) => {
-                self.memory.reported.reachable(&cde.name);
-                Ok(!output.stdout.trim().is_empty())
-            }
-            Err(err) => {
-                let name = cde.name.clone();
-                self.log(&format!("checking {}: {err:#}", rec.worktree.display()));
-                Err(name)
-            }
-        }
+        let since_secs =
+            u64::try_from(now.as_second() - status.last_event.as_second()).unwrap_or(0);
+        (since_secs >= self.settings.quiet_secs).then_some(since_secs)
     }
 
     fn save(&mut self) -> anyhow::Result<()> {
@@ -473,259 +532,33 @@ impl<'a> Watcher<'a> {
     }
 }
 
-/// `find` printing the first file under `worktree`, `.git` aside, modified after `since`.
-fn worktree_write_argv(worktree: &Path, since: Timestamp) -> Vec<String> {
-    let since = since.strftime("%Y-%m-%dT%H:%M:%SZ").to_string();
-    [
-        "find",
-        &worktree.to_string_lossy(),
-        "-path",
-        "*/.git",
-        "-prune",
-        "-o",
-        "-type",
-        "f",
-        "-newermt",
-        &since,
-        "-print",
-        "-quit",
-    ]
-    .map(str::to_owned)
-    .to_vec()
-}
-
-/// Whose agent a wait watches: a task's worker or a followed adopted session.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum WaitTarget {
-    Task(String),
-    Adopted,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct WaitSpec {
-    target: WaitTarget,
-    cde: String,
-    session: String,
-    pane_id: String,
-}
-
-impl WaitSpec {
-    /// The key `classify::pane_key` gives this pane's observations.
-    fn key(&self) -> String {
-        match &self.target {
-            WaitTarget::Task(task) => task.clone(),
-            WaitTarget::Adopted => format!("{}/{}/{}", self.cde, self.session, self.pane_id),
-        }
-    }
-
-    fn wake_statuses(&self) -> &'static [AgentStatus] {
-        match self.target {
-            WaitTarget::Task(_) => TASK_WAKE_STATUSES,
-            WaitTarget::Adopted => ADOPTED_WAKE_STATUSES,
-        }
-    }
-
-    fn observe(&self, status: AgentStatus) -> Observation {
-        match &self.target {
-            WaitTarget::Task(task) => Observation::AgentState {
-                task: task.clone(),
-                status,
-            },
-            WaitTarget::Adopted => self.adopted(status),
-        }
-    }
-
-    /// herdr no longer knows the pane. An adopted session's agent then reads as `unknown`.
-    fn gone(&self) -> Observation {
-        match &self.target {
-            WaitTarget::Task(task) => Observation::AgentGone { task: task.clone() },
-            WaitTarget::Adopted => self.adopted(AgentStatus::Unknown),
-        }
-    }
-
-    fn adopted(&self, status: AgentStatus) -> Observation {
-        Observation::AdoptedChanged {
-            cde: self.cde.clone(),
-            session: self.session.clone(),
-            pane_id: self.pane_id.clone(),
-            status,
-        }
-    }
-}
-
-/// One herdr `agent wait` kept running on a pane.
-struct PaneWait {
-    spec: WaitSpec,
-    cde: Cde,
-    herdr: Herdr,
-    child: Option<Child>,
-    /// The status the last wait ended on; the next one waits for a change from it when it is
-    /// one worth waking for, since that was already observed.
-    settled: Option<AgentStatus>,
-    retry_at: Option<Instant>,
-    /// Set once herdr no longer knows the pane; nothing more is asked about it.
-    gone: bool,
-}
-
-enum Polled {
-    Running,
-    Reached(AgentStatus),
-    TimedOut,
-    Gone,
-    Unreachable,
-    Failed(String),
-}
-
-impl PaneWait {
-    fn new(spec: WaitSpec, cde: Cde, herdr: Herdr) -> PaneWait {
-        PaneWait {
-            spec,
-            cde,
-            herdr,
-            child: None,
-            settled: None,
-            retry_at: None,
-            gone: false,
-        }
-    }
-
-    /// The statuses the next wait ends on.
-    fn until(&self) -> Vec<AgentStatus> {
-        let wake = self.spec.wake_statuses();
-        match self.settled {
-            Some(settled) if wake.contains(&settled) => WAITABLE_STATUSES
-                .iter()
-                .copied()
-                .filter(|status| *status != settled)
-                .collect(),
-            _ => wake.to_vec(),
-        }
-    }
-
-    /// Starts the wait when none runs and it is not backing off, or reads the running one.
-    fn poll(&mut self, timeout_ms: u64) -> Polled {
-        if self.gone {
-            return Polled::Running;
-        }
-        let Some(child) = &mut self.child else {
-            if self.retry_at.is_some_and(|at| Instant::now() < at) {
-                return Polled::Running;
-            }
-            let until = self.until();
-            return match self.herdr.spawn_wait(
-                &self.cde,
-                &self.spec.pane_id,
-                &until,
-                Some(timeout_ms),
-            ) {
-                Ok(child) => {
-                    self.child = Some(child);
-                    self.retry_at = None;
-                    Polled::Running
-                }
-                Err(_) => self.back_off(Polled::Unreachable),
-            };
-        };
-        let exit = match child.try_wait() {
-            Ok(None) => return Polled::Running,
-            Ok(Some(exit)) => exit,
-            Err(err) => return self.back_off(Polled::Failed(format!("waiting on herdr: {err}"))),
-        };
-        let mut stdout = String::new();
-        if let Some(mut pipe) = child.stdout.take() {
-            let _ = pipe.read_to_string(&mut stdout);
-        }
-        self.child = None;
-        match herdr::wait_end(exit.code(), &stdout) {
-            WaitEnd::Reached(status) => {
-                self.settled = Some(status);
-                Polled::Reached(status)
-            }
-            WaitEnd::TimedOut => Polled::TimedOut,
-            WaitEnd::Gone => {
-                self.gone = true;
-                Polled::Gone
-            }
-            WaitEnd::Unreachable => self.back_off(Polled::Unreachable),
-            WaitEnd::Failed(problem) => self.back_off(Polled::Failed(format!(
-                "{}: herdr wait on {} {problem}",
-                self.spec.key(),
-                self.cde.name
-            ))),
-        }
-    }
-
-    fn back_off(&mut self, polled: Polled) -> Polled {
-        self.child = None;
-        self.retry_at = Some(Instant::now() + RETRY_AFTER);
-        polled
-    }
-}
-
-impl Drop for PaneWait {
-    fn drop(&mut self) {
-        if let Some(child) = &mut self.child {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
-}
-
-enum NewEvents {
-    /// Each complete new line's event kind and the byte offset just after it.
-    Lines(Vec<(String, u64)>),
-    /// The file is shorter than what was read; this is its length.
-    Shrunk(u64),
-}
-
-/// The complete lines of `events.jsonl` after byte `offset`. A line that does not parse reads
-/// as an event of empty kind.
-fn new_events(path: &Path, offset: u64) -> anyhow::Result<NewEvents> {
-    let mut file = match File::open(path) {
-        Ok(file) => file,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            return Ok(NewEvents::Lines(Vec::new()));
-        }
-        Err(err) => return Err(err).with_context(|| format!("reading {}", path.display())),
-    };
-    let len = file.metadata()?.len();
-    if len < offset {
-        return Ok(NewEvents::Shrunk(len));
-    }
-    let mut bytes = Vec::new();
-    file.seek(SeekFrom::Start(offset))
-        .and_then(|_| file.read_to_end(&mut bytes))
-        .with_context(|| format!("reading {}", path.display()))?;
-    let mut lines = Vec::new();
-    let mut end = offset;
-    for line in bytes.split_inclusive(|&b| b == b'\n') {
-        if !line.ends_with(b"\n") {
-            break;
-        }
-        end += line.len() as u64;
-        if line.trim_ascii().is_empty() {
-            continue;
-        }
-        let kind = serde_json::from_slice::<Event>(line)
-            .map(|ev| ev.kind)
-            .unwrap_or_default();
-        lines.push((kind, end));
-    }
-    Ok(NewEvents::Lines(lines))
-}
-
-fn file_len(path: &Path) -> u64 {
-    std::fs::metadata(path).map_or(0, |meta| meta.len())
-}
-
+/// The state the last run saved, or the default when there is none. A file that does not
+/// parse is renamed aside as `watch-state.json.corrupt-<ts>`, reported on stderr, and replaced
+/// by the default, so one bad write cannot stop every later watch.
 fn load_watch_state(state: &StateDir) -> anyhow::Result<WatchState> {
     let path = state.root().join(WATCH_STATE_FILE);
-    match std::fs::read(&path) {
-        Ok(bytes) => {
-            serde_json::from_slice(&bytes).with_context(|| format!("parsing {}", path.display()))
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(WatchState::default()),
+        Err(err) => return Err(err).with_context(|| format!("reading {}", path.display())),
+    };
+    match serde_json::from_slice(&bytes) {
+        Ok(memory) => Ok(memory),
+        Err(err) => {
+            let mut aside = path.clone().into_os_string();
+            aside.push(format!(
+                ".corrupt-{}",
+                Timestamp::now().strftime("%Y%m%dT%H%M%SZ")
+            ));
+            std::fs::rename(&path, &aside)
+                .with_context(|| format!("moving {} aside", path.display()))?;
+            eprintln!(
+                "{} did not parse ({err}); moved it to {} and starting afresh",
+                path.display(),
+                Path::new(&aside).display()
+            );
+            Ok(WatchState::default())
         }
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(WatchState::default()),
-        Err(err) => Err(err).with_context(|| format!("reading {}", path.display())),
     }
 }
 
@@ -735,6 +568,7 @@ mod tests {
 
     use super::*;
     use crate::runner::{FakeRunner, Scripted};
+    use crate::state::events::Event;
     use crate::state::task::{Harness, HerdrTarget};
     use classify::DEFAULT_QUIET_SECS;
 
@@ -752,6 +586,7 @@ ssh_alias = "cde-a.example"
 "#;
     const TASK: &str = "aaaaaaab";
     const IDLE: &str = r#"{"id":"cli:agent:wait","result":{"agent":{"agent":"claude","agent_status":"idle","pane_id":"w1:p1","workspace_id":"w1"},"type":"agent_info"}}"#;
+    const BLOCKED: &str = r#"{"id":"cli:agent:wait","result":{"agent":{"agent":"claude","agent_status":"blocked","pane_id":"w1:p1","workspace_id":"w1"},"type":"agent_info"}}"#;
     const NOT_FOUND: &str = r#"{"error":{"code":"agent_not_found","message":"agent target w1:p1 not found"},"id":"cli:agent:wait"}"#;
 
     struct Fixture {
@@ -840,6 +675,9 @@ ssh_alias = "cde-a.example"
                 child.wait().unwrap();
             }
         }
+        for running in watcher.worktree_checks.values_mut() {
+            running.check.finish();
+        }
         watcher.cycle().unwrap()
     }
 
@@ -905,6 +743,60 @@ ssh_alias = "cde-a.example"
     }
 
     #[test]
+    fn blocked_worker_wakes_again_once_its_task_logged_events() {
+        let fx = Fixture::new();
+        fx.task(true);
+        let runner = fake(vec![
+            answer(0, BLOCKED),
+            answer(0, BLOCKED),
+            answer(0, BLOCKED),
+        ]);
+        let mut first = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+        assert_eq!(
+            two_cycles(&mut first).as_deref(),
+            Some("agent-blocked: aaaaaaab")
+        );
+        drop(first);
+        let mut second = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+        assert_eq!(two_cycles(&mut second), None);
+        drop(second);
+
+        let ev = Event {
+            ts: Timestamp::now(),
+            source: "cli".to_owned(),
+            kind: "status.report".to_owned(),
+            data: serde_json::json!({}),
+        };
+        Store::open(&fx.state).append_event(TASK, &ev).unwrap();
+        let mut third = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+        assert_eq!(
+            two_cycles(&mut third).as_deref(),
+            Some("agent-blocked: aaaaaaab")
+        );
+    }
+
+    #[test]
+    fn unparsable_watch_state_is_set_aside() {
+        let fx = Fixture::new();
+        let supervisor = fx.state.root().join(SUPERVISOR_DIR);
+        std::fs::create_dir_all(&supervisor).unwrap();
+        std::fs::write(fx.state.root().join(WATCH_STATE_FILE), "{not json").unwrap();
+        let watcher = fx.watcher(&fake(Vec::new()), DEFAULT_QUIET_SECS);
+        assert_eq!(watcher.memory, WatchState::default());
+        let names: Vec<String> = std::fs::read_dir(&supervisor)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(names.len(), 1, "{names:?}");
+        assert!(
+            names[0].starts_with("watch-state.json.corrupt-"),
+            "{names:?}"
+        );
+        let aside = std::fs::read_to_string(supervisor.join(&names[0])).unwrap();
+        assert_eq!(aside, "{not json");
+    }
+
+    #[test]
     fn vanished_worker_wakes_and_is_not_asked_again() {
         let fx = Fixture::new();
         fx.task(true);
@@ -924,14 +816,15 @@ ssh_alias = "cde-a.example"
         fx.task(false);
         let runner = fake(vec![answer(0, "")]);
         let mut first = fx.watcher(&runner, 0);
-        let reason = first.cycle().unwrap().unwrap();
+        let reason = two_cycles(&mut first).unwrap();
         assert!(reason.starts_with("quiet: aaaaaaab "), "{reason}");
-        let argv = &runner.calls()[0].argv;
-        assert_eq!(argv[..2], ["find", "/work/repo.wt/feature"]);
-        assert!(argv.contains(&"-newermt".to_owned()));
+        assert_eq!(
+            runner.calls()[0].argv[..4],
+            ["timeout", "30", "find", "/work/repo.wt/feature"]
+        );
 
         let mut second = fx.watcher(&runner, 0);
-        assert_eq!(second.cycle().unwrap(), None);
+        assert_eq!(two_cycles(&mut second), None);
         assert_eq!(runner.calls().len(), 1);
     }
 
@@ -940,7 +833,7 @@ ssh_alias = "cde-a.example"
         let fx = Fixture::new();
         fx.task(false);
         let runner = fake(vec![answer(0, "/work/repo.wt/feature/src/lib.rs\n")]);
-        assert_eq!(fx.watcher(&runner, 0).cycle().unwrap(), None);
+        assert_eq!(two_cycles(&mut fx.watcher(&runner, 0)), None);
         let log = std::fs::read_to_string(fx.state.root().join(WATCH_LOG_FILE)).unwrap();
         assert!(
             log.lines().any(|line| line.contains("absorb")

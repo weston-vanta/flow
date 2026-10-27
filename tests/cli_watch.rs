@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, Command as StdCommand, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -137,14 +137,22 @@ impl Fixture {
             .collect()
     }
 
-    /// Waits until `path` exists, failing the test after `WATCH_BUDGET`.
-    fn await_path(&self, path: &Path) {
+    /// Waits until the watcher's saved state records `task` as read while working, failing the
+    /// test after `WATCH_BUDGET`.
+    fn await_seen_working(&self, task: &str) {
+        let path = self.supervisor("watch-state.json");
         let deadline = Instant::now() + WATCH_BUDGET;
-        while !path.exists() {
+        loop {
+            let seen = fs::read_to_string(&path)
+                .ok()
+                .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+                .is_some_and(|state| state["seen"][task]["state"] == "working");
+            if seen {
+                return;
+            }
             assert!(
                 Instant::now() < deadline,
-                "{} never appeared",
-                path.display()
+                "the watcher never recorded {task} as working"
             );
             thread::sleep(Duration::from_millis(20));
         }
@@ -180,9 +188,7 @@ fn watch_exits_2_on_done_status() {
     let fx = Fixture::new();
     fx.task(TASK, "cde-a", None);
     let watch = fx.spawn_watch(&[]);
-    fx.await_path(&fx.supervisor("watch.lock").join("owner.json"));
-    // Two poll cycles, so the watcher has read the task as working before it changes.
-    thread::sleep(Duration::from_millis(500));
+    fx.await_seen_working(TASK);
 
     let report = fx.dir.path().join("report.md");
     fs::write(&report, "# Done\n").unwrap();

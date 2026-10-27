@@ -137,9 +137,20 @@ pub fn classify(obs: &Observation, thresholds: &Thresholds) -> Verdict {
 pub struct Reported {
     #[serde(default)]
     pub unreachable: BTreeSet<String>,
-    /// Keyed by `pane_key`; the reported agent status, or `gone`.
+    /// Keyed by `pane_key`.
     #[serde(default)]
-    pub agents_reported: BTreeMap<String, String>,
+    pub agents_reported: BTreeMap<String, PaneReport>,
+}
+
+/// What a wake reported about one pane.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneReport {
+    /// The agent's status, or `gone`.
+    pub seen: String,
+    /// The length of the task's `events.jsonl` when the report was made; `None` for an adopted
+    /// session, which has no event log.
+    #[serde(default)]
+    pub events: Option<u64>,
 }
 
 impl Reported {
@@ -160,9 +171,15 @@ impl Reported {
             | Observation::AdoptedChanged { .. } => {
                 let key = pane_key(obs).expect("agent observations name a pane");
                 let seen = pane_report(obs).expect("agent observations report a pane");
-                if self.agents_reported.insert(key, seen.clone()) == Some(seen) {
+                if self
+                    .agents_reported
+                    .get(&key)
+                    .is_some_and(|report| report.seen == seen)
+                {
                     return Verdict::Absorb;
                 }
+                self.agents_reported
+                    .insert(key, PaneReport { seen, events: None });
             }
             _ => {}
         }
@@ -174,12 +191,33 @@ impl Reported {
         self.unreachable.remove(cde);
     }
 
+    /// Records the length of the task's `events.jsonl` when its pane's status was reported.
+    pub fn record_events(&mut self, key: &str, events: u64) {
+        if let Some(report) = self.agents_reported.get_mut(key) {
+            report.events = Some(events);
+        }
+    }
+
+    /// Forgets the status reported for a task's pane once its `events.jsonl` grew past the
+    /// length recorded with the report: the worker did something since, so the same status is
+    /// news again.
+    pub fn events_grew(&mut self, key: &str, events: u64) {
+        if self
+            .agents_reported
+            .get(key)
+            .and_then(|report| report.events)
+            .is_some_and(|reported| events > reported)
+        {
+            self.agents_reported.remove(key);
+        }
+    }
+
     /// Forgets the status reported for a pane once herdr reports another one.
     pub fn agent_seen(&mut self, key: &str, status: AgentStatus) {
         if self
             .agents_reported
             .get(key)
-            .is_some_and(|reported| reported != status.as_str())
+            .is_some_and(|report| report.seen != status.as_str())
         {
             self.agents_reported.remove(key);
         }
@@ -447,6 +485,34 @@ mod tests {
         assert_eq!(
             reviewed(&mut reported, &blocked),
             wake("agent-blocked: aaaaaaab")
+        );
+    }
+
+    #[test]
+    fn agent_status_wakes_again_after_task_events_grew() {
+        let mut reported = Reported::default();
+        let blocked = agent(AgentStatus::Blocked);
+        reviewed(&mut reported, &blocked);
+        reported.record_events(TASK, 120);
+        reported.events_grew(TASK, 120);
+        assert_eq!(reviewed(&mut reported, &blocked), Verdict::Absorb);
+        reported.events_grew(TASK, 180);
+        assert_eq!(
+            reviewed(&mut reported, &blocked),
+            wake("agent-blocked: aaaaaaab")
+        );
+    }
+
+    #[test]
+    fn adopted_report_is_not_cleared_by_events() {
+        let mut reported = Reported::default();
+        let idle = adopted("w1:p1", AgentStatus::Idle);
+        reported.review(&idle, wake("adopted-idle: cde-a/w1:p1"));
+        let key = pane_key(&idle).unwrap();
+        reported.events_grew(&key, 1_000);
+        assert_eq!(
+            reported.review(&idle, wake("adopted-idle: cde-a/w1:p1")),
+            Verdict::Absorb
         );
     }
 
