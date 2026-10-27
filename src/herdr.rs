@@ -152,6 +152,20 @@ struct WorkspaceCreated {
     root_pane: PaneIds,
 }
 
+/// `workspace list` → `workspace_list`.
+#[derive(Deserialize)]
+struct WorkspaceList {
+    workspaces: Vec<Workspace>,
+}
+
+/// A herdr workspace: its id and the label it was created with.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Workspace {
+    pub workspace_id: String,
+    #[serde(default)]
+    pub label: String,
+}
+
 #[derive(Deserialize)]
 struct WorkspaceIds {
     workspace_id: String,
@@ -337,6 +351,12 @@ impl Herdr {
 
     /// Closes `workspace_id`; `false` when herdr no longer knows it, so there was nothing to
     /// close.
+    /// The workspaces in flow's session on `host`.
+    pub fn workspaces(&self, host: &Host) -> anyhow::Result<Vec<Workspace>> {
+        let list: WorkspaceList = self.call_json(host, &self.argv(&["workspace", "list"]))?;
+        Ok(list.workspaces)
+    }
+
     pub fn close_workspace(&self, host: &Host, workspace_id: &str) -> anyhow::Result<bool> {
         let argv = self.argv(&["workspace", "close", workspace_id]);
         let Some(output) = self.call_unless(host, &argv, WORKSPACE_NOT_FOUND_CODE)? else {
@@ -1113,6 +1133,30 @@ mod tests {
                 "flow",
                 "server",
             ])
+        );
+    }
+
+    #[test]
+    fn workspaces_lists_ids_and_labels() {
+        let (herdr, fake) = herdr(vec![ok(include_str!(
+            "../tests/fixtures/herdr/workspace_list.json"
+        ))]);
+        assert_eq!(
+            herdr.workspaces(&host()).unwrap(),
+            [
+                Workspace {
+                    workspace_id: "w1".to_owned(),
+                    label: "login-form".to_owned()
+                },
+                Workspace {
+                    workspace_id: "w2".to_owned(),
+                    label: "cache-fix".to_owned()
+                },
+            ]
+        );
+        assert_eq!(
+            argvs(&fake),
+            [words(&["herdr", "--session", "flow", "workspace", "list"])]
         );
     }
 

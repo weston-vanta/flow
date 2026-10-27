@@ -47,9 +47,10 @@ pub fn run(state: &StateDir) -> anyhow::Result<()> {
     attach::exec(&lock, here)
 }
 
-/// The host running the supervisor `lock` names, when its pane still holds an agent. Fails when
-/// that host cannot be reached, since the supervisor may well be alive there; a gone host is
-/// not asked, since the supervisor went with it.
+/// The host running the supervisor `lock` names, when its pane still holds an agent. When it
+/// does not, the lock's workspace is closed there, so a supervisor that did not come up leaves
+/// no workspace behind. Fails when that host cannot be reached, since the supervisor may well be
+/// alive there; a gone host is not asked, since the supervisor went with it.
 fn live_host<'a>(
     hosts: &'a [Host],
     live: &[Host],
@@ -80,13 +81,48 @@ fn live_host<'a>(
         ),
         Err(err) => return Err(err),
     };
+    // No server means no workspaces left to close either.
+    let Some(agents) = agents else {
+        return Ok(None);
+    };
     // herdr reuses pane ids after a server restart, so the pane alone could name a worker.
-    let live = agents.is_some_and(|agents| {
-        agents.iter().any(|agent| {
-            agent.pane_id == lock.herdr.pane_id && agent.cwd == Path::new(SUPERVISOR_CWD)
-        })
+    let live = agents
+        .iter()
+        .any(|agent| agent.pane_id == lock.herdr.pane_id && agent.cwd == Path::new(SUPERVISOR_CWD));
+    if live {
+        return Ok(Some(host));
+    }
+    close_left_workspace(herdr, host, lock);
+    Ok(None)
+}
+
+/// Closes the workspace `lock` names on `host` when it is still there under the supervisor's
+/// label; herdr reuses workspace ids too, so an id alone could name a worker's. Failures are
+/// reported and do not stop the start.
+fn close_left_workspace(herdr: &Herdr, host: &Host, lock: &Lock) {
+    let workspace_id = &lock.herdr.workspace_id;
+    let closed = herdr.workspaces(host).and_then(|workspaces| {
+        let left = workspaces.iter().any(|workspace| {
+            workspace.workspace_id == *workspace_id && workspace.label == SUPERVISOR_NAME
+        });
+        if left {
+            herdr.close_workspace(host, workspace_id)
+        } else {
+            Ok(false)
+        }
     });
-    Ok(live.then_some(host))
+    match closed {
+        Ok(true) => eprintln!(
+            "closed workspace {workspace_id} on {}, left by the previous supervisor",
+            host.name
+        ),
+        Ok(false) => {}
+        Err(err) => eprintln!(
+            "could not close workspace {workspace_id} on {}, left by the previous supervisor: \
+             {err:#}",
+            host.name
+        ),
+    }
 }
 
 /// The host in `live` this process runs on.

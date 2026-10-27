@@ -39,6 +39,8 @@ const AGENT_GET: &str = include_str!("fixtures/herdr/agent_get.json");
 const AGENT_WAIT_TIMEOUT: &str = include_str!("fixtures/herdr/agent_wait_timeout.json");
 const WORKSPACE_CLOSED: &str = r#"{"id":"cli:workspace:close","result":{"type":"ok"}}"#;
 const WORKSPACE_CREATE: &str = include_str!("fixtures/herdr/workspace_create.json");
+/// Workspaces `w1` and `w2`, both workers'.
+const WORKSPACE_LIST: &str = include_str!("fixtures/herdr/workspace_list.json");
 const NO_AGENTS: &str = r#"{"id":"cli:agent:list","result":{"agents":[],"type":"agent_list"}}"#;
 const PANE_RUN_OK: &str = r#"{"id":"cli:pane:run","result":{"type":"ok"}}"#;
 const SERVER_RUNNING: &str = "status: running\nversion: 0.9.5\nendpoint_compatible: yes\n\
@@ -148,6 +150,12 @@ fn supervisor_agents() -> String {
     list
 }
 
+/// Answers the `workspace list` that looks for the previous supervisor's workspace with
+/// `list`.
+fn workspaces(list: &str) -> Value {
+    json!({"argv": ["workspace", "list"], "status": 0, "stdout": list, "stderr": ""})
+}
+
 /// Answers every `agent read` as herdr does for a pane with no agent in it.
 fn agent_read_fails() -> Value {
     json!({
@@ -255,7 +263,7 @@ fn up_creates_supervisor_when_no_lock() {
 fn up_resumes_known_session() {
     let fx = Fixture::new();
     fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
-    let mut script = vec![ok(NO_AGENTS)];
+    let mut script = vec![ok(NO_AGENTS), workspaces(WORKSPACE_LIST)];
     script.extend(fresh_start());
 
     let stdout = stdout_of(fx.flow(&script).arg("up"));
@@ -337,6 +345,46 @@ fn up_clears_the_watch_lock_before_starting_a_supervisor() {
 }
 
 #[test]
+fn up_closes_the_previous_supervisors_workspace_before_starting() {
+    let fx = Fixture::new();
+    fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
+    let left =
+        WORKSPACE_LIST.replacen(r#""label":"login-form""#, r#""label":"flow-supervisor""#, 1);
+    assert_ne!(left, WORKSPACE_LIST);
+    let mut script = vec![ok(NO_AGENTS), workspaces(&left), ok(WORKSPACE_CLOSED)];
+    script.extend(fresh_start());
+
+    let out = fx
+        .flow(&script)
+        .arg("up")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let calls = fx.calls();
+    let close = calls
+        .iter()
+        .position(|(_, argv)| argv[3..] == ["workspace", "close", "w1"])
+        .expect("closes w1");
+    let create = calls
+        .iter()
+        .position(|(_, argv)| {
+            argv.get(3..5) == Some(&["workspace".to_owned(), "create".to_owned()])
+        })
+        .unwrap();
+    assert!(close < create, "{calls:?}");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("closed workspace w1 on host-a, left by the previous supervisor"),
+        "{stderr}"
+    );
+    let lock = fx.lock().unwrap();
+    assert_eq!(lock.claude_session.as_deref(), Some("s9"));
+    assert_eq!(lock.herdr.pane_id, NEW_PANE);
+}
+
+#[test]
 fn up_attaches_when_lock_live() {
     let fx = Fixture::new();
     fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
@@ -369,14 +417,19 @@ fn up_attaches_when_lock_live() {
 fn up_starts_fresh_when_the_lock_pane_runs_another_agent() {
     let fx = Fixture::new();
     fx.write_lock("env-0001", "host-a", LIVE_PANE, None);
-    let mut script = vec![ok(AGENT_LIST)];
+    let mut script = vec![ok(AGENT_LIST), workspaces(WORKSPACE_LIST)];
     script.extend(fresh_start());
 
     let stdout = stdout_of(fx.flow(&script).arg("up"));
 
+    let calls = fx.calls();
     assert!(
-        has_subcommand(&fx.calls(), &["workspace", "create"]),
+        has_subcommand(&calls, &["workspace", "create"]),
         "a worker reusing the lock's pane id is not the supervisor"
+    );
+    assert!(
+        !has_subcommand(&calls, &["workspace", "close"]),
+        "workspace w1 is a worker's now: {calls:?}"
     );
     assert_eq!(fx.lock().unwrap().herdr.pane_id, NEW_PANE);
     assert!(
@@ -391,6 +444,7 @@ fn up_starts_fresh_session_when_resume_fails() {
     fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
     let mut script = vec![
         ok(NO_AGENTS),
+        workspaces(WORKSPACE_LIST),
         ok(SERVER_RUNNING),
         ok(WORKSPACE_CREATE),
         ok(PANE_RUN_OK),
@@ -451,6 +505,7 @@ fn up_starts_fresh_within_one_poll_when_claude_cannot_find_the_session() {
     let not_found = r#"{"error":{"code":"agent_not_found","message":"agent target w3:p1 not found"},"id":"cli:agent:wait"}"#;
     let mut script = vec![
         ok(NO_AGENTS),
+        workspaces(WORKSPACE_LIST),
         ok(SERVER_RUNNING),
         ok(WORKSPACE_CREATE),
         ok(PANE_RUN_OK),
@@ -498,6 +553,7 @@ fn up_keeps_the_session_when_a_resume_fails_for_another_reason() {
     fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
     let script = vec![
         ok(NO_AGENTS),
+        workspaces(WORKSPACE_LIST),
         ok(SERVER_RUNNING),
         ok(WORKSPACE_CREATE),
         ok(PANE_RUN_OK),
