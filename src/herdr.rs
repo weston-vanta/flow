@@ -2,6 +2,7 @@
 //! drives herdr on this machine or over ssh, and every call names the herdr session explicitly
 //! so flow never touches the user's default session.
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
@@ -11,13 +12,21 @@ use anyhow::{Context, anyhow, bail};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::runner::{Output, Runner};
+use crate::runner::{Output, Runner, shell_quote};
 use crate::state::config::Cde;
 
 /// The herdr session every flow worker lives in.
 pub const SESSION: &str = "flow";
 /// The lowest herdr private protocol whose CLI output this module parses.
 pub const MIN_PROTOCOL: u32 = 22;
+
+/// herdr's logical key names for `pane send-keys`. `--help` documents only `esc`; these two
+/// were confirmed against herdr 0.9.5, which rejects unknown names with `invalid_key`.
+pub const KEY_ENTER: &str = "enter";
+pub const KEY_DOWN: &str = "down";
+
+/// The `error.code` herdr reports when a wait's `--timeout` expires.
+const TIMEOUT_CODE: &str = "timeout";
 
 const SERVER_START_TIMEOUT: Duration = Duration::from_secs(10);
 const SERVER_POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -131,6 +140,24 @@ struct WorkspaceIds {
 #[derive(Deserialize)]
 struct PaneIds {
     pane_id: String,
+}
+
+/// `pane wait-output` → `output_matched`, whose required fields include `pane_id`.
+#[derive(Deserialize)]
+struct OutputMatched {
+    #[expect(dead_code, reason = "declared so a response without it fails to parse")]
+    pane_id: String,
+}
+
+/// A failed command's stderr: `{"error": {"code", "message"}, "id"}`, `code` required.
+#[derive(Deserialize)]
+struct ErrorResponse {
+    error: ErrorBody,
+}
+
+#[derive(Deserialize)]
+struct ErrorBody {
+    code: String,
 }
 
 /// `workspace close` → `ok`.
@@ -292,14 +319,15 @@ impl Herdr {
     }
 
     /// Blocks until the agent in `pane_id` reaches one of `until` (herdr's default set of idle,
-    /// done and blocked when empty), failing after `timeout_ms` when given.
+    /// done and blocked when empty) and returns that status, or `None` once `timeout_ms`
+    /// passes.
     pub fn wait(
         &self,
         cde: &Cde,
         pane_id: &str,
         until: &[AgentStatus],
         timeout_ms: Option<u64>,
-    ) -> anyhow::Result<AgentStatus> {
+    ) -> anyhow::Result<Option<AgentStatus>> {
         let mut argv = self.argv(&["agent", "wait", pane_id]);
         for status in until {
             argv.extend(words(&["--until", status.as_str()]));
@@ -307,8 +335,64 @@ impl Herdr {
         if let Some(timeout_ms) = timeout_ms {
             argv.extend(["--timeout".to_owned(), timeout_ms.to_string()]);
         }
-        let result: AgentResult = self.call_json(cde, &argv)?;
-        Ok(result.agent.agent_status)
+        let Some(output) = self.call_or_timeout(cde, &argv)? else {
+            return Ok(None);
+        };
+        let result: AgentResult = parse_result(cde, &argv, &output)?;
+        Ok(Some(result.agent.agent_status))
+    }
+
+    /// Types `argv` as one command line into the shell in `pane_id`, followed by Enter. herdr
+    /// joins its arguments with spaces without quoting, so each word is quoted here. Success
+    /// means herdr queued the line, not that the command started.
+    pub fn pane_run(&self, cde: &Cde, pane_id: &str, argv: &[String]) -> anyhow::Result<()> {
+        if argv.is_empty() {
+            bail!("no command to run in pane {pane_id} on {}", cde.name);
+        }
+        let line = argv
+            .iter()
+            .map(|word| shell_word(word))
+            .collect::<Vec<_>>()
+            .join(" ");
+        self.call(cde, &self.argv(&["pane", "run", pane_id, &line]))?;
+        Ok(())
+    }
+
+    /// Waits up to `timeout_ms` for the pane's recent output, existing output included, to
+    /// match the Rust regex `pattern`; `false` when the timeout passes first.
+    pub fn pane_wait_output(
+        &self,
+        cde: &Cde,
+        pane_id: &str,
+        pattern: &str,
+        timeout_ms: u64,
+    ) -> anyhow::Result<bool> {
+        let timeout_ms = timeout_ms.to_string();
+        let argv = self.argv(&[
+            "pane",
+            "wait-output",
+            "--regex",
+            pattern,
+            "--timeout",
+            &timeout_ms,
+            pane_id,
+        ]);
+        let Some(output) = self.call_or_timeout(cde, &argv)? else {
+            return Ok(false);
+        };
+        parse_result::<OutputMatched>(cde, &argv, &output)?;
+        Ok(true)
+    }
+
+    /// Sends `keys`, herdr logical key names such as `KEY_ENTER`, to the pane in order.
+    pub fn pane_send_keys(&self, cde: &Cde, pane_id: &str, keys: &[&str]) -> anyhow::Result<()> {
+        if keys.is_empty() {
+            bail!("no keys to send to pane {pane_id} on {}", cde.name);
+        }
+        let mut argv = self.argv(&["pane", "send-keys", pane_id]);
+        argv.extend(words(keys));
+        self.call(cde, &argv)?;
+        Ok(())
     }
 
     /// Submits `text` to the agent in `pane_id` and returns the first idle, done or blocked
@@ -344,34 +428,74 @@ impl Herdr {
 
     /// Runs `argv` on `cde`, failing on a non-zero exit.
     fn call(&self, cde: &Cde, argv: &[String]) -> anyhow::Result<Output> {
+        self.call_or_timeout(cde, argv)?
+            .ok_or_else(|| anyhow!("`{}` on {} timed out", argv.join(" "), cde.name))
+    }
+
+    /// Runs `argv` on `cde`: `None` when herdr fails with its `timeout` error code, an error
+    /// for any other non-zero exit.
+    fn call_or_timeout(&self, cde: &Cde, argv: &[String]) -> anyhow::Result<Option<Output>> {
         let output = self.runner.run(cde, argv, None)?;
         let command = argv.join(" ");
         let stderr = output.stderr.trim();
         if output.status == SSH_FAILURE_STATUS && output.stdout.is_empty() {
             bail!("cde unreachable: {} (`{command}`): {stderr}", cde.name);
         }
-        if output.status != 0 {
-            bail!(
-                "`{command}` on {} exited {}: {stderr}",
-                cde.name,
-                output.status
-            );
+        if output.status == 0 {
+            return Ok(Some(output));
         }
-        Ok(output)
+        if error_code(stderr).as_deref() == Some(TIMEOUT_CODE) {
+            return Ok(None);
+        }
+        bail!(
+            "`{command}` on {} exited {}: {stderr}",
+            cde.name,
+            output.status
+        );
     }
 
     fn call_json<T: DeserializeOwned>(&self, cde: &Cde, argv: &[String]) -> anyhow::Result<T> {
-        let output = self.call(cde, argv)?;
-        let response: Response<T> = serde_json::from_str(&output.stdout).with_context(|| {
-            format!(
-                "parsing output of `{}` on {}\nstdout: {}\nstderr: {}",
-                argv.join(" "),
-                cde.name,
-                output.stdout.trim(),
-                output.stderr.trim()
-            )
-        })?;
-        Ok(response.result)
+        parse_result(cde, argv, &self.call(cde, argv)?)
+    }
+}
+
+fn parse_result<T: DeserializeOwned>(
+    cde: &Cde,
+    argv: &[String],
+    output: &Output,
+) -> anyhow::Result<T> {
+    let response: Response<T> = serde_json::from_str(&output.stdout).with_context(|| {
+        format!(
+            "parsing output of `{}` on {}\nstdout: {}\nstderr: {}",
+            argv.join(" "),
+            cde.name,
+            output.stdout.trim(),
+            output.stderr.trim()
+        )
+    })?;
+    Ok(response.result)
+}
+
+/// The `error.code` of the herdr error object in `stderr`, if there is one.
+fn error_code(stderr: &str) -> Option<String> {
+    stderr.lines().find_map(|line| {
+        serde_json::from_str::<ErrorResponse>(line)
+            .ok()
+            .map(|response| response.error.code)
+    })
+}
+
+/// `word` as typed into an interactive shell: bare when it has no characters any shell treats
+/// specially, single-quoted otherwise.
+fn shell_word(word: &str) -> Cow<'_, str> {
+    let plain = !word.is_empty()
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./:,+@".contains(c));
+    if plain {
+        Cow::Borrowed(word)
+    } else {
+        Cow::Owned(shell_quote(word))
     }
 }
 
@@ -398,6 +522,12 @@ mod tests {
     const AGENT_LIST: &str = include_str!("../tests/fixtures/herdr/agent_list.json");
     const AGENT_GET: &str = include_str!("../tests/fixtures/herdr/agent_get.json");
     const WORKSPACE_CREATE: &str = include_str!("../tests/fixtures/herdr/workspace_create.json");
+    const AGENT_WAIT_TIMEOUT: &str =
+        include_str!("../tests/fixtures/herdr/agent_wait_timeout.json");
+    const PANE_WAIT_OUTPUT_MATCHED: &str =
+        include_str!("../tests/fixtures/herdr/pane_wait_output_matched.json");
+    const PANE_WAIT_OUTPUT_TIMEOUT: &str =
+        include_str!("../tests/fixtures/herdr/pane_wait_output_timeout.json");
 
     const STATUS_NOT_RUNNING: &str =
         "status: not running\nsocket: /home/dev/.config/herdr/sessions/flow/herdr.sock\n";
@@ -413,6 +543,14 @@ mod tests {
     fn ok(stdout: &str) -> Scripted {
         Scripted {
             stdout: stdout.to_owned(),
+            ..Scripted::default()
+        }
+    }
+
+    fn failed(stderr: &str) -> Scripted {
+        Scripted {
+            status: 1,
+            stderr: stderr.to_owned(),
             ..Scripted::default()
         }
     }
@@ -481,7 +619,7 @@ mod tests {
                 Some(5000),
             )
             .unwrap();
-        assert_eq!(status, AgentStatus::Working);
+        assert_eq!(status, Some(AgentStatus::Working));
         assert_eq!(
             argvs(&fake),
             [words(&[
@@ -497,6 +635,119 @@ mod tests {
                 "done",
                 "--timeout",
                 "5000",
+            ])]
+        );
+    }
+
+    #[test]
+    fn wait_timeout_returns_none() {
+        let (herdr, _) = herdr(vec![failed(AGENT_WAIT_TIMEOUT)]);
+        let status = herdr
+            .wait(&cde(), "w2:p1", &[AgentStatus::Done], Some(100))
+            .unwrap();
+        assert_eq!(status, None);
+    }
+
+    #[test]
+    fn pane_run_sends_one_quoted_command_line() {
+        let (herdr, fake) = herdr(vec![ok("")]);
+        herdr
+            .pane_run(
+                &cde(),
+                "w3:p1",
+                &words(&[
+                    "claude",
+                    "--settings",
+                    "/tmp/a b/s.json",
+                    "Read it's brief.",
+                ]),
+            )
+            .unwrap();
+        assert_eq!(
+            argvs(&fake),
+            [words(&[
+                "herdr",
+                "--session",
+                "flow",
+                "pane",
+                "run",
+                "w3:p1",
+                r"claude --settings '/tmp/a b/s.json' 'Read it'\''s brief.'",
+            ])]
+        );
+    }
+
+    #[test]
+    fn pane_run_rejects_empty_argv() {
+        let (herdr, fake) = herdr(Vec::new());
+        assert!(herdr.pane_run(&cde(), "w3:p1", &[]).is_err());
+        assert!(fake.calls().is_empty());
+    }
+
+    #[test]
+    fn pane_wait_output_reports_a_match() {
+        let (herdr, fake) = herdr(vec![ok(PANE_WAIT_OUTPUT_MATCHED)]);
+        assert!(
+            herdr
+                .pane_wait_output(&cde(), "w1:p1", "trust this folder", 20_000)
+                .unwrap()
+        );
+        assert_eq!(
+            argvs(&fake),
+            [words(&[
+                "herdr",
+                "--session",
+                "flow",
+                "pane",
+                "wait-output",
+                "--regex",
+                "trust this folder",
+                "--timeout",
+                "20000",
+                "w1:p1",
+            ])]
+        );
+    }
+
+    #[test]
+    fn pane_wait_output_timeout_returns_false() {
+        let (herdr, _) = herdr(vec![failed(PANE_WAIT_OUTPUT_TIMEOUT)]);
+        assert!(
+            !herdr
+                .pane_wait_output(&cde(), "w1:p1", "trust", 500)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn pane_wait_output_other_failure_is_an_error() {
+        let (herdr, _) = herdr(vec![failed(
+            r#"{"error":{"code":"pane_not_found","message":"pane w9:p1 not found"},"id":"cli:pane:wait-output"}"#,
+        )]);
+        let err = herdr
+            .pane_wait_output(&cde(), "w9:p1", "trust", 500)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("pane_not_found"), "{err}");
+    }
+
+    #[test]
+    fn pane_send_keys_passes_each_key() {
+        let (herdr, fake) = herdr(vec![ok("")]);
+        herdr
+            .pane_send_keys(&cde(), "w1:p1", &[KEY_DOWN, KEY_ENTER])
+            .unwrap();
+        assert_eq!(
+            argvs(&fake),
+            [words(&[
+                "herdr",
+                "--session",
+                "flow",
+                "pane",
+                "send-keys",
+                "w1:p1",
+                "down",
+                "enter",
             ])]
         );
     }
@@ -695,6 +946,9 @@ mod tests {
             ok(AGENT_GET),
             ok("text"),
             ok(r#"{"id":"cli:workspace:close","result":{"type":"ok"}}"#),
+            ok(""),
+            ok(PANE_WAIT_OUTPUT_MATCHED),
+            ok(""),
         ]);
         let target = cde();
         herdr.ensure_server(&target).unwrap();
@@ -711,9 +965,18 @@ mod tests {
         herdr.prompt(&target, "w3:p1", "hello").unwrap();
         herdr.read(&target, "w3:p1", 10).unwrap();
         herdr.close_workspace(&target, "w3").unwrap();
+        herdr
+            .pane_run(&target, "w3:p1", &words(&["claude"]))
+            .unwrap();
+        herdr
+            .pane_wait_output(&target, "w3:p1", "trust", 100)
+            .unwrap();
+        herdr
+            .pane_send_keys(&target, "w3:p1", &[KEY_ENTER])
+            .unwrap();
 
         let mut calls = argvs(&fake);
-        assert_eq!(calls.len(), 10, "{calls:?}");
+        assert_eq!(calls.len(), 13, "{calls:?}");
         calls.push(herdr.attach_argv("w3:p1"));
         for argv in calls {
             assert!(
