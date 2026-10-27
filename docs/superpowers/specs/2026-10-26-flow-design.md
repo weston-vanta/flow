@@ -357,6 +357,7 @@ Supervisor:
 - `flow task decide <id> --by user|supervisor --answer <text>`: answer the task's hold and lift it.
 - `flow task hold <id> --on user|supervisor --what <text>`: hold the task until someone answers.
 - `flow task orphan <id> --reason <text>`: mark the task orphaned: its work will not finish.
+- `flow task close <id> [--force]`: close the task's herdr workspace, keeping its record, working directory and branch; `--force` closes it while the task is still working or pending.
 - `flow requests [--json]`: dispatch requests not yet consumed.
 - `flow requests consume <req-id>`: mark a request dispatched so it stops listing.
 

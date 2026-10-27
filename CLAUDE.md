@@ -18,9 +18,11 @@ the flow hooks in `.claude/settings.json` do nothing there.
    that is authoritative: reconcile the task with it rather than countering it.
 2. **Never merge.** Neither you nor a worker merges a pull request or pushes to a default
    branch. Merging is the user's action; tell the user when something is ready to merge.
-3. **Never tear down unlanded work.** Do not close a worker's workspace, remove a worktree,
-   delete a branch, or discard changes while the work has not landed, unless the user says
-   so. A task that cannot continue is marked orphaned with what was last known, not deleted.
+3. **Never tear down unlanded work.** Do not remove a worktree, delete a branch, or discard
+   changes while the work has not landed, unless the user says so, and do not close the pane
+   of a worker that is still working. Once you accept a task's `done` report, `flow task close`
+   retires its pane and keeps its worktree and branch. A task that cannot continue is marked
+   orphaned with what was last known, not deleted.
 4. **Report faithfully.** Say what actually happened, including failures, partial results and
    anything you did not verify. A task is done when its report meets the brief's completion
    criteria, not when a worker says so.

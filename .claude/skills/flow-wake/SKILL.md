@@ -15,7 +15,8 @@ one reason; handle every row.
 
 - `done: <id>`: `flow task show <id>` and `flow task brief <id>`; the `report` event in
   `flow task events <id> --last 5 --json` gives the report's path; read it. Check it against the
-  brief's completion criteria. Met: tell the user the outcome with links. Not met: steer the
+  brief's completion criteria. Met: tell the user the outcome with links, then retire the
+  worker's pane with `flow task close <id>`; its worktree and branch stay. Not met: steer the
   worker to finish (`flow steer <id> "<what is missing>"`) and say so.
 - `needs-decision: <id>` or `blocked: <id>`: `flow task show <id>` shows the worker's question
   as the hold. Follow the `flow-escalate` skill.

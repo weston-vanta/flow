@@ -289,6 +289,13 @@ pub enum TaskCommand {
         #[arg(long, value_name = "TEXT")]
         reason: String,
     },
+    /// Close the task's herdr workspace, keeping its record, working directory and branch
+    Close {
+        id: String,
+        /// Close it even while the task is working or pending
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -424,5 +431,6 @@ fn run_task(command: TaskCommand, state: &StateDir) -> anyhow::Result<()> {
             cmd::task_write::run_hold(state, &id, on.into(), &what)
         }
         TaskCommand::Orphan { id, reason } => cmd::task_write::run_orphan(state, &id, &reason),
+        TaskCommand::Close { id, force } => cmd::task_close::run(state, &id, force),
     }
 }

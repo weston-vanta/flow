@@ -383,3 +383,119 @@ fn write_commands_reject_unknown_task() {
 
     assert!(String::from_utf8(out).unwrap().contains("no such task"));
 }
+
+const WORKSPACE_CLOSED: &str = r#"{"id":"cli:workspace:close","result":{"type":"ok"}}"#;
+
+/// `setup()` with the task `state`, its worker in workspace `w2` on `host-a`, the host's cached
+/// record, and a fake runner answering `script`; returns the runner's script path.
+fn setup_close(
+    state_name: State,
+    script: &[Value],
+) -> (tempfile::TempDir, PathBuf, Store, PathBuf) {
+    let (repo, state, store) = setup();
+    store
+        .set_status(TASK, |status| {
+            status.state = state_name;
+            status.herdr = Some(flow::state::task::HerdrTarget {
+                host: "host-a".to_owned(),
+                workspace_id: "w2".to_owned(),
+                pane_id: "w2:p1".to_owned(),
+                agent: "claude".to_owned(),
+            });
+        })
+        .unwrap();
+    let hosts = state.join("hosts");
+    std::fs::create_dir_all(&hosts).unwrap();
+    let record = json!({
+        "name": "host-a", "env_id": "env-0001", "ssh_alias": "host-a.example",
+        "seen": "2026-10-26T09:00:00Z", "reachable": true, "load1": null,
+        "worktrees": [], "agents": [], "prs": [],
+    });
+    std::fs::write(hosts.join("env-0001.json"), record.to_string()).unwrap();
+    let script_path = repo.path().join("runner.json");
+    std::fs::write(&script_path, Value::from(script.to_vec()).to_string()).unwrap();
+    (repo, state, store, script_path)
+}
+
+fn runner_calls(script_path: &Path) -> Vec<Value> {
+    let mut log = script_path.as_os_str().to_owned();
+    log.push(".calls.jsonl");
+    std::fs::read_to_string(log)
+        .unwrap_or_default()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+#[test]
+fn close_closes_a_done_task_workspace_and_keeps_the_record() {
+    let ok = json!({"status": 0, "stdout": WORKSPACE_CLOSED, "stderr": ""});
+    let (_repo, state, store, script) = setup_close(State::Done, &[ok]);
+    let (rec_before, _) = store.task(TASK).unwrap();
+
+    let out = stdout(
+        flow(&state)
+            .env("FLOW_FAKE_RUNNER", &script)
+            .args(["task", "close", TASK]),
+    );
+
+    assert_eq!(out, format!("closed {TASK} (workspace w2 on host-a)\n"));
+    let calls = runner_calls(&script);
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert_eq!(calls[0]["host"], "host-a");
+    assert_eq!(
+        calls[0]["argv"],
+        json!(["herdr", "--session", "flow", "workspace", "close", "w2"])
+    );
+    let (rec, status) = store.task(TASK).unwrap();
+    assert_eq!(rec, rec_before);
+    assert_eq!(status.state, State::Done);
+    assert_eq!(status.herdr, None);
+    let ev = last_event(&store, TASK);
+    assert_eq!(ev.kind, "close");
+    assert_eq!(ev.source, "supervisor");
+    assert_eq!(
+        ev.data,
+        json!({"host": "host-a", "workspace_id": "w2", "pane_id": "w2:p1", "forced": false})
+    );
+}
+
+#[test]
+fn close_refuses_a_working_task_unless_forced() {
+    let ok = json!({"status": 0, "stdout": WORKSPACE_CLOSED, "stderr": ""});
+    let (_repo, state, store, script) = setup_close(State::Working, &[ok]);
+
+    flow(&state)
+        .env("FLOW_FAKE_RUNNER", &script)
+        .args(["task", "close", TASK])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains("--force"));
+    assert!(runner_calls(&script).is_empty());
+    assert!(store.task(TASK).unwrap().1.herdr.is_some());
+
+    flow(&state)
+        .env("FLOW_FAKE_RUNNER", &script)
+        .args(["task", "close", TASK, "--force"])
+        .assert()
+        .success();
+    assert_eq!(runner_calls(&script).len(), 1);
+    let (_, status) = store.task(TASK).unwrap();
+    assert_eq!(status.state, State::Working);
+    assert_eq!(status.herdr, None);
+    assert_eq!(last_event(&store, TASK).data["forced"], true);
+}
+
+#[test]
+fn close_refuses_a_task_without_a_workspace() {
+    let (_repo, state, store) = setup();
+    store
+        .set_status(TASK, |status| status.state = State::Done)
+        .unwrap();
+
+    flow(&state)
+        .args(["task", "close", TASK])
+        .assert()
+        .code(2)
+        .stderr(format!("task {TASK} has no herdr workspace to close\n"));
+}
