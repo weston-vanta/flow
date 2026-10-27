@@ -27,7 +27,10 @@ Then, on each host:
 
 ```sh
 git clone https://github.com/weston-vanta/flow.git /workspaces/flow && bash /workspaces/flow/scripts/install.sh
+export PATH="/workspaces/flow/target/release:$PATH"
 ```
+
+Put the `export` in your shell profile too, so `flow` stays on `PATH` in new shells.
 
 `scripts/install.sh` pulls the clone, creates the state directory, links `state/` to it,
 builds `target/release/flow`, and tells you when `target/release` is not on your `PATH`. Each

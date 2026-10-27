@@ -17,8 +17,8 @@ fail() {
   exit 1
 }
 
-# Seconds since the epoch at which $1 was last modified (GNU stat, else BSD stat).
-mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }
+# A checksum of file $1, empty when it does not exist.
+checksum() { if [[ -e $1 ]]; then cksum <"$1"; fi; }
 
 if ! grep -qx 'name = "flow"' "$FLOW_DIR/Cargo.toml" 2>/dev/null; then
   fail "$FLOW_DIR is not a flow checkout (its Cargo.toml does not declare name = \"flow\"); clone flow there or set FLOW_DIR"
@@ -41,6 +41,8 @@ else
   mkdir -p "$FLOW_STATE_DIR"
   say "state dir: done"
 fi
+# Absolute, so the link works from anywhere and compares equal to its target on the next run.
+FLOW_STATE_DIR=$(cd "$FLOW_STATE_DIR" && pwd)
 
 link="$FLOW_DIR/state"
 if [[ -L $link ]]; then
@@ -60,14 +62,16 @@ else
 fi
 
 if [[ ${FLOW_SKIP_BUILD:-} != 1 ]]; then
+  if ! command -v cargo >/dev/null; then
+    fail "build: cargo not found; install a Rust toolchain (https://rustup.rs) or set FLOW_SKIP_BUILD=1"
+  fi
   bin="$FLOW_DIR/target/release/flow"
-  head_time=$(git -C "$FLOW_DIR" log -1 --format=%ct)
-  if [[ -x $bin ]] && (($(mtime "$bin") >= head_time)); then
+  before=$(checksum "$bin")
+  # cargo's own fingerprinting decides whether the binary is stale; an up-to-date build is a no-op.
+  cargo build --release --quiet --manifest-path "$FLOW_DIR/Cargo.toml" --target-dir "$FLOW_DIR/target"
+  if [[ $(checksum "$bin") == "$before" ]]; then
     say "build: already"
   else
-    cargo build --release --quiet --manifest-path "$FLOW_DIR/Cargo.toml" --target-dir "$FLOW_DIR/target"
-    # cargo leaves an up-to-date binary untouched; mark it as built for this commit.
-    touch "$bin"
     say "build: done"
   fi
 fi
