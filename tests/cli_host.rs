@@ -11,18 +11,18 @@ worktree_tool = { create = ["wt", "create", "{branch}"] }
 path = "/workspaces/example-repo"
 default_branch = "main"
 
-[[cdes]]
-name = "cde-a"
+[[hosts]]
+name = "host-a"
 env_id = "env-0001"
-ssh_alias = "cde-a.example"
+ssh_alias = "host-a.example"
 
-[[cdes]]
-name = "cde-b"
+[[hosts]]
+name = "host-b"
 env_id = "env-0002"
-ssh_alias = "cde-b.example"
+ssh_alias = "host-b.example"
 "#;
 
-/// A temp dir holding `state/config.toml` with `cde-a` (env `env-0001`) and `cde-b`.
+/// A temp dir holding `state/config.toml` with `host-a` (env `env-0001`) and `host-b`.
 fn setup() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");
@@ -31,7 +31,7 @@ fn setup() -> (tempfile::TempDir, PathBuf) {
     (dir, state)
 }
 
-/// `flow` on `state`, running as the CDE whose env id is `env-0001` (`cde-a`).
+/// `flow` on `state`, running as the host whose env id is `env-0001` (`host-a`).
 fn flow(state: &Path) -> Command {
     let mut cmd = Command::cargo_bin("flow").expect("flow binary is built");
     cmd.env("FLOW_STATE", state)
@@ -41,20 +41,20 @@ fn flow(state: &Path) -> Command {
 }
 
 #[test]
-fn cde_list_marks_the_local_cde() {
+fn host_list_marks_the_local_host() {
     let (_dir, state) = setup();
     flow(&state)
-        .args(["cde", "list"])
+        .args(["host", "list"])
         .assert()
         .success()
-        .stdout("cde-a  env-0001  local\ncde-b  env-0002\n");
+        .stdout("host-a  env-0001  local\nhost-b  env-0002\n");
 }
 
 #[test]
-fn cde_list_json() {
+fn host_list_json() {
     let (_dir, state) = setup();
     let out = flow(&state)
-        .args(["cde", "list", "--json"])
+        .args(["host", "list", "--json"])
         .assert()
         .success()
         .get_output()
@@ -64,30 +64,30 @@ fn cde_list_json() {
     assert_eq!(
         listed,
         json!([
-            {"name": "cde-a", "env_id": "env-0001", "ssh_alias": "cde-a.example", "local": true},
-            {"name": "cde-b", "env_id": "env-0002", "ssh_alias": "cde-b.example", "local": false},
+            {"name": "host-a", "env_id": "env-0001", "ssh_alias": "host-a.example", "local": true},
+            {"name": "host-b", "env_id": "env-0002", "ssh_alias": "host-b.example", "local": false},
         ])
     );
 }
 
 #[test]
-fn cde_run_local_echo() {
+fn host_run_local_echo() {
     let (_dir, state) = setup();
     flow(&state)
-        .args(["cde", "run", "cde-a", "--", "echo", "hi"])
+        .args(["host", "run", "host-a", "--", "echo", "hi"])
         .assert()
         .success()
         .stdout("hi\n");
 }
 
 #[test]
-fn cde_run_passes_stderr_and_exit_code_through() {
+fn host_run_passes_stderr_and_exit_code_through() {
     let (_dir, state) = setup();
     flow(&state)
         .args([
-            "cde",
+            "host",
             "run",
-            "cde-a",
+            "host-a",
             "--",
             "sh",
             "-c",
@@ -100,29 +100,29 @@ fn cde_run_passes_stderr_and_exit_code_through() {
 }
 
 #[test]
-fn cde_run_unknown_cde_fails() {
+fn host_run_unknown_host_fails() {
     let (_dir, state) = setup();
     flow(&state)
-        .args(["cde", "run", "cde-z", "--", "true"])
+        .args(["host", "run", "host-z", "--", "true"])
         .assert()
         .failure()
-        .stderr(predicates::str::contains("cde-z"));
+        .stderr(predicates::str::contains("host-z"));
 }
 
 #[test]
-fn cde_run_uses_fake_runner_when_set() {
+fn host_run_uses_fake_runner_when_set() {
     let (dir, state) = setup();
     let script = dir.path().join("runner.json");
     fs::write(
         &script,
-        json!([{"cde": "cde-b", "status": 4, "stdout": "scripted\n", "stderr": "warn\n"}])
+        json!([{"host": "host-b", "status": 4, "stdout": "scripted\n", "stderr": "warn\n"}])
             .to_string(),
     )
     .unwrap();
 
     flow(&state)
         .env("FLOW_FAKE_RUNNER", &script)
-        .args(["cde", "run", "cde-b", "--", "herdr", "status"])
+        .args(["host", "run", "host-b", "--", "herdr", "status"])
         .assert()
         .code(4)
         .stdout("scripted\n")
@@ -135,6 +135,6 @@ fn cde_run_uses_fake_runner_when_set() {
         .collect();
     assert_eq!(
         logged,
-        [json!({"cde": "cde-b", "argv": ["herdr", "status"]})]
+        [json!({"host": "host-b", "argv": ["herdr", "status"]})]
     );
 }

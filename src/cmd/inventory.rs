@@ -1,4 +1,4 @@
-//! `flow inventory`: worktrees, agents, PRs, and load per CDE, from the cache or refreshed.
+//! `flow inventory`: worktrees, agents, PRs, and load per host, from the cache or refreshed.
 
 use std::sync::Arc;
 use std::thread;
@@ -6,21 +6,21 @@ use std::thread;
 use anyhow::bail;
 use jiff::Timestamp;
 
-use crate::cde;
 use crate::herdr::Agent;
-use crate::inventory::{self, CdeInventory, Unreachable};
+use crate::host;
+use crate::inventory::{self, HostInventory, Unreachable};
 use crate::paths::StateDir;
 use crate::render;
 use crate::runner::{self, Runner};
-use crate::state::config::{Cde, Config};
+use crate::state::config::{Config, Host};
 
 const DETACHED: &str = "(detached)";
 const NO_LOAD: &str = "-";
 const ERROR_WIDTH: usize = 160;
 
-/// Prints the cached inventory of every CDE, refreshing every configured CDE first when
-/// `refresh` is set. A CDE that cannot be refreshed keeps its cache and fails the command once
-/// the rest are rendered; an unreachable CDE is recorded as such and does not fail it.
+/// Prints the cached inventory of every host, refreshing every configured host first when
+/// `refresh` is set. A host that cannot be refreshed keeps its cache and fails the command once
+/// the rest are rendered; an unreachable host is recorded as such and does not fail it.
 pub fn run(state: &StateDir, refresh: bool, json: bool) -> anyhow::Result<()> {
     let failed = if refresh {
         refresh_all(state)?
@@ -41,20 +41,20 @@ pub fn run(state: &StateDir, refresh: bool, json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Refreshes every configured CDE in parallel, then joins the user's open PRs, listed once, to
-/// each reachable CDE's worktrees, and writes each inventory. Returns the CDEs that failed.
+/// Refreshes every configured host in parallel, then joins the user's open PRs, listed once, to
+/// each reachable host's worktrees, and writes each inventory. Returns the hosts that failed.
 fn refresh_all(state: &StateDir) -> anyhow::Result<Vec<String>> {
     let config = Config::load(state)?;
     let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
     let now = Timestamp::now();
-    let results: Vec<(&Cde, anyhow::Result<CdeInventory>)> = thread::scope(|scope| {
+    let results: Vec<(&Host, anyhow::Result<HostInventory>)> = thread::scope(|scope| {
         let handles: Vec<_> = config
-            .cdes
+            .hosts
             .iter()
-            .map(|cde| {
+            .map(|host| {
                 let runner = &runner;
                 let config = &config;
-                scope.spawn(move || (cde, refresh_one(state, runner, config, cde, now)))
+                scope.spawn(move || (host, refresh_one(state, runner, config, host, now)))
             })
             .collect();
         handles
@@ -65,12 +65,12 @@ fn refresh_all(state: &StateDir) -> anyhow::Result<Vec<String>> {
 
     let mut failed = Vec::new();
     let mut refreshed = Vec::new();
-    for (cde, result) in results {
+    for (host, result) in results {
         match result {
-            Ok(inventory) => refreshed.push((cde, inventory)),
+            Ok(inventory) => refreshed.push((host, inventory)),
             Err(err) => {
-                eprintln!("{}: {err:#}", cde.name);
-                failed.push(cde.name.clone());
+                eprintln!("{}: {err:#}", host.name);
+                failed.push(host.name.clone());
             }
         }
     }
@@ -92,17 +92,17 @@ fn refresh_all(state: &StateDir) -> anyhow::Result<Vec<String>> {
     Ok(failed)
 }
 
-/// `cde`'s fresh inventory, or its cached one marked unreachable when it does not answer.
+/// `host`'s fresh inventory, or its cached one marked unreachable when it does not answer.
 fn refresh_one(
     state: &StateDir,
     runner: &Arc<dyn Runner>,
     config: &Config,
-    cde: &Cde,
+    host: &Host,
     now: Timestamp,
-) -> anyhow::Result<CdeInventory> {
+) -> anyhow::Result<HostInventory> {
     match inventory::refresh(
         runner,
-        cde,
+        host,
         &config.monorepo.path,
         &config.worktree_tool,
         &config.herdr_sessions,
@@ -111,8 +111,8 @@ fn refresh_one(
         Err(err) if err.is::<Unreachable>() => {
             eprintln!("{err:#}");
             Ok(inventory::unreachable(
-                cde,
-                inventory::load(state, &cde.env_id)?,
+                host,
+                inventory::load(state, &host.env_id)?,
                 now,
             ))
         }
@@ -120,30 +120,30 @@ fn refresh_one(
     }
 }
 
-/// The user's open PRs, listed on this machine when it is a reachable configured CDE, else on
-/// the first reachable one (gh's login is shared across CDEs). Fails with the reason when no
-/// CDE is reachable or the listing fails.
+/// The user's open PRs, listed on this machine when it is a reachable configured host, else on
+/// the first reachable one (gh's login is shared across hosts). Fails with the reason when no
+/// host is reachable or the listing fails.
 fn list_prs(
     runner: &dyn Runner,
     config: &Config,
-    refreshed: &[(&Cde, CdeInventory)],
+    refreshed: &[(&Host, HostInventory)],
 ) -> Result<Vec<inventory::Pr>, String> {
-    let local_env_id = cde::local_env_id();
+    let local_env_id = host::local_env_id();
     let mut reachable = refreshed
         .iter()
         .filter(|(_, inv)| inv.reachable)
-        .map(|(cde, _)| *cde);
+        .map(|(host, _)| *host);
     let host = reachable
         .clone()
-        .find(|cde| cde::is_local(cde, local_env_id.as_deref()))
+        .find(|host| host::is_local(host, local_env_id.as_deref()))
         .or_else(|| reachable.next());
     let Some(host) = host else {
-        return Err("no CDE reachable to list open PRs".to_owned());
+        return Err("no host reachable to list open PRs".to_owned());
     };
     inventory::open_prs(runner, host, &config.monorepo.path).map_err(|err| format!("{err:#}"))
 }
 
-fn render_all(inventories: &[CdeInventory], now: Timestamp) -> String {
+fn render_all(inventories: &[HostInventory], now: Timestamp) -> String {
     inventories
         .iter()
         .map(|inv| render_block(inv, now))
@@ -154,7 +154,7 @@ fn render_all(inventories: &[CdeInventory], now: Timestamp) -> String {
 /// The header `name  reachable|unreachable  load <load1>  <N> worktrees  <N> agents  (seen
 /// <age>)`, any recorded errors, then `branch  path  [PR #n state]  [agent: <title> <status>]`
 /// per worktree.
-fn render_block(inv: &CdeInventory, now: Timestamp) -> String {
+fn render_block(inv: &HostInventory, now: Timestamp) -> String {
     let mut out = format!(
         "{}  {}  load {}  {} worktrees  {} agents  (seen {})\n",
         inv.name,

@@ -1,5 +1,5 @@
-//! Per-CDE inventory: worktrees, load, herdr agents, and open PRs, cached in
-//! `state/cdes/<env_id>.json` so the supervisor can pick a task's natural home.
+//! Per-host inventory: worktrees, load, herdr agents, and open PRs, cached in
+//! `state/hosts/<env_id>.json` so the supervisor can pick a task's natural home.
 
 use std::fs;
 use std::io;
@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::herdr::{self, Agent, Herdr};
 use crate::paths::StateDir;
 use crate::runner::{Output, Runner};
-use crate::state::config::{Cde, WorktreeTool};
+use crate::state::config::{Host, WorktreeTool};
 use crate::state::fs::write_atomic;
 use crate::worktree;
 
@@ -35,10 +35,10 @@ const PR_LIST_ARGV: [&str; 11] = [
 ];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CdeInventory {
+pub struct HostInventory {
     pub name: String,
     pub env_id: String,
-    /// When the CDE last answered. An unreachable CDE keeps the time of its cached inventory.
+    /// When the host last answered. An unreachable host keeps the time of its cached inventory.
     pub seen: Timestamp,
     pub reachable: bool,
     /// The one-minute load average.
@@ -78,21 +78,21 @@ pub struct Pr {
     pub state: String,
 }
 
-/// The agents herdr reports on one CDE across sessions.
+/// The agents herdr reports on one host across sessions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HerdrAgents {
     pub agents: Vec<Agent>,
     /// Why some session could not be asked; its agents are missing from `agents`.
     pub error: Option<String>,
-    /// ssh could not reach the CDE, so the sessions after the failing one were not asked.
+    /// ssh could not reach the host, so the sessions after the failing one were not asked.
     pub unreachable: bool,
 }
 
-/// The CDE did not answer: ssh itself failed, or no probe could run at all.
+/// The host did not answer: ssh itself failed, or no probe could run at all.
 #[derive(Debug, thiserror::Error)]
-#[error("cde unreachable: {cde}: {detail}")]
+#[error("host unreachable: {host}: {detail}")]
 pub struct Unreachable {
-    pub cde: String,
+    pub host: String,
     pub detail: String,
 }
 
@@ -119,47 +119,47 @@ struct GhPr {
     state: String,
 }
 
-/// Probes `cde` for its worktrees, load, and the agents in `herdr_sessions`. Fails with
+/// Probes `host` for its worktrees, load, and the agents in `herdr_sessions`. Fails with
 /// `Unreachable` when ssh fails on the first call or no probe runs at all, and with another
 /// error when git cannot list the worktrees. The worktree tool and herdr failing are recorded on
 /// the inventory instead. `prs` is left empty for `join_prs`.
 pub fn refresh(
     runner: &Arc<dyn Runner>,
-    cde: &Cde,
+    host: &Host,
     monorepo: &Path,
     tool: &WorktreeTool,
     herdr_sessions: &[String],
     now: Timestamp,
-) -> anyhow::Result<CdeInventory> {
+) -> anyhow::Result<HostInventory> {
     let git_argv = words(&["git", "-C", &monorepo.display().to_string()])
         .into_iter()
         .chain(words(&["worktree", "list", "--porcelain"]))
         .collect::<Vec<_>>();
-    let git = runner.run(cde, &git_argv, None);
+    let git = runner.run(host, &git_argv, None);
     if let Ok(output) = &git
         && is_ssh_failure(output)
     {
-        return Err(unreachable_error(cde, output));
+        return Err(unreachable_error(host, output));
     }
     let listed = if tool.list.is_empty() {
         Err(anyhow!("worktree_tool.list in config.toml is empty"))
     } else {
-        runner.run(cde, &worktree::wrapped_argv(monorepo, &tool.list), None)
+        runner.run(host, &worktree::wrapped_argv(monorepo, &tool.list), None)
     };
-    let load = runner.run(cde, &words(&LOADAVG_ARGV), None);
+    let load = runner.run(host, &words(&LOADAVG_ARGV), None);
     if let (Err(err), Err(_), Err(_)) = (&git, &listed, &load) {
         return Err(Unreachable {
-            cde: cde.name.clone(),
+            host: host.name.clone(),
             detail: format!("{err:#}"),
         }
         .into());
     }
 
-    let git = git.with_context(|| format!("listing worktrees on {}", cde.name))?;
-    check_status(cde, &git_argv, &git)?;
+    let git = git.with_context(|| format!("listing worktrees on {}", host.name))?;
+    check_status(host, &git_argv, &git)?;
     let mut worktrees = parse_porcelain(&git.stdout);
     let tool_error = match listed.and_then(|output| {
-        check_status(cde, &tool.list, &output)?;
+        check_status(host, &tool.list, &output)?;
         parse_tool_list(&output.stdout)
     }) {
         Ok(listed) => {
@@ -177,11 +177,11 @@ pub fn refresh(
         agents,
         error: herdr_error,
         ..
-    } = herdr_agents(runner, cde, herdr_sessions);
+    } = herdr_agents(runner, host, herdr_sessions);
 
-    Ok(CdeInventory {
-        name: cde.name.clone(),
-        env_id: cde.env_id.clone(),
+    Ok(HostInventory {
+        name: host.name.clone(),
+        env_id: host.env_id.clone(),
         seen: now,
         reachable: true,
         load1,
@@ -194,21 +194,21 @@ pub fn refresh(
     })
 }
 
-/// The agents in each of `sessions` on `cde`, in session order. flow's own session is started
+/// The agents in each of `sessions` on `host`, in session order. flow's own session is started
 /// when it is not running; another session without a server has no agents. A session whose
 /// server cannot be asked is recorded in `error`, and asking stops at the first session ssh
 /// cannot reach.
-pub fn herdr_agents(runner: &Arc<dyn Runner>, cde: &Cde, sessions: &[String]) -> HerdrAgents {
+pub fn herdr_agents(runner: &Arc<dyn Runner>, host: &Host, sessions: &[String]) -> HerdrAgents {
     let mut agents = Vec::new();
     let mut errors = Vec::new();
     let mut unreachable = false;
     for session in sessions {
         let herdr = Herdr::with_session(runner.clone(), session);
         let found = if session == herdr::SESSION {
-            herdr.ensure_server(cde).and_then(|()| herdr.agents(cde))
+            herdr.ensure_server(host).and_then(|()| herdr.agents(host))
         } else {
             herdr
-                .agents_if_running(cde)
+                .agents_if_running(host)
                 .map(Option::unwrap_or_default)
                 .with_context(|| format!("herdr session {session}"))
         };
@@ -233,21 +233,21 @@ pub fn herdr_agents(runner: &Arc<dyn Runner>, cde: &Cde, sessions: &[String]) ->
 /// `cached` with its agents and herdr error replaced by `found` as of `now`, or, with nothing
 /// cached, an inventory of only those agents. Nothing else in a cached inventory changes.
 pub fn with_agents(
-    cde: &Cde,
-    cached: Option<CdeInventory>,
+    host: &Host,
+    cached: Option<HostInventory>,
     found: HerdrAgents,
     now: Timestamp,
-) -> CdeInventory {
+) -> HostInventory {
     match cached {
-        Some(cached) => CdeInventory {
+        Some(cached) => HostInventory {
             seen: now,
             agents: found.agents,
             herdr_error: found.error,
             ..cached
         },
-        None => CdeInventory {
-            name: cde.name.clone(),
-            env_id: cde.env_id.clone(),
+        None => HostInventory {
+            name: host.name.clone(),
+            env_id: host.env_id.clone(),
             seen: now,
             reachable: true,
             load1: None,
@@ -261,9 +261,9 @@ pub fn with_agents(
     }
 }
 
-/// The inventory of a CDE that did not answer: the cached worktrees, agents, PRs, and PR error as
+/// The inventory of a host that did not answer: the cached worktrees, agents, PRs, and PR error as
 /// of the cached `seen`, or an empty inventory seen `now` when nothing is cached.
-pub fn unreachable(cde: &Cde, cached: Option<CdeInventory>, now: Timestamp) -> CdeInventory {
+pub fn unreachable(host: &Host, cached: Option<HostInventory>, now: Timestamp) -> HostInventory {
     let (seen, worktrees, agents, prs, pr_error) = match cached {
         Some(cached) => (
             cached.seen,
@@ -274,9 +274,9 @@ pub fn unreachable(cde: &Cde, cached: Option<CdeInventory>, now: Timestamp) -> C
         ),
         None => (now, Vec::new(), Vec::new(), Vec::new(), None),
     };
-    CdeInventory {
-        name: cde.name.clone(),
-        env_id: cde.env_id.clone(),
+    HostInventory {
+        name: host.name.clone(),
+        env_id: host.env_id.clone(),
         seen,
         reachable: false,
         load1: None,
@@ -289,14 +289,14 @@ pub fn unreachable(cde: &Cde, cached: Option<CdeInventory>, now: Timestamp) -> C
     }
 }
 
-/// The user's open PRs, listed by `gh` run inside `monorepo` on `cde`.
-pub fn open_prs(runner: &dyn Runner, cde: &Cde, monorepo: &Path) -> anyhow::Result<Vec<Pr>> {
+/// The user's open PRs, listed by `gh` run inside `monorepo` on `host`.
+pub fn open_prs(runner: &dyn Runner, host: &Host, monorepo: &Path) -> anyhow::Result<Vec<Pr>> {
     let argv = words(&PR_LIST_ARGV);
-    let output = runner.run(cde, &worktree::wrapped_argv(monorepo, &argv), None)?;
+    let output = runner.run(host, &worktree::wrapped_argv(monorepo, &argv), None)?;
     if output.status != 0 {
         bail!(
             "`gh pr list` on {} exited {}: {}",
-            cde.name,
+            host.name,
             output.status,
             output.stderr.trim()
         );
@@ -306,7 +306,7 @@ pub fn open_prs(runner: &dyn Runner, cde: &Cde, monorepo: &Path) -> anyhow::Resu
 
 /// Sets `inventory.prs` to the PRs in `prs` whose head branch one of its worktrees has checked
 /// out.
-pub fn join_prs(inventory: &mut CdeInventory, prs: &[Pr]) {
+pub fn join_prs(inventory: &mut HostInventory, prs: &[Pr]) {
     inventory.prs = prs
         .iter()
         .filter(|pr| {
@@ -319,13 +319,13 @@ pub fn join_prs(inventory: &mut CdeInventory, prs: &[Pr]) {
         .collect();
 }
 
-fn cdes_dir(state: &StateDir) -> PathBuf {
-    state.root().join("cdes")
+fn hosts_dir(state: &StateDir) -> PathBuf {
+    state.root().join("hosts")
 }
 
-/// The cached inventory of the CDE with `env_id`, if there is one.
-pub fn load(state: &StateDir, env_id: &str) -> anyhow::Result<Option<CdeInventory>> {
-    let path = cdes_dir(state).join(format!("{env_id}.json"));
+/// The cached inventory of the host with `env_id`, if there is one.
+pub fn load(state: &StateDir, env_id: &str) -> anyhow::Result<Option<HostInventory>> {
+    let path = hosts_dir(state).join(format!("{env_id}.json"));
     match fs::read_to_string(&path) {
         Ok(text) => parse_cached(&path, &text).map(Some),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
@@ -333,9 +333,9 @@ pub fn load(state: &StateDir, env_id: &str) -> anyhow::Result<Option<CdeInventor
     }
 }
 
-/// Every cached inventory, sorted by CDE name.
-pub fn load_all(state: &StateDir) -> anyhow::Result<Vec<CdeInventory>> {
-    let dir = cdes_dir(state);
+/// Every cached inventory, sorted by host name.
+pub fn load_all(state: &StateDir) -> anyhow::Result<Vec<HostInventory>> {
+    let dir = hosts_dir(state);
     let entries = match fs::read_dir(&dir) {
         Ok(entries) => entries,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -357,9 +357,9 @@ pub fn load_all(state: &StateDir) -> anyhow::Result<Vec<CdeInventory>> {
     Ok(inventories)
 }
 
-/// Writes `inventory` to `state/cdes/<env_id>.json` atomically.
-pub fn save(state: &StateDir, inventory: &CdeInventory) -> anyhow::Result<()> {
-    let dir = cdes_dir(state);
+/// Writes `inventory` to `state/hosts/<env_id>.json` atomically.
+pub fn save(state: &StateDir, inventory: &HostInventory) -> anyhow::Result<()> {
+    let dir = hosts_dir(state);
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let path = dir.join(format!("{}.json", inventory.env_id));
     let mut bytes = serde_json::to_vec_pretty(inventory)?;
@@ -367,7 +367,7 @@ pub fn save(state: &StateDir, inventory: &CdeInventory) -> anyhow::Result<()> {
     write_atomic(&path, &bytes).with_context(|| format!("writing {}", path.display()))
 }
 
-fn parse_cached(path: &Path, text: &str) -> anyhow::Result<CdeInventory> {
+fn parse_cached(path: &Path, text: &str) -> anyhow::Result<HostInventory> {
     serde_json::from_str(text).with_context(|| format!("parsing {}", path.display()))
 }
 
@@ -431,20 +431,20 @@ fn is_ssh_failure(output: &Output) -> bool {
     output.status == SSH_FAILURE_STATUS && output.stdout.is_empty()
 }
 
-fn unreachable_error(cde: &Cde, output: &Output) -> anyhow::Error {
+fn unreachable_error(host: &Host, output: &Output) -> anyhow::Error {
     Unreachable {
-        cde: cde.name.clone(),
+        host: host.name.clone(),
         detail: output.stderr.trim().to_owned(),
     }
     .into()
 }
 
-fn check_status(cde: &Cde, argv: &[String], output: &Output) -> anyhow::Result<()> {
+fn check_status(host: &Host, argv: &[String], output: &Output) -> anyhow::Result<()> {
     if output.status != 0 {
         bail!(
             "`{}` on {} exited {}: {}",
             argv.join(" "),
-            cde.name,
+            host.name,
             output.status,
             output.stderr.trim()
         );
@@ -530,11 +530,11 @@ detached
         assert!(parse_tool_list("not json").is_err());
     }
 
-    fn cde() -> Cde {
-        Cde {
-            name: "cde-a".to_owned(),
+    fn host() -> Host {
+        Host {
+            name: "host-a".to_owned(),
             env_id: "env-0001".to_owned(),
-            ssh_alias: "cde-a.example".to_owned(),
+            ssh_alias: "host-a.example".to_owned(),
             local_marker_env: None,
         }
     }
@@ -570,11 +570,11 @@ detached
         }
     }
 
-    fn refresh_with(script: Vec<Scripted>) -> anyhow::Result<CdeInventory> {
+    fn refresh_with(script: Vec<Scripted>) -> anyhow::Result<HostInventory> {
         let runner: Arc<dyn Runner> = Arc::new(FakeRunner::new(script));
         refresh(
             &runner,
-            &cde(),
+            &host(),
             Path::new("/workspaces/acme"),
             &tool(),
             &sessions(),
@@ -584,7 +584,7 @@ detached
 
     fn herdr_agents_with(script: Vec<Scripted>) -> HerdrAgents {
         let runner: Arc<dyn Runner> = Arc::new(FakeRunner::new(script));
-        herdr_agents(&runner, &cde(), &sessions())
+        herdr_agents(&runner, &host(), &sessions())
     }
 
     #[test]
@@ -605,7 +605,7 @@ detached
     }
 
     #[test]
-    fn herdr_agents_stop_at_an_unreachable_cde() {
+    fn herdr_agents_stop_at_an_unreachable_host() {
         let found = herdr_agents_with(vec![failed(
             255,
             "ssh: connect to host: Connection refused\n",
@@ -613,7 +613,7 @@ detached
         assert!(found.unreachable);
         assert!(found.agents.is_empty());
         let error = found.error.unwrap();
-        assert!(error.starts_with("cde unreachable: cde-a"), "{error}");
+        assert!(error.starts_with("host unreachable: host-a"), "{error}");
         assert!(!error.contains("session default"), "{error}");
     }
 

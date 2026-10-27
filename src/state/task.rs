@@ -11,7 +11,7 @@ pub struct TaskRecord {
     #[serde(default)]
     pub parent: Option<String>,
     pub title: String,
-    pub cde: String,
+    pub host: String,
     pub worktree: PathBuf,
     pub harness: Harness,
     pub created: Timestamp,
@@ -125,7 +125,7 @@ pub struct Decision {
 /// The herdr pane running the task's agent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HerdrTarget {
-    pub cde: String,
+    pub host: String,
     pub workspace_id: String,
     pub pane_id: String,
     pub agent: String,

@@ -11,15 +11,15 @@ worktree_tool = { create = ["wt", "create", "{branch}"] }
 path = "/workspaces/acme"
 default_branch = "main"
 
-[[cdes]]
-name = "cde-a"
+[[hosts]]
+name = "host-a"
 env_id = "env-0001"
-ssh_alias = "cde-a.example"
+ssh_alias = "host-a.example"
 
-[[cdes]]
-name = "cde-b"
+[[hosts]]
+name = "host-b"
 env_id = "env-0002"
-ssh_alias = "cde-b.example"
+ssh_alias = "host-b.example"
 "#;
 
 const PORCELAIN: &str = "\
@@ -67,7 +67,7 @@ impl Fixture {
         self.dir.path().join("runner.json")
     }
 
-    /// `flow` on this state dir as `cde-a`, answering runner calls from `script`.
+    /// `flow` on this state dir as `host-a`, answering runner calls from `script`.
     fn flow(&self, script: &[Value]) -> Command {
         fs::write(self.script_path(), Value::from(script.to_vec()).to_string()).unwrap();
         let mut cmd = Command::cargo_bin("flow").expect("flow binary is built");
@@ -77,7 +77,7 @@ impl Fixture {
         cmd
     }
 
-    /// `(cde, argv)` of every runner call.
+    /// `(host, argv)` of every runner call.
     fn calls(&self) -> Vec<(String, Vec<String>)> {
         let mut log = self.script_path().into_os_string();
         log.push(".calls.jsonl");
@@ -87,7 +87,7 @@ impl Fixture {
             .map(|line| {
                 let call: Value = serde_json::from_str(line).unwrap();
                 (
-                    call["cde"].as_str().unwrap().to_owned(),
+                    call["host"].as_str().unwrap().to_owned(),
                     serde_json::from_value(call["argv"].clone()).unwrap(),
                 )
             })
@@ -95,7 +95,7 @@ impl Fixture {
     }
 
     fn cache_path(&self, env_id: &str) -> PathBuf {
-        self.state.join("cdes").join(format!("{env_id}.json"))
+        self.state.join("hosts").join(format!("{env_id}.json"))
     }
 
     fn cached(&self, env_id: &str) -> Value {
@@ -103,32 +103,32 @@ impl Fixture {
     }
 
     fn write_cache(&self, env_id: &str, inventory: &Value) {
-        fs::create_dir_all(self.state.join("cdes")).unwrap();
+        fs::create_dir_all(self.state.join("hosts")).unwrap();
         fs::write(self.cache_path(env_id), inventory.to_string()).unwrap();
     }
 }
 
-fn on(cde: &str, stdout: &str) -> Value {
-    json!({"cde": cde, "status": 0, "stdout": stdout})
+fn on(host: &str, stdout: &str) -> Value {
+    json!({"host": host, "status": 0, "stdout": stdout})
 }
 
-/// `herdr --session default agent list` on `cde` with no default server running.
-fn default_session_stopped(cde: &str) -> Value {
+/// `herdr --session default agent list` on `host` with no default server running.
+fn default_session_stopped(host: &str) -> Value {
     json!({
-        "cde": cde, "status": 1, "stdout": "",
+        "host": host, "status": 1, "stdout": "",
         "stderr": include_str!("fixtures/herdr/agent_list_server_not_running.json"),
     })
 }
 
-/// Every probe of `cde-a` succeeding, in call order.
-fn cde_a_probes() -> Vec<Value> {
+/// Every probe of `host-a` succeeding, in call order.
+fn host_a_probes() -> Vec<Value> {
     vec![
-        on("cde-a", PORCELAIN),
-        on("cde-a", WT_LIST),
-        on("cde-a", LOADAVG),
-        on("cde-a", SERVER_RUNNING),
-        on("cde-a", AGENT_LIST),
-        default_session_stopped("cde-a"),
+        on("host-a", PORCELAIN),
+        on("host-a", WT_LIST),
+        on("host-a", LOADAVG),
+        on("host-a", SERVER_RUNNING),
+        on("host-a", AGENT_LIST),
+        default_session_stopped("host-a"),
     ]
 }
 
@@ -146,28 +146,28 @@ fn stdout_of(cmd: &mut Command) -> String {
     String::from_utf8(out.stdout).unwrap()
 }
 
-fn single_cde_config(fx: &Fixture) {
+fn single_host_config(fx: &Fixture) {
     let config = CONFIG
-        .split("[[cdes]]")
+        .split("[[hosts]]")
         .take(2)
         .collect::<Vec<_>>()
-        .join("[[cdes]]");
+        .join("[[hosts]]");
     fs::write(fx.state.join("config.toml"), config).unwrap();
 }
 
 #[test]
 fn refresh_parses_worktrees_load_and_joins_prs() {
     let fx = Fixture::new();
-    single_cde_config(&fx);
-    let mut script = cde_a_probes();
-    script.push(on("cde-a", PR_LIST));
+    single_host_config(&fx);
+    let mut script = host_a_probes();
+    script.push(on("host-a", PR_LIST));
 
     let stdout = stdout_of(fx.flow(&script).args(["inventory", "--refresh"]));
 
     let mut lines = stdout.lines();
     let header = lines.next().unwrap();
     assert!(
-        header.starts_with("cde-a  reachable  load 0.26  3 worktrees  1 agents  (seen "),
+        header.starts_with("host-a  reachable  load 0.26  3 worktrees  1 agents  (seen "),
         "{stdout}"
     );
     assert_eq!(
@@ -181,7 +181,7 @@ fn refresh_parses_worktrees_load_and_joins_prs() {
     );
 
     let cached = fx.cached("env-0001");
-    assert_eq!(cached["name"], "cde-a");
+    assert_eq!(cached["name"], "host-a");
     assert_eq!(cached["env_id"], "env-0001");
     assert_eq!(cached["reachable"], true);
     assert_eq!(cached["load1"], 0.26);
@@ -248,13 +248,13 @@ fn refresh_parses_worktrees_load_and_joins_prs() {
 }
 
 #[test]
-fn unreachable_cde_is_recorded_not_fatal() {
+fn unreachable_host_is_recorded_not_fatal() {
     let fx = Fixture::new();
     let earlier = "2026-10-26T09:00:00Z";
     fx.write_cache(
         "env-0002",
         &json!({
-            "name": "cde-b", "env_id": "env-0002", "seen": earlier, "reachable": true,
+            "name": "host-b", "env_id": "env-0002", "seen": earlier, "reachable": true,
             "load1": 1.5,
             "worktrees": [{"path": "/workspaces/acme-worktrees/feature-y", "branch": "feature-y", "busy": false, "dirty_files": 0}],
             "agents": [],
@@ -263,11 +263,11 @@ fn unreachable_cde_is_recorded_not_fatal() {
         }),
     );
     let mut script = vec![json!({
-        "cde": "cde-b", "status": 255, "stdout": "", "repeat": true,
-        "stderr": "ssh: Could not resolve hostname cde-b.example: Name or service not known\n",
+        "host": "host-b", "status": 255, "stdout": "", "repeat": true,
+        "stderr": "ssh: Could not resolve hostname host-b.example: Name or service not known\n",
     })];
-    script.extend(cde_a_probes());
-    script.push(on("cde-a", PR_LIST));
+    script.extend(host_a_probes());
+    script.push(on("host-a", PR_LIST));
 
     let out = fx
         .flow(&script)
@@ -280,14 +280,14 @@ fn unreachable_cde_is_recorded_not_fatal() {
     let stdout = String::from_utf8(out.stdout).unwrap();
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert!(
-        stderr.contains("cde-b") && stderr.contains("Could not resolve hostname"),
+        stderr.contains("host-b") && stderr.contains("Could not resolve hostname"),
         "{stderr}"
     );
     let blocks: Vec<&str> = stdout.split("\n\n").collect();
     assert_eq!(blocks.len(), 2, "{stdout}");
-    assert!(blocks[0].starts_with("cde-a  reachable  "), "{stdout}");
+    assert!(blocks[0].starts_with("host-a  reachable  "), "{stdout}");
     assert!(
-        blocks[1].starts_with("cde-b  unreachable  load -  1 worktrees  0 agents  (seen "),
+        blocks[1].starts_with("host-b  unreachable  load -  1 worktrees  0 agents  (seen "),
         "{stdout}"
     );
     assert!(
@@ -301,13 +301,13 @@ fn unreachable_cde_is_recorded_not_fatal() {
     assert_eq!(cached["load1"], Value::Null);
     assert_eq!(cached["worktrees"][0]["branch"], "feature-y");
     assert_eq!(cached["prs"][0]["number"], 14);
-    let cde_b_calls = fx
+    let host_b_calls = fx
         .calls()
         .into_iter()
-        .filter(|(cde, _)| cde == "cde-b")
+        .filter(|(host, _)| host == "host-b")
         .count();
     assert_eq!(
-        cde_b_calls, 1,
+        host_b_calls, 1,
         "probing stops at the first unreachable answer"
     );
 }
@@ -319,7 +319,7 @@ fn inventory_without_refresh_reads_cache() {
     fx.write_cache(
         "env-0001",
         &json!({
-            "name": "cde-a", "env_id": "env-0001", "seen": seen.to_string(), "reachable": true,
+            "name": "host-a", "env_id": "env-0001", "seen": seen.to_string(), "reachable": true,
             "load1": 0.5,
             "worktrees": [
                 {"path": "/workspaces/acme-worktrees/feature-x", "branch": "feature-x", "busy": true, "dirty_files": 2},
@@ -338,7 +338,7 @@ fn inventory_without_refresh_reads_cache() {
 
     assert_eq!(
         stdout,
-        "cde-a  reachable  load 0.50  1 worktrees  1 agents  (seen 5m)\n\
+        "host-a  reachable  load 0.50  1 worktrees  1 agents  (seen 5m)\n\
          \x20 worktree tool failed: wt: command not found\n\
          \x20 feature-x  /workspaces/acme-worktrees/feature-x  PR #12 OPEN  agent: w4:p1 idle\n"
     );
@@ -346,7 +346,7 @@ fn inventory_without_refresh_reads_cache() {
 
     let json_out = stdout_of(fx.flow(&[]).args(["inventory", "--json"]));
     let parsed: Value = serde_json::from_str(&json_out).unwrap();
-    assert_eq!(parsed[0]["name"], "cde-a");
+    assert_eq!(parsed[0]["name"], "host-a");
     assert_eq!(parsed[0]["worktrees"][0]["dirty_files"], 2);
     assert!(fx.calls().is_empty());
 }
@@ -354,18 +354,18 @@ fn inventory_without_refresh_reads_cache() {
 #[test]
 fn gh_failure_is_recorded_in_cache_and_output() {
     let gh_failed = json!({
-        "cde": "cde-a", "status": 4, "stdout": "",
+        "host": "host-a", "status": 4, "stdout": "",
         "stderr": "To get started with GitHub CLI, please run:  gh auth login\n",
     });
-    let mut script = cde_a_probes();
+    let mut script = host_a_probes();
     script.push(gh_failed);
 
     let with_cache = Fixture::new();
-    single_cde_config(&with_cache);
+    single_host_config(&with_cache);
     with_cache.write_cache(
         "env-0001",
         &json!({
-            "name": "cde-a", "env_id": "env-0001", "seen": "2026-10-26T09:00:00Z",
+            "name": "host-a", "env_id": "env-0001", "seen": "2026-10-26T09:00:00Z",
             "reachable": true, "load1": 0.5, "worktrees": [], "agents": [],
             "prs": [
                 {"branch": "feature-x", "number": 12, "url": "https://github.com/example/acme/pull/12", "state": "OPEN"},
@@ -374,7 +374,7 @@ fn gh_failure_is_recorded_in_cache_and_output() {
         }),
     );
     let without_cache = Fixture::new();
-    single_cde_config(&without_cache);
+    single_host_config(&without_cache);
 
     for (fx, expected_prs) in [(&with_cache, json!([12])), (&without_cache, json!([]))] {
         let stdout = stdout_of(fx.flow(&script).args(["inventory", "--refresh"]));
@@ -401,8 +401,8 @@ fn gh_failure_is_recorded_in_cache_and_output() {
         assert_eq!(Value::from(numbers), expected_prs);
     }
 
-    let mut recovered = cde_a_probes();
-    recovered.push(on("cde-a", PR_LIST));
+    let mut recovered = host_a_probes();
+    recovered.push(on("host-a", PR_LIST));
     stdout_of(with_cache.flow(&recovered).args(["inventory", "--refresh"]));
     assert_eq!(with_cache.cached("env-0001")["pr_error"], Value::Null);
 }

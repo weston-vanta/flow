@@ -21,7 +21,7 @@ fn sample_record(id: &str) -> TaskRecord {
         id: id.to_owned(),
         parent: None,
         title: "Add retry to the example client".to_owned(),
-        cde: "cde-a".to_owned(),
+        host: "host-a".to_owned(),
         worktree: PathBuf::from("/workspaces/example-repo.wt/retry"),
         harness: Harness::Claude,
         created: "2026-10-26T12:00:00Z".parse::<Timestamp>().unwrap(),
@@ -119,31 +119,31 @@ worktree_tool = { create = ["wt", "create", "{branch}"] }
 path = "/workspaces/example-repo"
 default_branch = "main"
 
-[[cdes]]
-name = "cde-a"
+[[hosts]]
+name = "host-a"
 env_id = "env-0001"
-ssh_alias = "cde-a.example"
+ssh_alias = "host-a.example"
 local_marker_env = ["EXAMPLE_ENV_ID", "env-0001"]
 
-[[cdes]]
-name = "cde-b"
+[[hosts]]
+name = "host-b"
 env_id = "env-0002"
-ssh_alias = "cde-b.example"
+ssh_alias = "host-b.example"
 "#,
     )
     .unwrap();
 
     let config = Config::load(&state).unwrap();
 
-    let names: Vec<_> = config.cdes.iter().map(|cde| cde.name.as_str()).collect();
-    assert_eq!(names, ["cde-a", "cde-b"]);
-    assert_eq!(config.cdes[0].env_id, "env-0001");
-    assert_eq!(config.cdes[0].ssh_alias, "cde-a.example");
+    let names: Vec<_> = config.hosts.iter().map(|host| host.name.as_str()).collect();
+    assert_eq!(names, ["host-a", "host-b"]);
+    assert_eq!(config.hosts[0].env_id, "env-0001");
+    assert_eq!(config.hosts[0].ssh_alias, "host-a.example");
     assert_eq!(
-        config.cdes[0].local_marker_env,
+        config.hosts[0].local_marker_env,
         Some(("EXAMPLE_ENV_ID".to_owned(), "env-0001".to_owned()))
     );
-    assert_eq!(config.cdes[1].local_marker_env, None);
+    assert_eq!(config.hosts[1].local_marker_env, None);
     assert_eq!(config.monorepo.path, Path::new("/workspaces/example-repo"));
     assert_eq!(config.monorepo.default_branch, "main");
     assert_eq!(config.worktree_tool.create, ["wt", "create", "{branch}"]);

@@ -21,15 +21,15 @@ worktree_tool = { create = ["wt", "create", "{branch}"] }
 path = "/work/repo"
 default_branch = "main"
 
-[[cdes]]
-name = "cde-a"
+[[hosts]]
+name = "host-a"
 env_id = "env-0001"
-ssh_alias = "cde-a.example"
+ssh_alias = "host-a.example"
 
-[[cdes]]
-name = "cde-b"
+[[hosts]]
+name = "host-b"
 env_id = "env-0002"
-ssh_alias = "cde-b.example"
+ssh_alias = "host-b.example"
 "#;
 
 const TASK: &str = "aaaaaaab";
@@ -58,8 +58,8 @@ impl Fixture {
         StateDir::resolve(self.dir.path()).unwrap()
     }
 
-    /// A working task on `cde`, its worker in `pane_id` when given.
-    fn task(&self, id: &str, cde: &str, pane_id: Option<&str>) {
+    /// A working task on `host`, its worker in `pane_id` when given.
+    fn task(&self, id: &str, host: &str, pane_id: Option<&str>) {
         let store = Store::open(&self.state_dir());
         store
             .create_task(
@@ -67,7 +67,7 @@ impl Fixture {
                     id: id.to_owned(),
                     parent: None,
                     title: "Build feature".to_owned(),
-                    cde: cde.to_owned(),
+                    host: host.to_owned(),
                     worktree: PathBuf::from("/work/repo.wt/feature"),
                     harness: Harness::Claude,
                     created: Timestamp::now(),
@@ -80,7 +80,7 @@ impl Fixture {
             .set_status(id, |status| {
                 status.state = State::Working;
                 status.herdr = pane_id.map(|pane_id| HerdrTarget {
-                    cde: cde.to_owned(),
+                    host: host.to_owned(),
                     workspace_id: "w1".to_owned(),
                     pane_id: pane_id.to_owned(),
                     agent: "claude".to_owned(),
@@ -188,7 +188,7 @@ fn stdout(output: &Output) -> String {
 #[test]
 fn watch_exits_2_on_done_status() {
     let fx = Fixture::new();
-    fx.task(TASK, "cde-a", None);
+    fx.task(TASK, "host-a", None);
     let watch = fx.spawn_watch(&[]);
     fx.await_seen_working(TASK);
 
@@ -215,7 +215,7 @@ fn watch_exits_2_on_done_status() {
 #[test]
 fn second_watch_exits_0_when_locked() {
     let fx = Fixture::new();
-    fx.task(TASK, "cde-a", None);
+    fx.task(TASK, "host-a", None);
     let lock = fx.supervisor("watch.lock");
     fs::create_dir_all(&lock).unwrap();
     let owner = json!({
@@ -268,20 +268,20 @@ fn queued_wake_survives_restart() {
 }
 
 #[test]
-fn unreachable_cde_reported_once() {
+fn unreachable_host_reported_once() {
     let fx = Fixture::new();
-    fx.task(TASK, "cde-b", Some("w1:p1"));
-    fx.task(OTHER_TASK, "cde-b", Some("w2:p1"));
+    fx.task(TASK, "host-b", Some("w1:p1"));
+    fx.task(OTHER_TASK, "host-b", Some("w2:p1"));
     fx.script(&[json!({
-        "cde": "cde-b",
+        "host": "host-b",
         "status": 255,
-        "stderr": "ssh: connect to host cde-b.example port 22: Connection refused",
+        "stderr": "ssh: connect to host host-b.example port 22: Connection refused",
         "repeat": true,
     })]);
 
     let output = finish(fx.spawn_watch(&[]));
     assert_eq!(output.status.code(), Some(2), "{output:?}");
-    assert_eq!(stdout(&output), "cde-unreachable: cde-b\n");
+    assert_eq!(stdout(&output), "host-unreachable: host-b\n");
     assert_eq!(fx.queue_lines().len(), 1);
 
     fx.flow()
@@ -295,7 +295,7 @@ fn unreachable_cde_reported_once() {
     let log = fs::read_to_string(fx.supervisor("watch.log")).unwrap();
     assert!(
         log.lines()
-            .any(|line| line.contains("absorb") && line.contains(r#""cde":"cde-b""#)),
+            .any(|line| line.contains("absorb") && line.contains(r#""host":"host-b""#)),
         "{log}"
     );
 }
@@ -303,11 +303,11 @@ fn unreachable_cde_reported_once() {
 #[test]
 fn watch_ignores_non_supervisor_sessions() {
     let fx = Fixture::new();
-    fx.task(TASK, "cde-b", Some("w1:p1"));
+    fx.task(TASK, "host-b", Some("w1:p1"));
     fx.script(&[json!({
-        "cde": "cde-b",
+        "host": "host-b",
         "status": 255,
-        "stderr": "ssh: connect to host cde-b.example port 22: Connection refused",
+        "stderr": "ssh: connect to host host-b.example port 22: Connection refused",
         "repeat": true,
     })]);
 

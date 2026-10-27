@@ -1,4 +1,4 @@
-//! Typed access to the herdr CLI on a CDE. Every call goes through a `Runner`, so the same code
+//! Typed access to the herdr CLI on a host. Every call goes through a `Runner`, so the same code
 //! drives herdr on this machine or over ssh, and every call names the herdr session explicitly
 //! so flow touches another session, such as the user's default one, only where it asks to.
 
@@ -14,7 +14,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::runner::{Output, Runner, shell_quote};
-use crate::state::config::Cde;
+use crate::state::config::Host;
 
 /// The herdr session every flow worker lives in.
 pub const SESSION: &str = "flow";
@@ -33,7 +33,7 @@ const AGENT_NOT_FOUND_CODE: &str = "agent_not_found";
 /// The `error.code` herdr reports when no server runs for the session.
 const SERVER_NOT_RUNNING_CODE: &str = "server_not_running";
 /// How every error from a call that ssh could not deliver starts.
-const UNREACHABLE_PREFIX: &str = "cde unreachable:";
+const UNREACHABLE_PREFIX: &str = "host unreachable:";
 
 const SERVER_START_TIMEOUT: Duration = Duration::from_secs(10);
 const SERVER_POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -227,23 +227,23 @@ impl Herdr {
         }
     }
 
-    /// Makes sure this session's herdr server runs on `cde` and speaks at least
+    /// Makes sure this session's herdr server runs on `host` and speaks at least
     /// `MIN_PROTOCOL`, starting a detached server when none runs.
-    pub fn ensure_server(&self, cde: &Cde) -> anyhow::Result<()> {
-        if let ServerStatus::Running { protocol } = self.server_status(cde)? {
-            return check_protocol(cde, protocol);
+    pub fn ensure_server(&self, host: &Host) -> anyhow::Result<()> {
+        if let ServerStatus::Running { protocol } = self.server_status(host)? {
+            return check_protocol(host, protocol);
         }
-        self.start_detached_server(cde)?;
+        self.start_detached_server(host)?;
         let deadline = Instant::now() + SERVER_START_TIMEOUT;
         loop {
-            if let ServerStatus::Running { protocol } = self.server_status(cde)? {
-                return check_protocol(cde, protocol);
+            if let ServerStatus::Running { protocol } = self.server_status(host)? {
+                return check_protocol(host, protocol);
             }
             if Instant::now() >= deadline {
                 bail!(
                     "herdr server for session {} on {} did not start within {} s",
                     self.session,
-                    cde.name,
+                    host.name,
                     SERVER_START_TIMEOUT.as_secs()
                 );
             }
@@ -251,13 +251,13 @@ impl Herdr {
         }
     }
 
-    fn server_status(&self, cde: &Cde) -> anyhow::Result<ServerStatus> {
-        parse_server_status(&self.call(cde, &self.argv(&["status", "server"]))?.stdout)
+    fn server_status(&self, host: &Host) -> anyhow::Result<ServerStatus> {
+        parse_server_status(&self.call(host, &self.argv(&["status", "server"]))?.stdout)
     }
 
     /// Starts the server in its own session with every stream on /dev/null, so it outlives
     /// this process and, over ssh, does not hold the connection open.
-    fn start_detached_server(&self, cde: &Cde) -> anyhow::Result<()> {
+    fn start_detached_server(&self, host: &Host) -> anyhow::Result<()> {
         let mut argv = words(&[
             "setsid",
             "-f",
@@ -269,32 +269,32 @@ impl Herdr {
         argv.extend(self.argv(&["server"]));
         let status = self
             .runner
-            .spawn(cde, &argv)?
+            .spawn(host, &argv)?
             .wait()
-            .with_context(|| format!("waiting for `{}` on {}", argv.join(" "), cde.name))?;
+            .with_context(|| format!("waiting for `{}` on {}", argv.join(" "), host.name))?;
         match status.code() {
             Some(0) => Ok(()),
             Some(SSH_FAILURE_STATUS) => bail!(
                 "{UNREACHABLE_PREFIX} {} while starting the herdr server",
-                cde.name
+                host.name
             ),
-            _ => bail!("`{}` on {} failed: {status}", argv.join(" "), cde.name),
+            _ => bail!("`{}` on {} failed: {status}", argv.join(" "), host.name),
         }
     }
 
-    pub fn agents(&self, cde: &Cde) -> anyhow::Result<Vec<Agent>> {
-        let list: AgentList = self.call_json(cde, &self.argv(&["agent", "list"]))?;
+    pub fn agents(&self, host: &Host) -> anyhow::Result<Vec<Agent>> {
+        let list: AgentList = self.call_json(host, &self.argv(&["agent", "list"]))?;
         Ok(self.agents_from(list))
     }
 
-    /// This session's agents on `cde`, or `None` when no server runs for the session. Unlike
+    /// This session's agents on `host`, or `None` when no server runs for the session. Unlike
     /// `agents` after `ensure_server`, this never starts a server.
-    pub fn agents_if_running(&self, cde: &Cde) -> anyhow::Result<Option<Vec<Agent>>> {
+    pub fn agents_if_running(&self, host: &Host) -> anyhow::Result<Option<Vec<Agent>>> {
         let argv = self.argv(&["agent", "list"]);
-        let Some(output) = self.call_unless(cde, &argv, SERVER_NOT_RUNNING_CODE)? else {
+        let Some(output) = self.call_unless(host, &argv, SERVER_NOT_RUNNING_CODE)? else {
             return Ok(None);
         };
-        let list: AgentList = parse_result(cde, &argv, &output)?;
+        let list: AgentList = parse_result(host, &argv, &output)?;
         Ok(Some(self.agents_from(list)))
     }
 
@@ -309,7 +309,7 @@ impl Herdr {
     /// `(workspace_id, pane_id)` where the pane is the workspace's first and only pane.
     pub fn create_workspace(
         &self,
-        cde: &Cde,
+        host: &Host,
         cwd: &Path,
         label: &str,
     ) -> anyhow::Result<(String, String)> {
@@ -317,7 +317,7 @@ impl Herdr {
             .to_str()
             .ok_or_else(|| anyhow!("workspace cwd {} is not UTF-8", cwd.display()))?;
         let created: WorkspaceCreated = self.call_json(
-            cde,
+            host,
             &self.argv(&[
                 "workspace",
                 "create",
@@ -331,8 +331,8 @@ impl Herdr {
         Ok((created.workspace.workspace_id, created.root_pane.pane_id))
     }
 
-    pub fn close_workspace(&self, cde: &Cde, workspace_id: &str) -> anyhow::Result<()> {
-        self.call_json::<Ack>(cde, &self.argv(&["workspace", "close", workspace_id]))?;
+    pub fn close_workspace(&self, host: &Host, workspace_id: &str) -> anyhow::Result<()> {
+        self.call_json::<Ack>(host, &self.argv(&["workspace", "close", workspace_id]))?;
         Ok(())
     }
 
@@ -340,7 +340,7 @@ impl Herdr {
     /// agent is ready for input, and fails if it exits or blocks during startup.
     pub fn start_agent(
         &self,
-        cde: &Cde,
+        host: &Host,
         pane_id: &str,
         name: &str,
         kind: &str,
@@ -349,7 +349,7 @@ impl Herdr {
         let mut argv = self.argv(&["agent", "start", name, "--kind", kind, "--pane", pane_id]);
         argv.push("--".to_owned());
         argv.extend_from_slice(args);
-        self.call_json::<AgentResult>(cde, &argv)?;
+        self.call_json::<AgentResult>(host, &argv)?;
         Ok(())
     }
 
@@ -358,16 +358,16 @@ impl Herdr {
     /// passes.
     pub fn wait(
         &self,
-        cde: &Cde,
+        host: &Host,
         pane_id: &str,
         until: &[AgentStatus],
         timeout_ms: Option<u64>,
     ) -> anyhow::Result<Option<AgentStatus>> {
         let argv = self.wait_argv(pane_id, until, timeout_ms);
-        let Some(output) = self.call_or_timeout(cde, &argv)? else {
+        let Some(output) = self.call_or_timeout(host, &argv)? else {
             return Ok(None);
         };
-        let result: AgentResult = parse_result(cde, &argv, &output)?;
+        let result: AgentResult = parse_result(host, &argv, &output)?;
         Ok(Some(result.agent.agent_status))
     }
 
@@ -375,14 +375,14 @@ impl Herdr {
     /// stdout, which `wait_end` reads once the child exits.
     pub fn spawn_wait(
         &self,
-        cde: &Cde,
+        host: &Host,
         pane_id: &str,
         until: &[AgentStatus],
         timeout_ms: Option<u64>,
     ) -> anyhow::Result<Child> {
         let mut argv = words(&["sh", "-c", r#"exec "$@" 2>&1"#, "sh"]);
         argv.extend(self.wait_argv(pane_id, until, timeout_ms));
-        self.runner.spawn(cde, &argv)
+        self.runner.spawn(host, &argv)
     }
 
     fn wait_argv(
@@ -404,16 +404,16 @@ impl Herdr {
     /// Types `argv` as one command line into the shell in `pane_id`, followed by Enter. herdr
     /// joins its arguments with spaces without quoting, so each word is quoted here. Success
     /// means herdr queued the line, not that the command started.
-    pub fn pane_run(&self, cde: &Cde, pane_id: &str, argv: &[String]) -> anyhow::Result<()> {
+    pub fn pane_run(&self, host: &Host, pane_id: &str, argv: &[String]) -> anyhow::Result<()> {
         if argv.is_empty() {
-            bail!("no command to run in pane {pane_id} on {}", cde.name);
+            bail!("no command to run in pane {pane_id} on {}", host.name);
         }
         let line = argv
             .iter()
             .map(|word| shell_word(word))
             .collect::<Vec<_>>()
             .join(" ");
-        self.call(cde, &self.argv(&["pane", "run", pane_id, &line]))?;
+        self.call(host, &self.argv(&["pane", "run", pane_id, &line]))?;
         Ok(())
     }
 
@@ -421,7 +421,7 @@ impl Herdr {
     /// match the Rust regex `pattern`; `false` when the timeout passes first.
     pub fn pane_wait_output(
         &self,
-        cde: &Cde,
+        host: &Host,
         pane_id: &str,
         pattern: &str,
         timeout_ms: u64,
@@ -436,21 +436,21 @@ impl Herdr {
             &timeout_ms,
             pane_id,
         ]);
-        let Some(output) = self.call_or_timeout(cde, &argv)? else {
+        let Some(output) = self.call_or_timeout(host, &argv)? else {
             return Ok(false);
         };
-        parse_result::<OutputMatched>(cde, &argv, &output)?;
+        parse_result::<OutputMatched>(host, &argv, &output)?;
         Ok(true)
     }
 
     /// Sends `keys`, herdr logical key names such as `KEY_ENTER`, to the pane in order.
-    pub fn pane_send_keys(&self, cde: &Cde, pane_id: &str, keys: &[&str]) -> anyhow::Result<()> {
+    pub fn pane_send_keys(&self, host: &Host, pane_id: &str, keys: &[&str]) -> anyhow::Result<()> {
         if keys.is_empty() {
-            bail!("no keys to send to pane {pane_id} on {}", cde.name);
+            bail!("no keys to send to pane {pane_id} on {}", host.name);
         }
         let mut argv = self.argv(&["pane", "send-keys", pane_id]);
         argv.extend(words(keys));
-        self.call(cde, &argv)?;
+        self.call(host, &argv)?;
         Ok(())
     }
 
@@ -459,7 +459,7 @@ impl Herdr {
     /// prompt when the agent is blocked.
     pub fn prompt(
         &self,
-        cde: &Cde,
+        host: &Host,
         pane_id: &str,
         text: &str,
         until: &[AgentStatus],
@@ -468,20 +468,20 @@ impl Herdr {
         for status in until {
             argv.extend(words(&["--until", status.as_str()]));
         }
-        let result: AgentResult = self.call_json(cde, &argv)?;
+        let result: AgentResult = self.call_json(host, &argv)?;
         Ok(result.agent.agent_status)
     }
 
     /// The last `lines` lines of the agent's terminal as plain text.
-    pub fn read(&self, cde: &Cde, pane_id: &str, lines: u32) -> anyhow::Result<String> {
+    pub fn read(&self, host: &Host, pane_id: &str, lines: u32) -> anyhow::Result<String> {
         let lines = lines.to_string();
         let argv = self.argv(&[
             "agent", "read", pane_id, "--lines", &lines, "--format", "text",
         ]);
-        Ok(self.call(cde, &argv)?.stdout)
+        Ok(self.call(host, &argv)?.stdout)
     }
 
-    /// The argv that attaches a terminal to the agent in `pane_id`, to run on the agent's CDE.
+    /// The argv that attaches a terminal to the agent in `pane_id`, to run on the agent's host.
     pub fn attach_argv(&self, pane_id: &str) -> Vec<String> {
         attach_argv(&self.session, pane_id)
     }
@@ -493,31 +493,31 @@ impl Herdr {
         argv
     }
 
-    /// Runs `argv` on `cde`, failing on a non-zero exit.
-    fn call(&self, cde: &Cde, argv: &[String]) -> anyhow::Result<Output> {
-        self.call_or_timeout(cde, argv)?
-            .ok_or_else(|| anyhow!("`{}` on {} timed out", argv.join(" "), cde.name))
+    /// Runs `argv` on `host`, failing on a non-zero exit.
+    fn call(&self, host: &Host, argv: &[String]) -> anyhow::Result<Output> {
+        self.call_or_timeout(host, argv)?
+            .ok_or_else(|| anyhow!("`{}` on {} timed out", argv.join(" "), host.name))
     }
 
-    /// Runs `argv` on `cde`: `None` when herdr fails with its `timeout` error code, an error
+    /// Runs `argv` on `host`: `None` when herdr fails with its `timeout` error code, an error
     /// for any other non-zero exit.
-    fn call_or_timeout(&self, cde: &Cde, argv: &[String]) -> anyhow::Result<Option<Output>> {
-        self.call_unless(cde, argv, TIMEOUT_CODE)
+    fn call_or_timeout(&self, host: &Host, argv: &[String]) -> anyhow::Result<Option<Output>> {
+        self.call_unless(host, argv, TIMEOUT_CODE)
     }
 
-    /// Runs `argv` on `cde`: `None` when herdr fails with error code `code`, an error for any
+    /// Runs `argv` on `host`: `None` when herdr fails with error code `code`, an error for any
     /// other non-zero exit.
     fn call_unless(
         &self,
-        cde: &Cde,
+        host: &Host,
         argv: &[String],
         code: &str,
     ) -> anyhow::Result<Option<Output>> {
-        let output = self.runner.run(cde, argv, None)?;
+        let output = self.runner.run(host, argv, None)?;
         let command = argv.join(" ");
         let stderr = output.stderr.trim();
         if output.status == SSH_FAILURE_STATUS && output.stdout.is_empty() {
-            bail!("{UNREACHABLE_PREFIX} {} (`{command}`): {stderr}", cde.name);
+            bail!("{UNREACHABLE_PREFIX} {} (`{command}`): {stderr}", host.name);
         }
         if output.status == 0 {
             return Ok(Some(output));
@@ -527,13 +527,13 @@ impl Herdr {
         }
         bail!(
             "`{command}` on {} exited {}: {stderr}",
-            cde.name,
+            host.name,
             output.status
         );
     }
 
-    fn call_json<T: DeserializeOwned>(&self, cde: &Cde, argv: &[String]) -> anyhow::Result<T> {
-        parse_result(cde, argv, &self.call(cde, argv)?)
+    fn call_json<T: DeserializeOwned>(&self, host: &Host, argv: &[String]) -> anyhow::Result<T> {
+        parse_result(host, argv, &self.call(host, argv)?)
     }
 }
 
@@ -551,7 +551,7 @@ pub enum WaitEnd {
     TimedOut,
     /// herdr does not know the pane, or no server runs for the session.
     Gone,
-    /// ssh could not reach the CDE.
+    /// ssh could not reach the host.
     Unreachable,
     /// Anything else, described.
     Failed(String),
@@ -578,7 +578,7 @@ pub fn wait_end(code: Option<i32>, stdout: &str) -> WaitEnd {
     }
 }
 
-/// Whether `err`, or an error it wraps, says ssh could not reach the CDE, as opposed to herdr
+/// Whether `err`, or an error it wraps, says ssh could not reach the host, as opposed to herdr
 /// failing there.
 pub fn is_unreachable(err: &anyhow::Error) -> bool {
     err.chain()
@@ -586,7 +586,7 @@ pub fn is_unreachable(err: &anyhow::Error) -> bool {
 }
 
 fn parse_result<T: DeserializeOwned>(
-    cde: &Cde,
+    host: &Host,
     argv: &[String],
     output: &Output,
 ) -> anyhow::Result<T> {
@@ -594,7 +594,7 @@ fn parse_result<T: DeserializeOwned>(
         format!(
             "parsing output of `{}` on {}\nstdout: {}\nstderr: {}",
             argv.join(" "),
-            cde.name,
+            host.name,
             output.stdout.trim(),
             output.stderr.trim()
         )
@@ -625,11 +625,11 @@ fn shell_word(word: &str) -> Cow<'_, str> {
     }
 }
 
-fn check_protocol(cde: &Cde, protocol: u32) -> anyhow::Result<()> {
+fn check_protocol(host: &Host, protocol: u32) -> anyhow::Result<()> {
     if protocol < MIN_PROTOCOL {
         bail!(
             "herdr on {} speaks protocol {protocol}; flow needs protocol {MIN_PROTOCOL} or later",
-            cde.name
+            host.name
         );
     }
     Ok(())
@@ -683,11 +683,11 @@ mod tests {
         }
     }
 
-    fn cde() -> Cde {
-        Cde {
-            name: "cde-a".to_owned(),
+    fn host() -> Host {
+        Host {
+            name: "host-a".to_owned(),
             env_id: "env-0001".to_owned(),
-            ssh_alias: "cde-a.example".to_owned(),
+            ssh_alias: "host-a.example".to_owned(),
             local_marker_env: None,
         }
     }
@@ -708,7 +708,7 @@ mod tests {
     #[test]
     fn agents_parses_fixture() {
         let (herdr, fake) = herdr(vec![ok(AGENT_LIST)]);
-        let agents = herdr.agents(&cde()).unwrap();
+        let agents = herdr.agents(&host()).unwrap();
         assert_eq!(
             agents,
             [
@@ -742,7 +742,7 @@ mod tests {
     fn agents_record_their_session() {
         let fake = Arc::new(FakeRunner::new(vec![ok(AGENT_LIST)]));
         let herdr = Herdr::with_session(fake.clone(), "default");
-        let agents = herdr.agents_if_running(&cde()).unwrap().unwrap();
+        let agents = herdr.agents_if_running(&host()).unwrap().unwrap();
         assert!(agents.iter().all(|agent| agent.session == "default"));
         assert_eq!(
             argvs(&fake),
@@ -757,8 +757,8 @@ mod tests {
             failed(r#"{"error":{"code":"internal","message":"boom"},"id":"cli:agent:list"}"#),
         ]));
         let herdr = Herdr::with_session(fake, "default");
-        assert_eq!(herdr.agents_if_running(&cde()).unwrap(), None);
-        let err = herdr.agents_if_running(&cde()).unwrap_err();
+        assert_eq!(herdr.agents_if_running(&host()).unwrap(), None);
+        let err = herdr.agents_if_running(&host()).unwrap_err();
         assert!(!is_unreachable(&err), "{err:#}");
     }
 
@@ -767,7 +767,7 @@ mod tests {
         let (herdr, fake) = herdr(vec![ok(AGENT_GET)]);
         let status = herdr
             .wait(
-                &cde(),
+                &host(),
                 "w2:p1",
                 &[AgentStatus::Blocked, AgentStatus::Done],
                 Some(5000),
@@ -797,7 +797,7 @@ mod tests {
     fn spawn_wait_folds_stderr_into_stdout() {
         let (herdr, fake) = herdr(vec![ok(AGENT_GET)]);
         let out = herdr
-            .spawn_wait(&cde(), "w2:p1", &[AgentStatus::Done], Some(5000))
+            .spawn_wait(&host(), "w2:p1", &[AgentStatus::Done], Some(5000))
             .unwrap()
             .wait_with_output()
             .unwrap();
@@ -844,7 +844,7 @@ mod tests {
     fn wait_timeout_returns_none() {
         let (herdr, _) = herdr(vec![failed(AGENT_WAIT_TIMEOUT)]);
         let status = herdr
-            .wait(&cde(), "w2:p1", &[AgentStatus::Done], Some(100))
+            .wait(&host(), "w2:p1", &[AgentStatus::Done], Some(100))
             .unwrap();
         assert_eq!(status, None);
     }
@@ -854,7 +854,7 @@ mod tests {
         let (herdr, fake) = herdr(vec![ok("")]);
         herdr
             .pane_run(
-                &cde(),
+                &host(),
                 "w3:p1",
                 &words(&[
                     "claude",
@@ -881,7 +881,7 @@ mod tests {
     #[test]
     fn pane_run_rejects_empty_argv() {
         let (herdr, fake) = herdr(Vec::new());
-        assert!(herdr.pane_run(&cde(), "w3:p1", &[]).is_err());
+        assert!(herdr.pane_run(&host(), "w3:p1", &[]).is_err());
         assert!(fake.calls().is_empty());
     }
 
@@ -890,7 +890,7 @@ mod tests {
         let (herdr, fake) = herdr(vec![ok(PANE_WAIT_OUTPUT_MATCHED)]);
         assert!(
             herdr
-                .pane_wait_output(&cde(), "w1:p1", "trust this folder", 20_000)
+                .pane_wait_output(&host(), "w1:p1", "trust this folder", 20_000)
                 .unwrap()
         );
         assert_eq!(
@@ -915,7 +915,7 @@ mod tests {
         let (herdr, _) = herdr(vec![failed(PANE_WAIT_OUTPUT_TIMEOUT)]);
         assert!(
             !herdr
-                .pane_wait_output(&cde(), "w1:p1", "trust", 500)
+                .pane_wait_output(&host(), "w1:p1", "trust", 500)
                 .unwrap()
         );
     }
@@ -926,7 +926,7 @@ mod tests {
             r#"{"error":{"code":"pane_not_found","message":"pane w9:p1 not found"},"id":"cli:pane:wait-output"}"#,
         )]);
         let err = herdr
-            .pane_wait_output(&cde(), "w9:p1", "trust", 500)
+            .pane_wait_output(&host(), "w9:p1", "trust", 500)
             .unwrap_err()
             .to_string();
         assert!(err.contains("pane_not_found"), "{err}");
@@ -936,7 +936,7 @@ mod tests {
     fn pane_send_keys_passes_each_key() {
         let (herdr, fake) = herdr(vec![ok("")]);
         herdr
-            .pane_send_keys(&cde(), "w1:p1", &[KEY_DOWN, KEY_ENTER])
+            .pane_send_keys(&host(), "w1:p1", &[KEY_DOWN, KEY_ENTER])
             .unwrap();
         assert_eq!(
             argvs(&fake),
@@ -957,7 +957,7 @@ mod tests {
     fn wait_without_timeout_omits_the_flag() {
         let (herdr, fake) = herdr(vec![ok(AGENT_GET)]);
         herdr
-            .wait(&cde(), "w2:p1", &[AgentStatus::Done], None)
+            .wait(&host(), "w2:p1", &[AgentStatus::Done], None)
             .unwrap();
         assert_eq!(
             argvs(&fake),
@@ -977,7 +977,7 @@ mod tests {
     #[test]
     fn ensure_server_fails_on_old_protocol() {
         let (herdr, fake) = herdr(vec![ok(&status_running(21))]);
-        let err = herdr.ensure_server(&cde()).unwrap_err().to_string();
+        let err = herdr.ensure_server(&host()).unwrap_err().to_string();
         assert!(err.contains("protocol 22"), "{err}");
         assert!(err.contains("21"), "{err}");
         assert_eq!(fake.calls().len(), 1, "no server start attempted");
@@ -986,7 +986,7 @@ mod tests {
     #[test]
     fn ensure_server_accepts_running_server() {
         let (herdr, fake) = herdr(vec![ok(&status_running(22))]);
-        herdr.ensure_server(&cde()).unwrap();
+        herdr.ensure_server(&host()).unwrap();
         assert_eq!(
             argvs(&fake),
             [words(&["herdr", "--session", "flow", "status", "server"])]
@@ -1000,7 +1000,7 @@ mod tests {
             ok(""),
             ok(&status_running(22)),
         ]);
-        herdr.ensure_server(&cde()).unwrap();
+        herdr.ensure_server(&host()).unwrap();
         let calls = argvs(&fake);
         assert_eq!(calls.len(), 3, "{calls:?}");
         assert_eq!(
@@ -1025,7 +1025,7 @@ mod tests {
         let (herdr, fake) = herdr(vec![ok(WORKSPACE_CREATE)]);
         let ids = herdr
             .create_workspace(
-                &cde(),
+                &host(),
                 Path::new("/workspaces/acme-worktrees/search-index"),
                 "search-index",
             )
@@ -1053,7 +1053,7 @@ mod tests {
         let (herdr, fake) = herdr(vec![ok(AGENT_GET)]);
         herdr
             .start_agent(
-                &cde(),
+                &host(),
                 "w2:p1",
                 "cache-fix",
                 "claude",
@@ -1084,7 +1084,7 @@ mod tests {
     #[test]
     fn prompt_waits_and_returns_status() {
         let (herdr, fake) = herdr(vec![ok(AGENT_GET)]);
-        let status = herdr.prompt(&cde(), "w2:p1", "keep going", &[]).unwrap();
+        let status = herdr.prompt(&host(), "w2:p1", "keep going", &[]).unwrap();
         assert_eq!(status, AgentStatus::Working);
         assert_eq!(
             argvs(&fake),
@@ -1106,7 +1106,7 @@ mod tests {
         let (herdr, fake) = herdr(vec![ok(AGENT_GET)]);
         herdr
             .prompt(
-                &cde(),
+                &host(),
                 "w2:p1",
                 "keep going",
                 &[AgentStatus::Working, AgentStatus::Blocked],
@@ -1122,7 +1122,7 @@ mod tests {
     fn read_returns_plain_text() {
         let (herdr, fake) = herdr(vec![ok("line one\nline two\n")]);
         assert_eq!(
-            herdr.read(&cde(), "w2:p1", 40).unwrap(),
+            herdr.read(&host(), "w2:p1", 40).unwrap(),
             "line one\nline two\n"
         );
         assert_eq!(
@@ -1168,7 +1168,7 @@ mod tests {
             ok(PANE_WAIT_OUTPUT_MATCHED),
             ok(""),
         ]);
-        let target = cde();
+        let target = host();
         herdr.ensure_server(&target).unwrap();
         herdr.agents(&target).unwrap();
         herdr
@@ -1205,18 +1205,18 @@ mod tests {
     }
 
     #[test]
-    fn unreachable_cde_is_reported_as_such() {
+    fn unreachable_host_is_reported_as_such() {
         let (herdr, _) = herdr(vec![Scripted {
             status: 255,
-            stderr: "ssh: connect to host cde-a.example port 22: Connection refused\n".to_owned(),
+            stderr: "ssh: connect to host host-a.example port 22: Connection refused\n".to_owned(),
             ..Scripted::default()
         }]);
-        let err = herdr.agents(&cde()).unwrap_err();
+        let err = herdr.agents(&host()).unwrap_err();
         assert!(is_unreachable(&err), "{err:#}");
         let err = err.to_string();
-        assert!(err.starts_with("cde unreachable:"), "{err}");
+        assert!(err.starts_with("host unreachable:"), "{err}");
         assert!(
-            err.contains("cde-a") && err.contains("Connection refused"),
+            err.contains("host-a") && err.contains("Connection refused"),
             "{err}"
         );
     }
@@ -1229,10 +1229,10 @@ mod tests {
             ..Scripted::default()
         }]);
         let err = herdr
-            .wait(&cde(), "w9:p1", &[AgentStatus::Done], None)
+            .wait(&host(), "w9:p1", &[AgentStatus::Done], None)
             .unwrap_err()
             .to_string();
-        assert!(!err.starts_with("cde unreachable:"), "{err}");
+        assert!(!err.starts_with("host unreachable:"), "{err}");
         assert!(err.contains("agent wait w9:p1"), "{err}");
         assert!(err.contains("agent_not_found"), "{err}");
     }
@@ -1244,7 +1244,7 @@ mod tests {
             stderr: "warning: config reload pending".to_owned(),
             ..Scripted::default()
         }]);
-        let err = format!("{:#}", herdr.agents(&cde()).unwrap_err());
+        let err = format!("{:#}", herdr.agents(&host()).unwrap_err());
         assert!(err.contains("agent list"), "{err}");
         assert!(err.contains("config reload pending"), "{err}");
     }

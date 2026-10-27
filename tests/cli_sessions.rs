@@ -15,15 +15,15 @@ worktree_tool = { create = ["wt", "create", "{branch}"] }
 path = "/work/repo"
 default_branch = "main"
 
-[[cdes]]
-name = "cde-a"
+[[hosts]]
+name = "host-a"
 env_id = "env-0001"
-ssh_alias = "cde-a.example"
+ssh_alias = "host-a.example"
 
-[[cdes]]
-name = "cde-b"
+[[hosts]]
+name = "host-b"
 env_id = "env-0002"
-ssh_alias = "cde-b.example"
+ssh_alias = "host-b.example"
 "#;
 
 const SERVER_RUNNING: &str = "status: running\nversion: 0.9.5\nendpoint_compatible: yes\n\
@@ -46,7 +46,7 @@ struct Fixture {
 impl Fixture {
     /// A state dir with `CONFIG`, a Claude home holding the registry and transcript fixtures for
     /// a hand session in `/work/repo`, and one task whose worker runs in flow's pane `w1:p1` on
-    /// `cde-a`.
+    /// `host-a`.
     fn new() -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let state = dir.path().join("state");
@@ -76,7 +76,7 @@ impl Fixture {
                     id: TASK_ID.to_owned(),
                     parent: None,
                     title: "Build feature".to_owned(),
-                    cde: "cde-a".to_owned(),
+                    host: "host-a".to_owned(),
                     worktree: PathBuf::from("/work/repo.wt/feature"),
                     harness: Harness::Claude,
                     created: Timestamp::now(),
@@ -89,7 +89,7 @@ impl Fixture {
             .set_status(TASK_ID, |status| {
                 status.state = State::Working;
                 status.herdr = Some(HerdrTarget {
-                    cde: "cde-a".to_owned(),
+                    host: "host-a".to_owned(),
                     workspace_id: "w1".to_owned(),
                     pane_id: "w1:p1".to_owned(),
                     agent: "claude".to_owned(),
@@ -127,7 +127,7 @@ impl Fixture {
             .map(|line| {
                 let call: Value = serde_json::from_str(line).unwrap();
                 (
-                    call["cde"].as_str().unwrap().to_owned(),
+                    call["host"].as_str().unwrap().to_owned(),
                     serde_json::from_value(call["argv"].clone()).unwrap(),
                 )
             })
@@ -135,7 +135,7 @@ impl Fixture {
     }
 
     fn cache_path(&self, env_id: &str) -> PathBuf {
-        self.state.join("cdes").join(format!("{env_id}.json"))
+        self.state.join("hosts").join(format!("{env_id}.json"))
     }
 
     fn cached(&self, env_id: &str) -> Value {
@@ -143,7 +143,7 @@ impl Fixture {
     }
 
     fn write_cache(&self, env_id: &str, inventory: &Value) {
-        fs::create_dir_all(self.state.join("cdes")).unwrap();
+        fs::create_dir_all(self.state.join("hosts")).unwrap();
         fs::write(self.cache_path(env_id), inventory.to_string()).unwrap();
     }
 
@@ -152,32 +152,32 @@ impl Fixture {
         serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
     }
 
-    fn single_cde(&self) {
+    fn single_host(&self) {
         let config = CONFIG
-            .split("[[cdes]]")
+            .split("[[hosts]]")
             .take(2)
             .collect::<Vec<_>>()
-            .join("[[cdes]]");
+            .join("[[hosts]]");
         fs::write(self.state.join("config.toml"), config).unwrap();
     }
 }
 
-fn on(cde: &str, stdout: &str) -> Value {
-    json!({"cde": cde, "status": 0, "stdout": stdout})
+fn on(host: &str, stdout: &str) -> Value {
+    json!({"host": host, "status": 0, "stdout": stdout})
 }
 
-fn default_not_running(cde: &str) -> Value {
+fn default_not_running(host: &str) -> Value {
     json!({
-        "cde": cde, "status": 1, "stdout": "",
+        "host": host, "status": 1, "stdout": "",
         "stderr": include_str!("fixtures/herdr/agent_list_server_not_running.json"),
     })
 }
 
-fn cde_a_agents() -> Vec<Value> {
+fn host_a_agents() -> Vec<Value> {
     vec![
-        on("cde-a", SERVER_RUNNING),
-        on("cde-a", FLOW_AGENTS),
-        on("cde-a", DEFAULT_AGENTS),
+        on("host-a", SERVER_RUNNING),
+        on("host-a", FLOW_AGENTS),
+        on("host-a", DEFAULT_AGENTS),
     ]
 }
 
@@ -195,10 +195,10 @@ fn stdout_of(cmd: &mut Command) -> String {
     String::from_utf8(out.stdout).unwrap()
 }
 
-/// A cached inventory of `cde-b` holding one hand session in pane `w5:p1`.
-fn cde_b_cache() -> Value {
+/// A cached inventory of `host-b` holding one hand session in pane `w5:p1`.
+fn host_b_cache() -> Value {
     json!({
-        "name": "cde-b", "env_id": "env-0002", "seen": "2026-10-26T09:00:00Z",
+        "name": "host-b", "env_id": "env-0002", "seen": "2026-10-26T09:00:00Z",
         "reachable": true, "load1": 0.5,
         "worktrees": [{"path": "/work/repo", "branch": "main", "busy": null, "dirty_files": null}],
         "agents": [{
@@ -212,14 +212,14 @@ fn cde_b_cache() -> Value {
 #[test]
 fn sessions_lists_adopted_with_summary() {
     let fx = Fixture::new();
-    fx.single_cde();
+    fx.single_host();
 
-    let stdout = stdout_of(fx.flow(&cde_a_agents()).arg("sessions"));
+    let stdout = stdout_of(fx.flow(&host_a_agents()).arg("sessions"));
 
     assert_eq!(
         stdout,
-        "cde-a  w1:p1  working  aaaaaaab  Build feature\n\
-         cde-a  w1:p1  idle     adopted   Tidy docs      Moved the guides into one folder and \
+        "host-a  w1:p1  working  aaaaaaab  Build feature\n\
+         host-a  w1:p1  idle     adopted   Tidy docs      Moved the guides into one folder and \
          fixed the links between them; waiting for …\n"
     );
     let argvs: Vec<Vec<String>> = fx.calls().into_iter().map(|(_, argv)| argv).collect();
@@ -244,7 +244,7 @@ fn sessions_lists_adopted_with_summary() {
         .collect();
     assert_eq!(sessions, [&json!("flow"), &json!("default")]);
 
-    let json_out = stdout_of(fx.flow(&cde_a_agents()).args(["sessions", "--json"]));
+    let json_out = stdout_of(fx.flow(&host_a_agents()).args(["sessions", "--json"]));
     let parsed: Value = serde_json::from_str(&json_out).unwrap();
     assert_eq!(parsed[0]["task"], TASK_ID);
     assert_eq!(parsed[1]["task"], Value::Null);
@@ -262,9 +262,9 @@ fn sessions_lists_adopted_with_summary() {
 #[test]
 fn sessions_update_only_agents_in_an_existing_cache() {
     let fx = Fixture::new();
-    fx.single_cde();
+    fx.single_host();
     let earlier = json!({
-        "name": "cde-a", "env_id": "env-0001", "seen": "2026-10-26T09:00:00Z",
+        "name": "host-a", "env_id": "env-0001", "seen": "2026-10-26T09:00:00Z",
         "reachable": true, "load1": 1.25,
         "worktrees": [{"path": "/work/repo", "branch": "main", "busy": null, "dirty_files": null}],
         "agents": [],
@@ -273,14 +273,14 @@ fn sessions_update_only_agents_in_an_existing_cache() {
     });
     fx.write_cache("env-0001", &earlier);
     let script = [
-        on("cde-a", SERVER_RUNNING),
-        on("cde-a", FLOW_AGENTS),
-        default_not_running("cde-a"),
+        on("host-a", SERVER_RUNNING),
+        on("host-a", FLOW_AGENTS),
+        default_not_running("host-a"),
     ];
 
     let stdout = stdout_of(fx.flow(&script).arg("sessions"));
 
-    assert_eq!(stdout, "cde-a  w1:p1  working  aaaaaaab  Build feature\n");
+    assert_eq!(stdout, "host-a  w1:p1  working  aaaaaaab  Build feature\n");
     let cached = fx.cached("env-0001");
     assert_ne!(cached["seen"], earlier["seen"]);
     assert_eq!(cached["agents"][0]["pane_id"], "w1:p1");
@@ -293,15 +293,15 @@ fn sessions_update_only_agents_in_an_existing_cache() {
 #[test]
 fn sessions_record_a_flow_session_failure() {
     let fx = Fixture::new();
-    fx.single_cde();
-    let mut earlier = cde_b_cache();
-    earlier["name"] = json!("cde-a");
+    fx.single_host();
+    let mut earlier = host_b_cache();
+    earlier["name"] = json!("host-a");
     earlier["env_id"] = json!("env-0001");
     earlier["herdr_error"] = json!("an older herdr failure");
     fx.write_cache("env-0001", &earlier);
     let script = [
-        json!({"cde": "cde-a", "status": 1, "stdout": "", "stderr": "internal error\n"}),
-        on("cde-a", DEFAULT_AGENTS),
+        json!({"host": "host-a", "status": 1, "stdout": "", "stderr": "internal error\n"}),
+        on("host-a", DEFAULT_AGENTS),
     ];
 
     let out = fx
@@ -321,7 +321,7 @@ fn sessions_record_a_flow_session_failure() {
     );
     assert_eq!(stdout.lines().count(), 1, "{stdout}");
     assert!(
-        stdout.starts_with("cde-a  w1:p1  idle  adopted  Tidy docs  Moved the guides"),
+        stdout.starts_with("host-a  w1:p1  idle  adopted  Tidy docs  Moved the guides"),
         "{stdout}"
     );
     let cached = fx.cached("env-0001");
@@ -329,19 +329,19 @@ fn sessions_record_a_flow_session_failure() {
     assert_eq!(cached["agents"].as_array().unwrap().len(), 1);
     assert_eq!(cached["agents"][0]["session"], "default");
 
-    stdout_of(fx.flow(&cde_a_agents()).arg("sessions"));
+    stdout_of(fx.flow(&host_a_agents()).arg("sessions"));
     assert_eq!(fx.cached("env-0001")["herdr_error"], Value::Null);
 }
 
 #[test]
-fn sessions_fall_back_to_cache_for_unreachable_cde() {
+fn sessions_fall_back_to_cache_for_unreachable_host() {
     let fx = Fixture::new();
-    fx.write_cache("env-0002", &cde_b_cache());
+    fx.write_cache("env-0002", &host_b_cache());
     let mut script = vec![json!({
-        "cde": "cde-b", "status": 255, "stdout": "", "repeat": true,
-        "stderr": "ssh: Could not resolve hostname cde-b.example: Name or service not known\n",
+        "host": "host-b", "status": 255, "stdout": "", "repeat": true,
+        "stderr": "ssh: Could not resolve hostname host-b.example: Name or service not known\n",
     })];
-    script.extend(cde_a_agents());
+    script.extend(host_a_agents());
 
     let out = fx
         .flow(&script)
@@ -354,30 +354,30 @@ fn sessions_fall_back_to_cache_for_unreachable_cde() {
     let stdout = String::from_utf8(out.stdout).unwrap();
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert_eq!(stderr.lines().count(), 1, "{stderr}");
-    assert!(stderr.starts_with("cde unreachable: cde-b"), "{stderr}");
+    assert!(stderr.starts_with("host unreachable: host-b"), "{stderr}");
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines.len(), 3, "{stdout}");
     assert_eq!(
         lines[2],
-        "cde-b  w5:p1  blocked  adopted   Upgrade toolchain"
+        "host-b  w5:p1  blocked  adopted   Upgrade toolchain"
     );
-    assert_eq!(fx.cached("env-0002"), cde_b_cache());
+    assert_eq!(fx.cached("env-0002"), host_b_cache());
 }
 
 #[test]
 fn status_counts_adopted_sessions_from_cache() {
     let fx = Fixture::new();
-    fx.write_cache("env-0002", &cde_b_cache());
-    let mut cde_a = cde_b_cache();
-    cde_a["name"] = json!("cde-a");
-    cde_a["env_id"] = json!("env-0001");
-    cde_a["agents"] = json!([
+    fx.write_cache("env-0002", &host_b_cache());
+    let mut host_a = host_b_cache();
+    host_a["name"] = json!("host-a");
+    host_a["env_id"] = json!("env-0001");
+    host_a["agents"] = json!([
         {"pane_id": "w1:p1", "workspace_id": "w1", "agent": "claude", "status": "working",
          "cwd": "/work/repo.wt/feature", "title": "Build feature", "session": "flow"},
         {"pane_id": "w1:p1", "workspace_id": "w1", "agent": "claude", "status": "idle",
          "cwd": "/work/repo", "title": "Tidy docs", "session": "default"},
     ]);
-    fx.write_cache("env-0001", &cde_a);
+    fx.write_cache("env-0001", &host_a);
 
     let stdout = stdout_of(fx.flow(&[]).arg("status"));
 
@@ -395,40 +395,40 @@ fn status_counts_adopted_sessions_from_cache() {
 #[test]
 fn follow_checks_the_pane_and_is_idempotent() {
     let fx = Fixture::new();
-    fx.write_cache("env-0002", &cde_b_cache());
+    fx.write_cache("env-0002", &host_b_cache());
 
-    stdout_of(fx.flow(&[]).args(["follow", "cde-b", "w5:p1"]));
-    stdout_of(fx.flow(&[]).args(["follow", "cde-b", "w5:p1"]));
+    stdout_of(fx.flow(&[]).args(["follow", "host-b", "w5:p1"]));
+    stdout_of(fx.flow(&[]).args(["follow", "host-b", "w5:p1"]));
 
     assert_eq!(
         fx.follow_list(),
-        json!({"follow": [{"cde": "cde-b", "pane_id": "w5:p1", "session": "default"}]})
+        json!({"follow": [{"host": "host-b", "pane_id": "w5:p1", "session": "default"}]})
     );
     fx.flow(&[])
-        .args(["follow", "cde-b", "w9:p9"])
+        .args(["follow", "host-b", "w9:p9"])
         .assert()
         .code(2)
-        .stderr("no agent in pane w9:p9 on cde-b (run flow sessions)\n");
+        .stderr("no agent in pane w9:p9 on host-b (run flow sessions)\n");
     fx.flow(&[])
-        .args(["follow", "cde-a", "w5:p1"])
+        .args(["follow", "host-a", "w5:p1"])
         .assert()
         .code(2)
-        .stderr("no agent in pane w5:p1 on cde-a (run flow sessions)\n");
+        .stderr("no agent in pane w5:p1 on host-a (run flow sessions)\n");
     assert!(fx.calls().is_empty());
 }
 
 #[test]
 fn unfollow_removes_a_followed_pane() {
     let fx = Fixture::new();
-    fx.write_cache("env-0002", &cde_b_cache());
-    stdout_of(fx.flow(&[]).args(["follow", "cde-b", "w5:p1"]));
+    fx.write_cache("env-0002", &host_b_cache());
+    stdout_of(fx.flow(&[]).args(["follow", "host-b", "w5:p1"]));
 
-    stdout_of(fx.flow(&[]).args(["unfollow", "cde-b", "w5:p1"]));
+    stdout_of(fx.flow(&[]).args(["unfollow", "host-b", "w5:p1"]));
 
     assert_eq!(fx.follow_list(), json!({"follow": []}));
     fx.flow(&[])
-        .args(["unfollow", "cde-b", "w5:p1"])
+        .args(["unfollow", "host-b", "w5:p1"])
         .assert()
         .code(2)
-        .stderr("not following w5:p1 on cde-b\n");
+        .stderr("not following w5:p1 on host-b\n");
 }

@@ -1,4 +1,4 @@
-//! The supervisor session's lock, `state/supervisor/lock.json`: which CDE and herdr pane run
+//! The supervisor session's lock, `state/supervisor/lock.json`: which host and herdr pane run
 //! the supervisor, and the Claude Code session to resume when it has to be started again.
 
 use std::io;
@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::herdr;
 use crate::paths::StateDir;
 use crate::runner;
-use crate::state::config::Cde;
+use crate::state::config::Host;
 use crate::state::fs::{with_lock, write_atomic};
 use crate::state::task::HerdrTarget;
 
@@ -25,7 +25,7 @@ pub fn is_supervisor_session() -> bool {
 }
 
 /// The supervisor always runs from the clone's fixed path, because the harness keys
-/// transcripts by cwd and `--resume` must find the same conversation on every CDE.
+/// transcripts by cwd and `--resume` must find the same conversation on every host.
 pub const SUPERVISOR_CWD: &str = "/workspaces/flow";
 /// The supervisor's herdr workspace label and Claude Code session name.
 pub const SUPERVISOR_NAME: &str = "flow-supervisor";
@@ -50,7 +50,7 @@ pub fn load(state: &StateDir) -> anyhow::Result<Option<Lock>> {
     read(&path).with_context(|| format!("reading {}", path.display()))
 }
 
-/// Records the supervisor as running at `herdr` on the CDE `host_env_id`, keeping the
+/// Records the supervisor as running at `herdr` on the host `host_env_id`, keeping the
 /// Claude Code session of the lock it replaces.
 pub fn take(state: &StateDir, host_env_id: &str, herdr: HerdrTarget) -> anyhow::Result<Lock> {
     let path = lock_path(state);
@@ -104,16 +104,16 @@ fn write(path: &Path, lock: &Lock) -> io::Result<()> {
     write_atomic(path, &bytes)
 }
 
-/// The argv that attaches this terminal to the supervisor's pane: herdr itself when `cde`, the
+/// The argv that attaches this terminal to the supervisor's pane: herdr itself when `host`, the
 /// lock's host, is this machine, else ssh with a tty, multiplexed through `control_dir`.
-pub fn attach_argv(lock: &Lock, cde: &Cde, local: bool, control_dir: &Path) -> Vec<String> {
+pub fn attach_argv(lock: &Lock, host: &Host, local: bool, control_dir: &Path) -> Vec<String> {
     let attach = herdr::attach_argv(herdr::SESSION, &lock.herdr.pane_id);
     if local {
         return attach;
     }
     let mut argv = vec!["ssh".to_owned(), "-t".to_owned()];
     argv.extend(runner::ssh_connection_options(control_dir));
-    argv.push(cde.ssh_alias.clone());
+    argv.push(host.ssh_alias.clone());
     argv.push(runner::remote_command(&attach));
     argv
 }
@@ -128,7 +128,7 @@ mod tests {
         Lock {
             host_env_id: "env-0002".to_owned(),
             herdr: HerdrTarget {
-                cde: "cde-b".to_owned(),
+                host: "host-b".to_owned(),
                 workspace_id: "w1".to_owned(),
                 pane_id: "w1:p1".to_owned(),
                 agent: "claude".to_owned(),
@@ -138,11 +138,11 @@ mod tests {
         }
     }
 
-    fn cde() -> Cde {
-        Cde {
-            name: "cde-b".to_owned(),
+    fn host() -> Host {
+        Host {
+            name: "host-b".to_owned(),
             env_id: "env-0002".to_owned(),
-            ssh_alias: "cde-b.example".to_owned(),
+            ssh_alias: "host-b.example".to_owned(),
             local_marker_env: None,
         }
     }
@@ -152,18 +152,18 @@ mod tests {
     }
 
     #[test]
-    fn attach_argv_runs_herdr_directly_on_the_local_cde() {
+    fn attach_argv_runs_herdr_directly_on_the_local_host() {
         assert_eq!(
-            attach_argv(&lock(), &cde(), true, Path::new("/run/flow")),
+            attach_argv(&lock(), &host(), true, Path::new("/run/flow")),
             words(&["herdr", "--session", "flow", "agent", "attach", "w1:p1"])
         );
     }
 
     #[test]
-    fn attach_argv_goes_through_ssh_with_a_tty_for_a_remote_cde() {
+    fn attach_argv_goes_through_ssh_with_a_tty_for_a_remote_host() {
         let control_dir = PathBuf::from("/run/flow");
         assert_eq!(
-            attach_argv(&lock(), &cde(), false, &control_dir),
+            attach_argv(&lock(), &host(), false, &control_dir),
             words(&[
                 "ssh",
                 "-t",
@@ -175,7 +175,7 @@ mod tests {
                 "ControlPath=/run/flow/ssh-%C",
                 "-o",
                 "ControlPersist=600",
-                "cde-b.example",
+                "host-b.example",
                 "zsh -lc ''\\''herdr'\\'' '\\''--session'\\'' '\\''flow'\\'' '\\''agent'\\'' \
                  '\\''attach'\\'' '\\''w1:p1'\\'''",
             ])

@@ -11,7 +11,7 @@ use anyhow::Context;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use crate::cde;
+use crate::host;
 use crate::paths::StateDir;
 use crate::state::fs::write_atomic;
 
@@ -95,7 +95,7 @@ impl Drop for Guard {
 
 /// The name `owner.json` records for this host: its Ona environment id, else its hostname.
 fn this_host() -> String {
-    cde::local_env_id().unwrap_or_else(|| {
+    host::local_env_id().unwrap_or_else(|| {
         fs::read_to_string("/proc/sys/kernel/hostname")
             .map(|name| name.trim().to_owned())
             .unwrap_or_default()

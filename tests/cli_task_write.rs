@@ -34,7 +34,7 @@ fn record(id: &str, title: &str) -> TaskRecord {
         id: id.to_owned(),
         parent: None,
         title: title.to_owned(),
-        cde: "cde-a".to_owned(),
+        host: "host-a".to_owned(),
         worktree: PathBuf::from("/workspaces/example-repo.wt/retry"),
         harness: Harness::Claude,
         created: Timestamp::now(),
@@ -208,7 +208,7 @@ fn request_dispatch_writes_request_file() {
     let out = stdout(
         flow(&state)
             .args(["task", "request-dispatch", TASK])
-            .args(["--title", "Update docs", "--cde", "cde-b", "--brief"])
+            .args(["--title", "Update docs", "--host", "host-b", "--brief"])
             .arg(&brief),
     );
 
@@ -224,7 +224,7 @@ fn request_dispatch_writes_request_file() {
     let expected = json!({
         "title": "Update docs",
         "brief_path": copied,
-        "cde": "cde-b",
+        "host": "host-b",
         "requested_by": TASK,
     });
     assert_eq!(read_json(&path), expected);
@@ -296,56 +296,56 @@ fn requests_lists_then_consume_hides() {
         .unwrap();
     let brief = repo.path().join("sibling-brief.md");
     std::fs::write(&brief, "Sibling work.\n").unwrap();
-    let with_cde = stdout(
+    let with_host = stdout(
         flow(&state)
             .args(["task", "request-dispatch", TASK])
-            .args(["--title", "Update docs", "--cde", "cde-b", "--brief"])
+            .args(["--title", "Update docs", "--host", "host-b", "--brief"])
             .arg(&brief),
     );
-    let without_cde = stdout(
+    let without_host = stdout(
         flow(&state)
             .args(["task", "request-dispatch", "aaaaaaac"])
             .args(["--title", "Bump the client", "--brief"])
             .arg(&brief),
     );
-    let (with_cde, without_cde) = (with_cde.trim(), without_cde.trim());
+    let (with_host, without_host) = (with_host.trim(), without_host.trim());
 
     let listed = stdout(flow(&state).arg("requests"));
 
     let mut lines: Vec<_> = listed.lines().collect();
     lines.sort();
     let mut expected = vec![
-        format!("{with_cde}  {TASK}  cde-b  Update docs"),
-        format!("{without_cde}  aaaaaaac  -      Bump the client"),
+        format!("{with_host}  {TASK}  host-b  Update docs"),
+        format!("{without_host}  aaaaaaac  -       Bump the client"),
     ];
     expected.sort();
     assert_eq!(lines, expected, "{listed}");
 
     flow(&state)
-        .args(["requests", "consume", with_cde])
+        .args(["requests", "consume", with_host])
         .assert()
         .success();
 
     let listed = stdout(flow(&state).arg("requests"));
-    assert!(!listed.contains(with_cde), "{listed}");
-    assert!(listed.contains(without_cde), "{listed}");
+    assert!(!listed.contains(with_host), "{listed}");
+    assert!(listed.contains(without_host), "{listed}");
     let consumed = store
         .task_dir(TASK)
         .unwrap()
         .join("requests")
-        .join(format!("{with_cde}.json.consumed"));
+        .join(format!("{with_host}.json.consumed"));
     assert!(consumed.is_file());
 
     let json = stdout(flow(&state).args(["requests", "--json"]));
     let json: Value = serde_json::from_str(&json).unwrap();
     let rows = json.as_array().expect("array of requests");
     assert_eq!(rows.len(), 1, "{json}");
-    assert_eq!(rows[0]["id"], without_cde);
+    assert_eq!(rows[0]["id"], without_host);
     assert_eq!(rows[0]["requested_by"], "aaaaaaac");
-    assert_eq!(rows[0]["cde"], Value::Null);
+    assert_eq!(rows[0]["host"], Value::Null);
 
     flow(&state)
-        .args(["requests", "consume", with_cde])
+        .args(["requests", "consume", with_host])
         .assert()
         .failure()
         .code(1);
@@ -356,7 +356,7 @@ fn orphan_transitions_with_reason_event() {
     let (_repo, state, store) = setup();
 
     flow(&state)
-        .args(["task", "orphan", TASK, "--reason", "CDE was deleted"])
+        .args(["task", "orphan", TASK, "--reason", "host was deleted"])
         .assert()
         .success();
 
@@ -365,7 +365,7 @@ fn orphan_transitions_with_reason_event() {
     let ev = last_event(&store, TASK);
     assert_eq!(ev.source, "cli");
     assert_eq!(ev.kind, "orphaned");
-    assert_eq!(ev.data, json!({"reason": "CDE was deleted"}));
+    assert_eq!(ev.data, json!({"reason": "host was deleted"}));
 }
 
 #[test]

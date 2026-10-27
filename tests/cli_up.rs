@@ -17,15 +17,15 @@ worktree_tool = { create = ["wt", "create", "{branch}"] }
 path = "/workspaces/acme"
 default_branch = "main"
 
-[[cdes]]
-name = "cde-a"
+[[hosts]]
+name = "host-a"
 env_id = "env-0001"
-ssh_alias = "cde-a.example"
+ssh_alias = "host-a.example"
 
-[[cdes]]
-name = "cde-b"
+[[hosts]]
+name = "host-b"
 env_id = "env-0002"
-ssh_alias = "cde-b.example"
+ssh_alias = "host-b.example"
 "#;
 
 const AGENT_LIST: &str = include_str!("fixtures/herdr/agent_list.json");
@@ -63,7 +63,7 @@ impl Fixture {
         self.dir.path().join("runner.json")
     }
 
-    /// `flow` on cde-a over this state dir, answering runner calls from `script` in order.
+    /// `flow` on host-a over this state dir, answering runner calls from `script` in order.
     fn flow(&self, script: &[Value]) -> Command {
         fs::write(self.script_path(), Value::from(script.to_vec()).to_string()).unwrap();
         let mut cmd = Command::cargo_bin("flow").expect("flow binary is built");
@@ -74,7 +74,7 @@ impl Fixture {
         cmd
     }
 
-    /// `(cde, argv)` of every runner call, in order.
+    /// `(host, argv)` of every runner call, in order.
     fn calls(&self) -> Vec<(String, Vec<String>)> {
         let mut log = self.script_path().into_os_string();
         log.push(".calls.jsonl");
@@ -84,7 +84,7 @@ impl Fixture {
             .map(|line| {
                 let call: Value = serde_json::from_str(line).unwrap();
                 (
-                    call["cde"].as_str().unwrap().to_owned(),
+                    call["host"].as_str().unwrap().to_owned(),
                     serde_json::from_value(call["argv"].clone()).unwrap(),
                 )
             })
@@ -95,12 +95,12 @@ impl Fixture {
         StateDir::resolve(self.dir.path()).unwrap()
     }
 
-    fn write_lock(&self, env_id: &str, cde: &str, pane: &str, session: Option<&str>) {
+    fn write_lock(&self, env_id: &str, host: &str, pane: &str, session: Option<&str>) {
         let dir = self.state.join("supervisor");
         fs::create_dir_all(&dir).unwrap();
         let lock = json!({
             "host_env_id": env_id,
-            "herdr": {"cde": cde, "workspace_id": "w1", "pane_id": pane, "agent": "claude"},
+            "herdr": {"host": host, "workspace_id": "w1", "pane_id": pane, "agent": "claude"},
             "claude_session": session,
             "since": "2026-10-26T12:00:00Z",
         });
@@ -183,7 +183,7 @@ fn up_creates_supervisor_when_no_lock() {
     let stdout = stdout_of(fx.flow(&fresh_start()).arg("up"));
 
     let calls = fx.calls();
-    assert!(calls.iter().all(|(cde, _)| cde == "cde-a"), "{calls:?}");
+    assert!(calls.iter().all(|(host, _)| host == "host-a"), "{calls:?}");
     assert!(
         has_subcommand(
             &calls,
@@ -208,7 +208,7 @@ fn up_creates_supervisor_when_no_lock() {
     assert_eq!(
         lock.herdr,
         HerdrTarget {
-            cde: "cde-a".to_owned(),
+            host: "host-a".to_owned(),
             workspace_id: "w3".to_owned(),
             pane_id: NEW_PANE.to_owned(),
             agent: "claude".to_owned(),
@@ -224,7 +224,7 @@ fn up_creates_supervisor_when_no_lock() {
 #[test]
 fn up_resumes_known_session() {
     let fx = Fixture::new();
-    fx.write_lock("env-0001", "cde-a", LIVE_PANE, Some("s9"));
+    fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
     let mut script = vec![ok(NO_AGENTS)];
     script.extend(fresh_start());
 
@@ -247,7 +247,7 @@ fn up_resumes_known_session() {
 #[test]
 fn up_attaches_when_lock_live() {
     let fx = Fixture::new();
-    fx.write_lock("env-0001", "cde-a", LIVE_PANE, Some("s9"));
+    fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
     let before = fs::read_to_string(fx.state.join("supervisor/lock.json")).unwrap();
 
     let stdout = stdout_of(fx.flow(&[ok(&supervisor_agents())]).arg("up"));
@@ -271,7 +271,7 @@ fn up_attaches_when_lock_live() {
 #[test]
 fn up_starts_fresh_when_the_lock_pane_runs_another_agent() {
     let fx = Fixture::new();
-    fx.write_lock("env-0001", "cde-a", LIVE_PANE, None);
+    fx.write_lock("env-0001", "host-a", LIVE_PANE, None);
     let mut script = vec![ok(AGENT_LIST)];
     script.extend(fresh_start());
 
@@ -291,7 +291,7 @@ fn up_starts_fresh_when_the_lock_pane_runs_another_agent() {
 #[test]
 fn up_starts_fresh_session_when_resume_fails() {
     let fx = Fixture::new();
-    fx.write_lock("env-0001", "cde-a", LIVE_PANE, Some("s9"));
+    fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
     let mut script = vec![
         ok(NO_AGENTS),
         ok(SERVER_RUNNING),
@@ -337,22 +337,22 @@ fn up_starts_fresh_session_when_resume_fails() {
 #[test]
 fn up_attaches_over_ssh_to_a_live_remote_supervisor() {
     let fx = Fixture::new();
-    fx.write_lock("env-0002", "cde-b", LIVE_PANE, None);
+    fx.write_lock("env-0002", "host-b", LIVE_PANE, None);
 
     let stdout = stdout_of(fx.flow(&[ok(&supervisor_agents())]).arg("up"));
 
     let calls = fx.calls();
     assert_eq!(calls.len(), 1, "{calls:?}");
-    assert_eq!(calls[0].0, "cde-b");
+    assert_eq!(calls[0].0, "host-b");
     assert!(stdout.starts_with("attach: ssh -t "), "{stdout}");
-    assert!(stdout.contains(" cde-b.example zsh -lc "), "{stdout}");
+    assert!(stdout.contains(" host-b.example zsh -lc "), "{stdout}");
     assert!(stdout.contains("agent"), "{stdout}");
 }
 
 #[test]
 fn up_refuses_when_lock_host_unreachable() {
     let fx = Fixture::new();
-    fx.write_lock("env-0002", "cde-b", LIVE_PANE, Some("s9"));
+    fx.write_lock("env-0002", "host-b", LIVE_PANE, Some("s9"));
     let unreachable = json!({"status": 255, "stdout": "", "stderr": "ssh: connect timed out"});
 
     let out = fx
@@ -365,18 +365,18 @@ fn up_refuses_when_lock_host_unreachable() {
 
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert!(
-        stderr.contains("supervisor host cde-b unreachable"),
+        stderr.contains("supervisor host host-b unreachable"),
         "{stderr}"
     );
     assert!(stderr.contains("state/supervisor/lock.json"), "{stderr}");
     assert!(!has_subcommand(&fx.calls(), &["workspace", "create"]));
-    assert_eq!(fx.lock().unwrap().herdr.cde, "cde-b");
+    assert_eq!(fx.lock().unwrap().herdr.host, "host-b");
 }
 
 #[test]
 fn attach_prints_argv_for_the_lock() {
     let fx = Fixture::new();
-    fx.write_lock("env-0001", "cde-a", LIVE_PANE, None);
+    fx.write_lock("env-0001", "host-a", LIVE_PANE, None);
 
     let stdout = stdout_of(fx.flow(&[]).arg("attach"));
 
@@ -406,7 +406,7 @@ fn create_task_with_pane(fx: &Fixture) -> Store {
                 id: TASK.to_owned(),
                 parent: None,
                 title: "Add retry to the example client".to_owned(),
-                cde: "cde-b".to_owned(),
+                host: "host-b".to_owned(),
                 worktree: PathBuf::from("/workspaces/example-repo.wt/retry"),
                 harness: Harness::Claude,
                 created: Timestamp::now(),
@@ -418,7 +418,7 @@ fn create_task_with_pane(fx: &Fixture) -> Store {
     store
         .set_status(TASK, |status| {
             status.herdr = Some(HerdrTarget {
-                cde: "cde-b".to_owned(),
+                host: "host-b".to_owned(),
                 workspace_id: "w2".to_owned(),
                 pane_id: "w2:p1".to_owned(),
                 agent: "claude".to_owned(),
@@ -441,8 +441,8 @@ fn steer_prompts_pane_and_logs_event() {
 
     let calls = fx.calls();
     assert_eq!(calls.len(), 1, "{calls:?}");
-    let (cde, argv) = &calls[0];
-    assert_eq!(cde, "cde-b");
+    let (host, argv) = &calls[0];
+    assert_eq!(host, "host-b");
     assert_eq!(
         argv[..6],
         ["herdr", "--session", "flow", "agent", "prompt", "w2:p1"]
@@ -488,7 +488,7 @@ fn hook_supervisor(fx: &Fixture, stdin: &str, marked: bool) -> assert_cmd::asser
 #[test]
 fn hook_supervisor_records_session() {
     let fx = Fixture::new();
-    fx.write_lock("env-0001", "cde-a", LIVE_PANE, Some("s0"));
+    fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s0"));
 
     hook_supervisor(&fx, SESSION_START, true)
         .success()
@@ -502,7 +502,7 @@ fn hook_supervisor_records_session() {
 #[test]
 fn hook_supervisor_ignores_other_sessions_and_events() {
     let fx = Fixture::new();
-    fx.write_lock("env-0001", "cde-a", LIVE_PANE, Some("s0"));
+    fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s0"));
     let stop = r#"{"hook_event_name":"Stop","session_id":"s2","transcript_path":"/t/s2.jsonl","cwd":"/workspaces/flow"}"#;
 
     hook_supervisor(&fx, SESSION_START, false)

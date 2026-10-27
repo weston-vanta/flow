@@ -2,10 +2,10 @@
 //! data when asked.
 
 pub mod attach;
-pub mod cde;
 pub mod dispatch;
 pub mod guard;
 pub mod hook;
+pub mod host;
 pub mod inventory;
 pub mod requests;
 pub mod sessions;
@@ -30,7 +30,7 @@ use crate::state::task::{Status, TaskRecord};
 
 const NO_PANE: &str = "-";
 
-/// A request flow turns down as given, such as an unknown CDE or a worktree another agent is
+/// A request flow turns down as given, such as an unknown host or a worktree another agent is
 /// using. The binary exits 2 for it, as for a usage error.
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
@@ -50,7 +50,7 @@ fn task_views(tasks: &[(TaskRecord, Status)]) -> Vec<TaskView<'_>> {
         .collect()
 }
 
-/// `id  state  cde  pane  age  title`, aged by creation time; `pane` is the herdr pane running
+/// `id  state  host  pane  age  title`, aged by creation time; `pane` is the herdr pane running
 /// the task's worker, or `-` when it has none.
 fn task_rows(tasks: &[(TaskRecord, Status)], now: Timestamp) -> Vec<Vec<String>> {
     tasks
@@ -59,7 +59,7 @@ fn task_rows(tasks: &[(TaskRecord, Status)], now: Timestamp) -> Vec<Vec<String>>
             vec![
                 rec.id.clone(),
                 status.state.to_string(),
-                rec.cde.clone(),
+                rec.host.clone(),
                 status
                     .herdr
                     .as_ref()

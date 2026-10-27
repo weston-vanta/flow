@@ -1,6 +1,6 @@
 //! Sibling-work requests a task files for the supervisor, at
 //! `tasks/<task-id>/requests/<req-id>.json`, with the brief copied beside it as
-//! `<req-id>.brief.md` so the supervisor can read it from any CDE. Dispatching a request renames
+//! `<req-id>.brief.md` so the supervisor can read it from any host. Dispatching a request renames
 //! its JSON to `<req-id>.json.consumed` and leaves the brief in place. Request ids are unique
 //! across all tasks, consumed requests included.
 
@@ -21,7 +21,7 @@ const BRIEF_SUFFIX: &str = ".brief.md";
 pub struct Request {
     pub title: String,
     pub brief_path: PathBuf,
-    pub cde: Option<String>,
+    pub host: Option<String>,
     pub requested_by: String,
 }
 
@@ -29,7 +29,7 @@ pub struct Request {
 #[derive(Debug, Clone, Copy)]
 pub struct NewRequest<'a> {
     pub title: &'a str,
-    pub cde: Option<&'a str>,
+    pub host: Option<&'a str>,
     /// The brief's contents, copied into the request directory.
     pub brief: &'a [u8],
 }
@@ -66,7 +66,7 @@ impl Store {
             let req = Request {
                 title: new.title.to_owned(),
                 brief_path,
-                cde: new.cde.map(str::to_owned),
+                host: new.host.map(str::to_owned),
                 requested_by: from.to_owned(),
             };
             let mut bytes = serde_json::to_vec_pretty(&req)?;
@@ -176,7 +176,7 @@ mod tests {
                 id: (*id).to_owned(),
                 parent: None,
                 title: "Example task".to_owned(),
-                cde: "cde-a".to_owned(),
+                host: "host-a".to_owned(),
                 worktree: PathBuf::from("/workspaces/example-repo.wt/example"),
                 harness: Harness::Claude,
                 created: Timestamp::now(),
@@ -190,7 +190,7 @@ mod tests {
     fn request(title: &str) -> NewRequest<'_> {
         NewRequest {
             title,
-            cde: None,
+            host: None,
             brief: b"Update the example docs.\n",
         }
     }

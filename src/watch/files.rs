@@ -1,5 +1,5 @@
 //! What `flow watch` reads from files: each task's `status.json` state and the lines appended
-//! to its `events.jsonl`, and, on the task's CDE, whether its worktree was written since its
+//! to its `events.jsonl`, and, on the task's host, whether its worktree was written since its
 //! last event.
 
 use std::fs::File;
@@ -13,11 +13,11 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::runner::Runner;
-use crate::state::config::Cde;
+use crate::state::config::Host;
 use crate::state::events::Event;
 use crate::state::task::State;
 
-/// How long a worktree check may run, on the CDE and here.
+/// How long a worktree check may run, on the host and here.
 const WORKTREE_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 /// The exit code ssh uses for its own failures.
 const SSH_FAILURE_STATUS: i32 = 255;
@@ -77,7 +77,7 @@ pub(super) fn file_len(path: &Path) -> u64 {
     std::fs::metadata(path).map_or(0, |meta| meta.len())
 }
 
-/// A `find` on a task's CDE for the first file under its worktree, `.git` aside, modified after
+/// A `find` on a task's host for the first file under its worktree, `.git` aside, modified after
 /// a time. It runs in the background so a slow walk or a hung connection cannot stall the poll
 /// loop, and is killed after `WORKTREE_CHECK_TIMEOUT`.
 pub(super) struct WorktreeCheck {
@@ -87,7 +87,7 @@ pub(super) struct WorktreeCheck {
 
 pub(super) enum Checked {
     Running,
-    /// The CDE answered: whether a file was written.
+    /// The host answered: whether a file was written.
     Written(bool),
     Unreachable,
     /// The deadline passed and the check was killed.
@@ -98,11 +98,11 @@ pub(super) enum Checked {
 impl WorktreeCheck {
     pub(super) fn start(
         runner: &dyn Runner,
-        cde: &Cde,
+        host: &Host,
         worktree: &Path,
         since: Timestamp,
     ) -> anyhow::Result<WorktreeCheck> {
-        let child = runner.spawn(cde, &worktree_write_argv(worktree, since))?;
+        let child = runner.spawn(host, &worktree_write_argv(worktree, since))?;
         Ok(WorktreeCheck {
             child,
             deadline: Instant::now() + WORKTREE_CHECK_TIMEOUT,
@@ -149,7 +149,7 @@ impl Drop for WorktreeCheck {
 }
 
 /// `find` printing the first file under `worktree`, `.git` aside, modified after `since`,
-/// under the CDE's `timeout`.
+/// under the host's `timeout`.
 fn worktree_write_argv(worktree: &Path, since: Timestamp) -> Vec<String> {
     let timeout = WORKTREE_CHECK_TIMEOUT.as_secs().to_string();
     let since = since.strftime("%Y-%m-%dT%H:%M:%SZ").to_string();
@@ -180,11 +180,11 @@ mod tests {
     use super::*;
     use crate::runner::{FakeRunner, Scripted};
 
-    fn cde() -> Cde {
-        Cde {
-            name: "cde-a".to_owned(),
+    fn host() -> Host {
+        Host {
+            name: "host-a".to_owned(),
             env_id: "env-0001".to_owned(),
-            ssh_alias: "cde-a.example".to_owned(),
+            ssh_alias: "host-a.example".to_owned(),
             local_marker_env: None,
         }
     }
@@ -197,7 +197,8 @@ mod tests {
         }]);
         let since = "2026-10-26T12:00:00.5Z".parse().unwrap();
         let mut check =
-            WorktreeCheck::start(&fake, &cde(), Path::new("/work/repo.wt/feature"), since).unwrap();
+            WorktreeCheck::start(&fake, &host(), Path::new("/work/repo.wt/feature"), since)
+                .unwrap();
         check.finish();
         (check.poll(), fake)
     }

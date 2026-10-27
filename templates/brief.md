@@ -28,7 +28,7 @@ Report through these exact commands, run from your shell.
 - When something outside your control blocks you:
   `{{flow}} task status {{id}} blocked --message "<what blocks you>"`
 - When work outside this task's scope should run as a sibling task, write its brief to a file,
-  then: `{{flow}} task request-dispatch {{id}} --title "<title>" --brief <file> [--cde <name>]`
+  then: `{{flow}} task request-dispatch {{id}} --title "<title>" --brief <file> [--host <name>]`
 - When every completion criterion is met, write a short Markdown report to a file, then:
   `{{flow}} task done {{id}} --report <path>`
 

@@ -69,7 +69,7 @@ struct TranscriptLine {
 /// A herdr agent with what flow knows about it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Adopted {
-    pub cde: String,
+    pub host: String,
     pub agent: Agent,
     /// The task whose worker runs in the agent's pane; `None` for a hand-started session.
     pub task: Option<String>,
@@ -84,10 +84,10 @@ pub struct FollowList {
     pub follow: Vec<Followed>,
 }
 
-/// An agent's pane, named by its CDE, herdr session, and pane id.
+/// An agent's pane, named by its host, herdr session, and pane id.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Followed {
-    pub cde: String,
+    pub host: String,
     pub pane_id: String,
     pub session: String,
 }
@@ -242,12 +242,12 @@ fn away_summary(line: &[u8]) -> Option<String> {
         .flatten()
 }
 
-/// Matches each of `agents`, herdr's agents on `cde`, to the task whose worker runs in its pane
+/// Matches each of `agents`, herdr's agents on `host`, to the task whose worker runs in its pane
 /// and to a registry session. A task's agent gets the task's own Claude Code session when the
 /// registry has it; any other agent gets the most recently updated session started in its cwd
 /// that no task claims. Summaries are left for the caller to read.
 pub fn match_agents(
-    cde: &str,
+    host: &str,
     agents: &[Agent],
     tasks: &[(TaskRecord, Status)],
     registry: &[RegistrySession],
@@ -260,7 +260,7 @@ pub fn match_agents(
     agents
         .iter()
         .map(|agent| {
-            let task = task_in_pane(cde, agent, tasks);
+            let task = task_in_pane(host, agent, tasks);
             let session = task
                 .and_then(|(_, status)| status.claude_session.as_ref())
                 .and_then(|claude| registry.iter().find(|s| s.session_id == claude.session_id))
@@ -271,7 +271,7 @@ pub fn match_agents(
                         .max_by_key(|s| s.updated)
                 });
             Adopted {
-                cde: cde.to_owned(),
+                host: host.to_owned(),
                 agent: agent.clone(),
                 task: task.map(|(record, _)| record.id.clone()),
                 session: session.cloned(),
@@ -281,10 +281,10 @@ pub fn match_agents(
         .collect()
 }
 
-/// The task whose worker runs in `agent`'s pane on `cde`, preferring an open task, then the
+/// The task whose worker runs in `agent`'s pane on `host`, preferring an open task, then the
 /// newest. Workers run only in flow's herdr session.
 fn task_in_pane<'a>(
-    cde: &str,
+    host: &str,
     agent: &Agent,
     tasks: &'a [(TaskRecord, Status)],
 ) -> Option<&'a (TaskRecord, Status)> {
@@ -297,7 +297,7 @@ fn task_in_pane<'a>(
             status
                 .herdr
                 .as_ref()
-                .is_some_and(|target| target.cde == cde && target.pane_id == agent.pane_id)
+                .is_some_and(|target| target.host == host && target.pane_id == agent.pane_id)
         })
         .max_by_key(|(record, status)| (status.state.is_open(), record.created))
 }
@@ -423,12 +423,12 @@ mod tests {
         }
     }
 
-    fn task(id: &str, cde: &str, pane_id: &str, session_id: &str) -> (TaskRecord, Status) {
+    fn task(id: &str, host: &str, pane_id: &str, session_id: &str) -> (TaskRecord, Status) {
         let record = TaskRecord {
             id: id.to_owned(),
             parent: None,
             title: "a task".to_owned(),
-            cde: cde.to_owned(),
+            host: host.to_owned(),
             worktree: PathBuf::from("/work/repo.wt/feature"),
             harness: Harness::Claude,
             created: Timestamp::UNIX_EPOCH,
@@ -436,7 +436,7 @@ mod tests {
         };
         let mut status = Status::pending(Timestamp::UNIX_EPOCH);
         status.herdr = Some(HerdrTarget {
-            cde: cde.to_owned(),
+            host: host.to_owned(),
             workspace_id: "w1".to_owned(),
             pane_id: pane_id.to_owned(),
             agent: "claude".to_owned(),
@@ -469,8 +469,8 @@ mod tests {
             agent("default", "w2:p1", "/work/elsewhere"),
         ];
         let tasks = [
-            task("aaaaaaab", "cde-a", "w1:p1", "s-task"),
-            task("aaaaaaac", "cde-b", "w2:p1", "s-other"),
+            task("aaaaaaab", "host-a", "w1:p1", "s-task"),
+            task("aaaaaaac", "host-b", "w2:p1", "s-other"),
         ];
         let registry = [
             registered("s-task", "/work/repo", 100),
@@ -478,7 +478,7 @@ mod tests {
             registered("s-hand", "/work/repo", 300),
         ];
 
-        let adopted = match_agents("cde-a", &agents, &tasks, &registry);
+        let adopted = match_agents("host-a", &agents, &tasks, &registry);
 
         let summary: Vec<(Option<&str>, Option<&str>)> = adopted
             .iter()
@@ -497,7 +497,7 @@ mod tests {
                 (None, None),
             ]
         );
-        assert!(adopted.iter().all(|a| a.cde == "cde-a"));
+        assert!(adopted.iter().all(|a| a.host == "host-a"));
         assert_eq!(adopted[1].agent, agents[1]);
     }
 }

@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, bail};
 use flow::herdr::{AgentStatus, Herdr, KEY_DOWN, KEY_ENTER};
 use flow::runner::{LocalSshRunner, Runner, default_control_dir};
-use flow::state::config::Cde;
+use flow::state::config::Host;
 
 const SESSION: &str = "flow-smoke";
 const LOCAL_ENV_ID: &str = "smoke-local";
@@ -29,7 +29,7 @@ fn main() -> anyhow::Result<()> {
         Some(LOCAL_ENV_ID.to_owned()),
         default_control_dir(),
     )?);
-    let cde = Cde {
+    let host = Host {
         name: "local".to_owned(),
         env_id: LOCAL_ENV_ID.to_owned(),
         ssh_alias: String::new(),
@@ -38,26 +38,26 @@ fn main() -> anyhow::Result<()> {
     let herdr = Herdr::with_session(runner.clone(), SESSION);
     let cwd = tempfile::tempdir().context("creating temp cwd")?;
 
-    herdr.ensure_server(&cde)?;
+    herdr.ensure_server(&host)?;
     println!("server: running in session {SESSION}");
     let outcome = herdr
-        .create_workspace(&cde, cwd.path(), "flow-smoke")
+        .create_workspace(&host, cwd.path(), "flow-smoke")
         .and_then(|(workspace_id, pane_id)| {
             println!(
                 "workspace: {workspace_id} pane: {pane_id} cwd: {}",
                 cwd.path().display()
             );
-            let outcome = exercise(&herdr, &cde, &pane_id);
+            let outcome = exercise(&herdr, &host, &pane_id);
             if let Err(err) = &outcome {
                 println!("error: {err:#}");
             }
-            herdr.close_workspace(&cde, &workspace_id)?;
+            herdr.close_workspace(&host, &workspace_id)?;
             println!("workspace {workspace_id}: closed");
             outcome
         });
 
     let stop = runner.run(
-        &cde,
+        &host,
         &["herdr", "--session", SESSION, "server", "stop"].map(str::to_owned),
         None,
     )?;
@@ -65,48 +65,53 @@ fn main() -> anyhow::Result<()> {
     outcome
 }
 
-fn exercise(herdr: &Herdr, cde: &Cde, pane_id: &str) -> anyhow::Result<()> {
-    herdr.pane_run(cde, pane_id, &["claude".to_owned()])?;
+fn exercise(herdr: &Herdr, host: &Host, pane_id: &str) -> anyhow::Result<()> {
+    herdr.pane_run(host, pane_id, &["claude".to_owned()])?;
     println!("pane run: claude");
 
-    if herdr.pane_wait_output(cde, pane_id, TRUST_DIALOG, 20_000)? {
+    if herdr.pane_wait_output(host, pane_id, TRUST_DIALOG, 20_000)? {
         println!("trust dialog: shown");
         // Keys sent as soon as the dialog renders are dropped; once herdr reports the agent
         // blocked on it, Claude reads input.
-        let status = herdr.wait(cde, pane_id, &[AgentStatus::Blocked], Some(10_000))?;
+        let status = herdr.wait(host, pane_id, &[AgentStatus::Blocked], Some(10_000))?;
         println!("wait blocked: {status:?}; selecting \"{TRUST_DIALOG}\"");
-        herdr.pane_send_keys(cde, pane_id, &[KEY_DOWN, KEY_ENTER])?;
+        herdr.pane_send_keys(host, pane_id, &[KEY_DOWN, KEY_ENTER])?;
     } else {
         println!("trust dialog: not shown within 20 s");
     }
 
-    let status = herdr.wait(cde, pane_id, &[AgentStatus::Idle], Some(60_000))?;
+    let status = herdr.wait(host, pane_id, &[AgentStatus::Idle], Some(60_000))?;
     println!("wait idle: {status:?}");
     if status != Some(AgentStatus::Idle) {
-        println!("agents: {:?}", herdr.agents(cde)?);
-        println!("pane text:\n{}", herdr.read(cde, pane_id, 20)?.trim_end());
+        println!("agents: {:?}", herdr.agents(host)?);
+        println!("pane text:\n{}", herdr.read(host, pane_id, 20)?.trim_end());
         bail!("claude did not become idle");
     }
-    println!("agents: {:?}", herdr.agents(cde)?);
+    println!("agents: {:?}", herdr.agents(host)?);
 
     // Claude exits on /exit, so herdr reports the agent gone rather than a final status.
-    match herdr.prompt(cde, pane_id, "/exit", &[]) {
+    match herdr.prompt(host, pane_id, "/exit", &[]) {
         Ok(status) => println!("prompt /exit: {status:?}"),
         Err(err) => println!("prompt /exit: {err:#}"),
     }
-    match herdr.wait(cde, pane_id, &[AgentStatus::Done], Some(30_000)) {
+    match herdr.wait(host, pane_id, &[AgentStatus::Done], Some(30_000)) {
         Ok(status) => println!("wait done: {status:?}"),
         Err(err) => println!("wait done: {err:#}"),
     }
-    wait_until_gone(herdr, cde, pane_id, Duration::from_secs(10))?;
+    wait_until_gone(herdr, host, pane_id, Duration::from_secs(10))?;
     println!("agent in {pane_id}: gone");
     Ok(())
 }
 
-fn wait_until_gone(herdr: &Herdr, cde: &Cde, pane_id: &str, limit: Duration) -> anyhow::Result<()> {
+fn wait_until_gone(
+    herdr: &Herdr,
+    host: &Host,
+    pane_id: &str,
+    limit: Duration,
+) -> anyhow::Result<()> {
     let deadline = Instant::now() + limit;
     while herdr
-        .agents(cde)?
+        .agents(host)?
         .iter()
         .any(|agent| agent.pane_id == pane_id)
     {

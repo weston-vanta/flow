@@ -1,18 +1,18 @@
 ---
 name: flow-dispatch
-description: Use when the user asks for work a worker should do, or `flow requests` lists a worker's dispatch request. Covers choosing a CDE from `flow inventory`, writing a brief with completion criteria, and starting the worker with `flow dispatch`.
+description: Use when the user asks for work a worker should do, or `flow requests` lists a worker's dispatch request. Covers choosing a host from `flow inventory`, writing a brief with completion criteria, and starting the worker with `flow dispatch`.
 ---
 
 # Dispatching a worker
 
-## 1. Choose the CDE and worktree
+## 1. Choose the host and worktree
 
-Run `flow inventory` (add `--refresh` when it is stale or a CDE is missing). CDEs are not
+Run `flow inventory` (add `--refresh` when it is stale or a host is missing). Hosts are not
 interchangeable: each has its own checkout and worktrees.
 
-- A CDE whose worktree already holds the branch or PR is the task's natural home. Reuse that
+- A host whose worktree already holds the branch or PR is the task's natural home. Reuse that
   worktree with `--worktree <path>`.
-- Otherwise pick a CDE and pass `--branch <name>`; flow creates the worktree with the
+- Otherwise pick a host and pass `--branch <name>`; flow creates the worktree with the
   configured worktree tool.
 - Ask the user only when no home is obvious and the choice matters. Mention load only when
   the inventory shows it matters.
@@ -37,7 +37,7 @@ the worktree rule and the reporting contract to the brief itself.
 ## 3. Dispatch
 
 ```
-flow dispatch --cde <name> --title "<short title>" \
+flow dispatch --host <name> --title "<short title>" \
   --brief-file <file> --criteria "- <criterion>" \
   --branch <name>
 ```
@@ -45,7 +45,7 @@ flow dispatch --cde <name> --title "<short title>" \
 Use `--worktree <path>` instead of `--branch` to reuse a worktree, and add
 `--parent <task-id>` when splitting work off an existing task.
 
-It prints `dispatched <task-id> on <cde> (<pane>)`. Then:
+It prints `dispatched <task-id> on <host> (<pane>)`. Then:
 
 - A warning that the worker is blocked on something other than the trust dialog: check
   `flow task events <task-id>` (`worker.blocked_at_start` holds the pane text) and steer it or
@@ -57,8 +57,8 @@ Tell the user in one line what went where, and end the turn; `flow watch` arms o
 
 ## Worker requests
 
-`flow requests` lists `req-id  from-task  cde  title`; `flow requests --json` adds the
+`flow requests` lists `req-id  from-task  host  title`; `flow requests --json` adds the
 `brief_path`. Dispatch it as above with `--brief-file <brief_path> --parent <from-task>`,
-using the requested CDE unless the inventory shows a better home, then
+using the requested host unless the inventory shows a better home, then
 `flow requests consume <req-id>`. A request outside what the user asked for is a question
 for the user (`flow-escalate`), not an automatic dispatch.

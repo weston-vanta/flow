@@ -9,7 +9,7 @@ use crate::paths::StateDir;
 /// Operator configuration from `state/config.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Config {
-    pub cdes: Vec<Cde>,
+    pub hosts: Vec<Host>,
     pub monorepo: Monorepo,
     pub worktree_tool: WorktreeTool,
     /// The herdr sessions whose agents flow lists: its own session, where workers run, and the
@@ -19,11 +19,11 @@ pub struct Config {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct Cde {
+pub struct Host {
     pub name: String,
     pub env_id: String,
     pub ssh_alias: String,
-    /// `(VAR, VALUE)`: this CDE is the local one when `$VAR` equals `VALUE`.
+    /// `(VAR, VALUE)`: this host is the local one when `$VAR` equals `VALUE`.
     #[serde(default)]
     pub local_marker_env: Option<(String, String)>,
 }

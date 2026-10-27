@@ -5,10 +5,10 @@ use std::process::Command;
 
 use anyhow::{Context, anyhow};
 
-use crate::cde;
+use crate::host;
 use crate::paths::StateDir;
 use crate::runner;
-use crate::state::config::{Cde, Config};
+use crate::state::config::{Config, Host};
 use crate::supervisor::{self, Lock};
 
 pub fn run(state: &StateDir) -> anyhow::Result<()> {
@@ -18,7 +18,7 @@ pub fn run(state: &StateDir) -> anyhow::Result<()> {
     })?;
     let host = host(&config, &lock).ok_or_else(|| {
         anyhow!(
-            "supervisor host {} is not a CDE in config.toml; run `flow up` to start a new \
+            "supervisor host {} is not in config.toml; run `flow up` to start a new \
              supervisor",
             lock.host_env_id
         )
@@ -26,18 +26,18 @@ pub fn run(state: &StateDir) -> anyhow::Result<()> {
     exec(&lock, host)
 }
 
-/// The configured CDE the lock says the supervisor runs on.
-pub(crate) fn host<'a>(config: &'a Config, lock: &Lock) -> Option<&'a Cde> {
+/// The configured host the lock says the supervisor runs on.
+pub(crate) fn host<'a>(config: &'a Config, lock: &Lock) -> Option<&'a Host> {
     config
-        .cdes
+        .hosts
         .iter()
-        .find(|cde| cde.env_id == lock.host_env_id)
+        .find(|host| host.env_id == lock.host_env_id)
 }
 
 /// Runs the attach command in place of this process, so it owns the terminal. Under the fake
 /// runner it prints `attach: <argv>` instead.
-pub(crate) fn exec(lock: &Lock, host: &Cde) -> anyhow::Result<()> {
-    let local = cde::is_local(host, cde::local_env_id().as_deref());
+pub(crate) fn exec(lock: &Lock, host: &Host) -> anyhow::Result<()> {
+    let local = host::is_local(host, host::local_env_id().as_deref());
     let control_dir = runner::default_control_dir();
     let argv = supervisor::attach_argv(lock, host, local, &control_dir);
     if runner::fake_runner_active() {

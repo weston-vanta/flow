@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use super::classify::Observation;
 use crate::herdr::{self, AgentStatus, Herdr, WaitEnd};
-use crate::state::config::Cde;
+use crate::state::config::Host;
 
 /// How long a herdr wait that could not run waits before it is started again.
 const RETRY_AFTER: Duration = Duration::from_secs(30);
@@ -36,7 +36,7 @@ pub(super) enum WaitTarget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct WaitSpec {
     pub(super) target: WaitTarget,
-    pub(super) cde: String,
+    pub(super) host: String,
     pub(super) session: String,
     pub(super) pane_id: String,
 }
@@ -46,7 +46,7 @@ impl WaitSpec {
     pub(super) fn key(&self) -> String {
         match &self.target {
             WaitTarget::Task(task) => task.clone(),
-            WaitTarget::Adopted => format!("{}/{}/{}", self.cde, self.session, self.pane_id),
+            WaitTarget::Adopted => format!("{}/{}/{}", self.host, self.session, self.pane_id),
         }
     }
 
@@ -77,7 +77,7 @@ impl WaitSpec {
 
     fn adopted(&self, status: AgentStatus) -> Observation {
         Observation::AdoptedChanged {
-            cde: self.cde.clone(),
+            host: self.host.clone(),
             session: self.session.clone(),
             pane_id: self.pane_id.clone(),
             status,
@@ -88,7 +88,7 @@ impl WaitSpec {
 /// One herdr `agent wait` kept running on a pane.
 pub(super) struct PaneWait {
     pub(super) spec: WaitSpec,
-    pub(super) cde: Cde,
+    pub(super) host: Host,
     herdr: Herdr,
     pub(super) child: Option<Child>,
     /// The status the last wait ended on; the next one waits for a change from it when it is
@@ -109,10 +109,10 @@ pub(super) enum Polled {
 }
 
 impl PaneWait {
-    pub(super) fn new(spec: WaitSpec, cde: Cde, herdr: Herdr) -> PaneWait {
+    pub(super) fn new(spec: WaitSpec, host: Host, herdr: Herdr) -> PaneWait {
         PaneWait {
             spec,
-            cde,
+            host,
             herdr,
             child: None,
             settled: None,
@@ -145,7 +145,7 @@ impl PaneWait {
             }
             let until = self.until();
             return match self.herdr.spawn_wait(
-                &self.cde,
+                &self.host,
                 &self.spec.pane_id,
                 &until,
                 Some(timeout_ms),
@@ -182,7 +182,7 @@ impl PaneWait {
             WaitEnd::Failed(problem) => self.back_off(Polled::Failed(format!(
                 "{}: herdr wait on {} {problem}",
                 self.spec.key(),
-                self.cde.name
+                self.host.name
             ))),
         }
     }
@@ -226,17 +226,17 @@ mod tests {
         let fake = Arc::new(FakeRunner::new(script));
         let spec = WaitSpec {
             target: WaitTarget::Task("aaaaaaab".to_owned()),
-            cde: "cde-a".to_owned(),
+            host: "host-a".to_owned(),
             session: herdr::SESSION.to_owned(),
             pane_id: "w1:p1".to_owned(),
         };
-        let cde = Cde {
-            name: "cde-a".to_owned(),
+        let host = Host {
+            name: "host-a".to_owned(),
             env_id: "env-0001".to_owned(),
-            ssh_alias: "cde-a.example".to_owned(),
+            ssh_alias: "host-a.example".to_owned(),
             local_marker_env: None,
         };
-        let wait = PaneWait::new(spec, cde, Herdr::new(fake.clone()));
+        let wait = PaneWait::new(spec, host, Herdr::new(fake.clone()));
         (wait, fake)
     }
 

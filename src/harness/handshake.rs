@@ -4,7 +4,7 @@
 use anyhow::bail;
 
 use crate::herdr::{AgentStatus, Herdr, KEY_DOWN, KEY_ENTER};
-use crate::state::config::Cde;
+use crate::state::config::Host;
 
 /// How long the agent gets to start, and again to settle after the trust dialog.
 const START_TIMEOUT_MS: u64 = 60_000;
@@ -28,17 +28,17 @@ pub enum AgentStart {
 /// again.
 pub fn await_start(
     herdr: &Herdr,
-    cde: &Cde,
+    host: &Host,
     workspace_id: &str,
     pane_id: &str,
 ) -> anyhow::Result<AgentStart> {
     let wait = |until: &[AgentStatus]| -> anyhow::Result<AgentStatus> {
-        match herdr.wait(cde, pane_id, until, Some(START_TIMEOUT_MS))? {
+        match herdr.wait(host, pane_id, until, Some(START_TIMEOUT_MS))? {
             Some(status) => Ok(status),
             None => bail!(
                 "agent in pane {pane_id} on {} did not start within {} s; workspace \
                  {workspace_id} is left open for inspection",
-                cde.name,
+                host.name,
                 START_TIMEOUT_MS / 1000
             ),
         }
@@ -51,11 +51,11 @@ pub fn await_start(
     if status != AgentStatus::Blocked {
         return Ok(AgentStart::Running);
     }
-    let text = herdr.read(cde, pane_id, DIALOG_LINES)?;
+    let text = herdr.read(host, pane_id, DIALOG_LINES)?;
     let Some(keys) = trust_dialog_keys(&text) else {
         return Ok(AgentStart::BlockedAtStart { pane_text: text });
     };
-    herdr.pane_send_keys(cde, pane_id, &keys)?;
+    herdr.pane_send_keys(host, pane_id, &keys)?;
     wait(&[AgentStatus::Idle, AgentStatus::Working])?;
     Ok(AgentStart::Running)
 }

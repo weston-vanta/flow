@@ -6,8 +6,8 @@ use anyhow::anyhow;
 use jiff::Timestamp;
 use serde_json::json;
 
-use crate::cde;
 use crate::herdr::{AgentStatus, Herdr};
+use crate::host;
 use crate::paths::StateDir;
 use crate::runner;
 use crate::state::Store;
@@ -28,9 +28,9 @@ pub fn run(state: &StateDir, id: &str, text: &str) -> anyhow::Result<()> {
         .herdr
         .ok_or_else(|| anyhow!("task {id} has no herdr target"))?;
     let config = Config::load(state)?;
-    let cde = cde::find(&config, &target.cde)?;
+    let host = host::find(&config, &target.host)?;
     let herdr = Herdr::new(Arc::from(runner::from_env()?));
-    let reached = herdr.prompt(cde, &target.pane_id, text, &DELIVERED)?;
+    let reached = herdr.prompt(host, &target.pane_id, text, &DELIVERED)?;
     store.append_event(
         id,
         &Event {

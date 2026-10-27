@@ -2,7 +2,7 @@ use std::io::{self, Write};
 
 use serde::Serialize;
 
-use crate::cde;
+use crate::host;
 use crate::paths::StateDir;
 use crate::runner;
 use crate::state::config::Config;
@@ -10,25 +10,25 @@ use crate::state::config::Config;
 const LOCAL_MARKER: &str = "local";
 
 #[derive(Debug, Serialize)]
-struct CdeView<'a> {
+struct HostView<'a> {
     name: &'a str,
     env_id: &'a str,
     ssh_alias: &'a str,
     local: bool,
 }
 
-/// Configured CDEs: `name  env-id  local?`.
+/// Configured hosts: `name  env-id  local?`.
 pub fn run_list(state: &StateDir, json: bool) -> anyhow::Result<()> {
     let config = Config::load(state)?;
-    let local_env_id = cde::local_env_id();
-    let views: Vec<CdeView> = config
-        .cdes
+    let local_env_id = host::local_env_id();
+    let views: Vec<HostView> = config
+        .hosts
         .iter()
-        .map(|c| CdeView {
+        .map(|c| HostView {
             name: &c.name,
             env_id: &c.env_id,
             ssh_alias: &c.ssh_alias,
-            local: cde::is_local(c, local_env_id.as_deref()),
+            local: host::is_local(c, local_env_id.as_deref()),
         })
         .collect();
     if json {
@@ -47,11 +47,11 @@ pub fn run_list(state: &StateDir, json: bool) -> anyhow::Result<()> {
     super::print(&crate::render::table(&rows))
 }
 
-/// Runs `argv` on the CDE named `name`, passing its stdout and stderr through, and returns its
+/// Runs `argv` on the host named `name`, passing its stdout and stderr through, and returns its
 /// exit status.
 pub fn run_command(state: &StateDir, name: &str, argv: &[String]) -> anyhow::Result<i32> {
     let config = Config::load(state)?;
-    let target = cde::find(&config, name)?;
+    let target = host::find(&config, name)?;
     let output = runner::from_env()?.run(target, argv, None)?;
     super::print(&output.stdout)?;
     let mut stderr = io::stderr().lock();

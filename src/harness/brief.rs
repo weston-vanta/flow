@@ -8,7 +8,7 @@ use crate::state::task::TaskRecord;
 const TEMPLATE: &str = include_str!("../../templates/brief.md");
 
 /// `templates/brief.md` filled in for `task`, with `body` and `criteria` verbatim. Commands in
-/// the brief call `flow_bin` by path, so it must be valid on the worker's CDE.
+/// the brief call `flow_bin` by path, so it must be valid on the worker's host.
 pub fn render(task: &TaskRecord, body: &str, criteria: &str, flow_bin: &Path) -> String {
     let worktree = task.worktree.display().to_string();
     let flow = flow_bin.display().to_string();
@@ -56,7 +56,7 @@ mod tests {
             id: "aaaaaaab".to_owned(),
             parent: None,
             title: "Add retry to the example client".to_owned(),
-            cde: "cde-a".to_owned(),
+            host: "host-a".to_owned(),
             worktree: PathBuf::from("/workspaces/example-repo.wt/retry"),
             harness: Harness::Claude,
             created: "2026-10-26T12:00:00Z".parse().unwrap(),
@@ -100,7 +100,7 @@ mod tests {
             text.contains("wait for an answer to appear in your terminal"),
             "{text}"
         );
-        assert!(text.contains("--brief <file> [--cde <name>]"), "{text}");
+        assert!(text.contains("--brief <file> [--host <name>]"), "{text}");
     }
 
     #[test]

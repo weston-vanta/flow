@@ -33,8 +33,8 @@ pub enum Observation {
     AgentState { task: String, status: AgentStatus },
     /// herdr no longer knows the task's worker pane.
     AgentGone { task: String },
-    /// ssh could not reach the CDE.
-    CdeUnreachable { cde: String },
+    /// ssh could not reach the host.
+    HostUnreachable { host: String },
     /// The task filed a dispatch request.
     RequestAppeared { task: String, request: String },
     /// The task's last event is `since_secs` old; `worktree_written` says whether files in its
@@ -46,7 +46,7 @@ pub enum Observation {
     },
     /// herdr reports an adopted session's agent in `status`.
     AdoptedChanged {
-        cde: String,
+        host: String,
         session: String,
         pane_id: String,
         status: AgentStatus,
@@ -98,7 +98,7 @@ pub fn classify(obs: &Observation, thresholds: &Thresholds) -> Verdict {
             }
         },
         Observation::AgentGone { task } => format!("agent-gone: {task}"),
-        Observation::CdeUnreachable { cde } => format!("cde-unreachable: {cde}"),
+        Observation::HostUnreachable { host } => format!("host-unreachable: {host}"),
         Observation::RequestAppeared { task, .. } => format!("request: {task}"),
         Observation::Quiet {
             task,
@@ -111,7 +111,7 @@ pub fn classify(obs: &Observation, thresholds: &Thresholds) -> Verdict {
             format!("quiet: {task} {since_secs}s")
         }
         Observation::AdoptedChanged {
-            cde,
+            host,
             pane_id,
             status,
             ..
@@ -119,18 +119,18 @@ pub fn classify(obs: &Observation, thresholds: &Thresholds) -> Verdict {
             let followed = thresholds
                 .follow
                 .iter()
-                .any(|followed| followed.cde == *cde && followed.pane_id == *pane_id);
+                .any(|followed| followed.host == *host && followed.pane_id == *pane_id);
             if !followed {
                 return Verdict::Absorb;
             }
-            format!("adopted-{}: {cde}/{pane_id}", status.as_str())
+            format!("adopted-{}: {host}/{pane_id}", status.as_str())
         }
         Observation::Heartbeat => "heartbeat".to_owned(),
     };
     Verdict::Wake(reason)
 }
 
-/// What earlier wakes reported and is still true: CDEs reported unreachable and not heard from
+/// What earlier wakes reported and is still true: hosts reported unreachable and not heard from
 /// since, and the agent status last reported per watched pane. Kept across watch runs in
 /// `watch-state.json`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -161,8 +161,8 @@ impl Reported {
             return verdict;
         }
         match obs {
-            Observation::CdeUnreachable { cde } => {
-                if !self.unreachable.insert(cde.clone()) {
+            Observation::HostUnreachable { host } => {
+                if !self.unreachable.insert(host.clone()) {
                     return Verdict::Absorb;
                 }
             }
@@ -186,9 +186,9 @@ impl Reported {
         verdict
     }
 
-    /// Forgets that `cde` was reported unreachable, once it answers again.
-    pub fn reachable(&mut self, cde: &str) {
-        self.unreachable.remove(cde);
+    /// Forgets that `host` was reported unreachable, once it answers again.
+    pub fn reachable(&mut self, host: &str) {
+        self.unreachable.remove(host);
     }
 
     /// Records the length of the task's `events.jsonl` when its pane's status was reported.
@@ -236,18 +236,18 @@ fn pane_report(obs: &Observation) -> Option<String> {
 }
 
 /// The key `Reported` files an agent observation's pane under: the task id for a worker,
-/// `<cde>/<session>/<pane>` for an adopted session.
+/// `<host>/<session>/<pane>` for an adopted session.
 pub fn pane_key(obs: &Observation) -> Option<String> {
     match obs {
         Observation::AgentState { task, .. } | Observation::AgentGone { task } => {
             Some(task.clone())
         }
         Observation::AdoptedChanged {
-            cde,
+            host,
             session,
             pane_id,
             ..
-        } => Some(format!("{cde}/{session}/{pane_id}")),
+        } => Some(format!("{host}/{session}/{pane_id}")),
         _ => None,
     }
 }
@@ -291,16 +291,16 @@ mod tests {
 
     fn adopted(pane_id: &str, status: AgentStatus) -> Observation {
         Observation::AdoptedChanged {
-            cde: "cde-a".to_owned(),
+            host: "host-a".to_owned(),
             session: "default".to_owned(),
             pane_id: pane_id.to_owned(),
             status,
         }
     }
 
-    fn unreachable(cde: &str) -> Observation {
-        Observation::CdeUnreachable {
-            cde: cde.to_owned(),
+    fn unreachable(host: &str) -> Observation {
+        Observation::HostUnreachable {
+            host: host.to_owned(),
         }
     }
 
@@ -380,10 +380,10 @@ mod tests {
     }
 
     #[test]
-    fn classify_cde_unreachable_wakes() {
+    fn classify_host_unreachable_wakes() {
         assert_eq!(
-            verdict(unreachable("cde-b")),
-            wake("cde-unreachable: cde-b")
+            verdict(unreachable("host-b")),
+            wake("host-unreachable: host-b")
         );
     }
 
@@ -415,7 +415,7 @@ mod tests {
     fn classify_adopted_change_of_followed_pane_wakes() {
         let thresholds = Thresholds {
             follow: vec![Followed {
-                cde: "cde-a".to_owned(),
+                host: "host-a".to_owned(),
                 pane_id: "w1:p1".to_owned(),
                 session: "default".to_owned(),
             }],
@@ -423,7 +423,7 @@ mod tests {
         };
         assert_eq!(
             classify(&adopted("w1:p1", AgentStatus::Idle), &thresholds),
-            wake("adopted-idle: cde-a/w1:p1")
+            wake("adopted-idle: host-a/w1:p1")
         );
     }
 
@@ -446,29 +446,29 @@ mod tests {
     }
 
     #[test]
-    fn cde_unreachable_wakes_once_per_run() {
+    fn host_unreachable_wakes_once_per_run() {
         let mut reported = Reported::default();
-        let obs = unreachable("cde-b");
+        let obs = unreachable("host-b");
         assert_eq!(
             reviewed(&mut reported, &obs),
-            wake("cde-unreachable: cde-b")
+            wake("host-unreachable: host-b")
         );
         assert_eq!(reviewed(&mut reported, &obs), Verdict::Absorb);
         assert_eq!(
-            reviewed(&mut reported, &unreachable("cde-c")),
-            wake("cde-unreachable: cde-c")
+            reviewed(&mut reported, &unreachable("host-c")),
+            wake("host-unreachable: host-c")
         );
     }
 
     #[test]
-    fn cde_unreachable_wakes_again_after_it_answered() {
+    fn host_unreachable_wakes_again_after_it_answered() {
         let mut reported = Reported::default();
-        let obs = unreachable("cde-b");
+        let obs = unreachable("host-b");
         reviewed(&mut reported, &obs);
-        reported.reachable("cde-b");
+        reported.reachable("host-b");
         assert_eq!(
             reviewed(&mut reported, &obs),
-            wake("cde-unreachable: cde-b")
+            wake("host-unreachable: host-b")
         );
     }
 
@@ -507,11 +507,11 @@ mod tests {
     fn adopted_report_is_not_cleared_by_events() {
         let mut reported = Reported::default();
         let idle = adopted("w1:p1", AgentStatus::Idle);
-        reported.review(&idle, wake("adopted-idle: cde-a/w1:p1"));
+        reported.review(&idle, wake("adopted-idle: host-a/w1:p1"));
         let key = pane_key(&idle).unwrap();
         reported.events_grew(&key, 1_000);
         assert_eq!(
-            reported.review(&idle, wake("adopted-idle: cde-a/w1:p1")),
+            reported.review(&idle, wake("adopted-idle: host-a/w1:p1")),
             Verdict::Absorb
         );
     }
@@ -538,7 +538,7 @@ mod tests {
         assert_eq!(pane_key(&agent(AgentStatus::Done)).as_deref(), Some(TASK));
         assert_eq!(
             pane_key(&adopted("w1:p1", AgentStatus::Done)).as_deref(),
-            Some("cde-a/default/w1:p1")
+            Some("host-a/default/w1:p1")
         );
         assert_eq!(pane_key(&Observation::Heartbeat), None);
     }

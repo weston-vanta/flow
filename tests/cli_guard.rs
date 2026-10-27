@@ -19,10 +19,10 @@ worktree_tool = { create = ["wt", "create", "{branch}"] }
 path = "/work/repo"
 default_branch = "main"
 
-[[cdes]]
-name = "cde-a"
+[[hosts]]
+name = "host-a"
 env_id = "env-0001"
-ssh_alias = "cde-a.example"
+ssh_alias = "host-a.example"
 "#;
 
 const HOST: &str = "env-0001";
@@ -57,7 +57,7 @@ impl Fixture {
                     id: id.to_owned(),
                     parent: None,
                     title: "Build feature".to_owned(),
-                    cde: "cde-a".to_owned(),
+                    host: "host-a".to_owned(),
                     worktree: PathBuf::from("/work/repo.wt/feature"),
                     harness: Harness::Claude,
                     created: Timestamp::now(),

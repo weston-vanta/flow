@@ -20,7 +20,7 @@ pub struct Launch {
 pub trait HarnessAdapter {
     /// Writes whatever files the harness needs into `task_dir` and returns the command that
     /// starts a worker on the task's `brief.md`. Hooks call `flow_bin`, which must be a path
-    /// valid on every CDE.
+    /// valid on every host.
     fn prepare(
         &self,
         task: &TaskRecord,

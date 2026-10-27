@@ -43,21 +43,21 @@ pub enum Command {
     },
     /// Start a worker session for a new task
     Dispatch(DispatchCli),
-    /// List CDEs and run commands on them
-    Cde {
+    /// List hosts and run commands on them
+    Host {
         #[command(subcommand)]
-        command: CdeCommand,
+        command: HostCommand,
     },
-    /// Show worktrees, agents, and PRs per CDE
+    /// Show worktrees, agents, and PRs per host
     Inventory {
-        /// Probe every configured CDE and list open PRs before showing them
+        /// Probe every configured host and list open PRs before showing them
         #[arg(long)]
         refresh: bool,
         /// Print raw JSON instead of the compact view
         #[arg(long)]
         json: bool,
     },
-    /// List herdr agents across CDEs, with their tasks or as adopted sessions
+    /// List herdr agents across hosts, with their tasks or as adopted sessions
     Sessions {
         /// Print raw JSON instead of the compact view
         #[arg(long)]
@@ -65,15 +65,15 @@ pub enum Command {
     },
     /// Wake the supervisor when an adopted session changes state
     Follow {
-        /// CDE the session runs on
-        cde: String,
+        /// Host the session runs on
+        host: String,
         /// herdr pane the session runs in, as `flow sessions` shows it
         pane_id: String,
     },
     /// Stop waking the supervisor for an adopted session
     Unfollow {
-        /// CDE the session runs on
-        cde: String,
+        /// Host the session runs on
+        host: String,
         /// herdr pane the session runs in
         pane_id: String,
     },
@@ -105,7 +105,7 @@ pub enum Command {
         #[arg(allow_hyphen_values = true)]
         text: String,
     },
-    /// Attach to the live supervisor session, or start one on this CDE and attach
+    /// Attach to the live supervisor session, or start one on this host and attach
     Up,
     /// Attach to the supervisor session
     Attach,
@@ -129,9 +129,9 @@ impl Command {
 #[command(group(ArgGroup::new("brief_source").required(true)))]
 #[command(group(ArgGroup::new("worktree_source").required(true)))]
 pub struct DispatchCli {
-    /// CDE to run the worker on
+    /// Host to run the worker on
     #[arg(long, value_name = "NAME")]
-    cde: String,
+    host: String,
     #[arg(long)]
     title: String,
     /// File holding the ask, read on this machine
@@ -148,7 +148,7 @@ pub struct DispatchCli {
     /// What must be true for the task to be done, often a `- ` list
     #[arg(long, value_name = "TEXT", allow_hyphen_values = true)]
     criteria: String,
-    /// Existing worktree on the CDE to work in
+    /// Existing worktree on the host to work in
     #[arg(long, value_name = "PATH", group = "worktree_source")]
     worktree: Option<PathBuf>,
     /// Branch to create a worktree for with the configured worktree tool
@@ -177,7 +177,7 @@ impl TryFrom<DispatchCli> for DispatchArgs {
             _ => anyhow::bail!("pass exactly one of --worktree and --branch"),
         };
         Ok(DispatchArgs {
-            cde: cli.cde,
+            host: cli.host,
             title: cli.title,
             brief,
             criteria: cli.criteria,
@@ -245,9 +245,9 @@ pub enum TaskCommand {
         /// File holding the brief for the new task
         #[arg(long, value_name = "FILE")]
         brief: PathBuf,
-        /// CDE to run the new task on
+        /// Host to run the new task on
         #[arg(long, value_name = "NAME")]
-        cde: Option<String>,
+        host: Option<String>,
     },
     /// Answer the task's hold and lift it
     Decide {
@@ -276,14 +276,14 @@ pub enum TaskCommand {
 }
 
 #[derive(Debug, Subcommand)]
-pub enum CdeCommand {
-    /// List configured CDEs, marking the one this runs on
+pub enum HostCommand {
+    /// List configured hosts, marking the one this runs on
     List {
         /// Print raw JSON instead of the compact view
         #[arg(long)]
         json: bool,
     },
-    /// Run a command on a CDE, passing its output and exit code through
+    /// Run a command on a host, passing its output and exit code through
     Run {
         name: String,
         #[arg(last = true, required = true, value_name = "ARGV")]
@@ -337,7 +337,7 @@ impl From<Party> for HoldOn {
 
 pub fn run(cli: Cli, state: &StateDir) -> anyhow::Result<ExitCode> {
     let done = match cli.command {
-        Command::Cde { command } => return run_cde(command, state),
+        Command::Host { command } => return run_host(command, state),
         Command::Status { json } => cmd::status::run(state, json),
         Command::Task { command } => run_task(command, state),
         Command::Hook {
@@ -356,8 +356,8 @@ pub fn run(cli: Cli, state: &StateDir) -> anyhow::Result<ExitCode> {
         Command::Dispatch(args) => cmd::dispatch::run(state, &args.try_into()?),
         Command::Inventory { refresh, json } => cmd::inventory::run(state, refresh, json),
         Command::Sessions { json } => cmd::sessions::run(state, json),
-        Command::Follow { cde, pane_id } => cmd::sessions::run_follow(state, &cde, &pane_id),
-        Command::Unfollow { cde, pane_id } => cmd::sessions::run_unfollow(state, &cde, &pane_id),
+        Command::Follow { host, pane_id } => cmd::sessions::run_follow(state, &host, &pane_id),
+        Command::Unfollow { host, pane_id } => cmd::sessions::run_unfollow(state, &host, &pane_id),
         Command::Watch { heartbeat, once } => return cmd::watch::run(state, heartbeat, once),
         Command::Wake { command } => match command {
             WakeCommand::Drain => cmd::wake::run_drain(state),
@@ -371,11 +371,11 @@ pub fn run(cli: Cli, state: &StateDir) -> anyhow::Result<ExitCode> {
     done.map(|()| ExitCode::SUCCESS)
 }
 
-fn run_cde(command: CdeCommand, state: &StateDir) -> anyhow::Result<ExitCode> {
+fn run_host(command: HostCommand, state: &StateDir) -> anyhow::Result<ExitCode> {
     match command {
-        CdeCommand::List { json } => cmd::cde::run_list(state, json).map(|()| ExitCode::SUCCESS),
-        CdeCommand::Run { name, argv } => {
-            let status = cmd::cde::run_command(state, &name, &argv)?;
+        HostCommand::List { json } => cmd::host::run_list(state, json).map(|()| ExitCode::SUCCESS),
+        HostCommand::Run { name, argv } => {
+            let status = cmd::host::run_command(state, &name, &argv)?;
             Ok(ExitCode::from(u8::try_from(status).unwrap_or(u8::MAX)))
         }
     }
@@ -397,8 +397,8 @@ fn run_task(command: TaskCommand, state: &StateDir) -> anyhow::Result<()> {
             id,
             title,
             brief,
-            cde,
-        } => cmd::task_write::run_request_dispatch(state, &id, &title, &brief, cde.as_deref()),
+            host,
+        } => cmd::task_write::run_request_dispatch(state, &id, &title, &brief, host.as_deref()),
         TaskCommand::Decide { id, by, answer } => {
             cmd::task_write::run_decide(state, &id, by.into(), &answer)
         }

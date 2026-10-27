@@ -15,10 +15,10 @@ worktree_tool = { create = ["wt", "create", "{branch}"] }
 path = "/workspaces/acme"
 default_branch = "main"
 
-[[cdes]]
-name = "cde-a"
+[[hosts]]
+name = "host-a"
 env_id = "env-0001"
-ssh_alias = "cde-a.example"
+ssh_alias = "host-a.example"
 "#;
 
 const AGENT_LIST: &str = include_str!("fixtures/herdr/agent_list.json");
@@ -87,7 +87,7 @@ impl Fixture {
             .lines()
             .map(|line| {
                 let call: Value = serde_json::from_str(line).unwrap();
-                assert_eq!(call["cde"], "cde-a", "{call}");
+                assert_eq!(call["host"], "host-a", "{call}");
                 serde_json::from_value(call["argv"].clone()).unwrap()
             })
             .collect()
@@ -143,8 +143,8 @@ fn starts_working(before: Vec<Value>) -> Vec<Value> {
 fn dispatch_args(worktree: &[&str]) -> Vec<String> {
     let mut args: Vec<String> = [
         "dispatch",
-        "--cde",
-        "cde-a",
+        "--host",
+        "host-a",
         "--title",
         "Rebuild the search index",
         "--brief",
@@ -237,7 +237,7 @@ fn dispatch_creates_task_and_starts_agent() {
     let id = fx.only_task();
     assert_eq!(
         String::from_utf8(out.stdout).unwrap(),
-        format!("dispatched {id} on cde-a ({PANE})\n")
+        format!("dispatched {id} on host-a ({PANE})\n")
     );
     let calls = fx.calls();
     for argv in &calls {
@@ -290,7 +290,7 @@ fn dispatch_creates_task_and_starts_agent() {
     let store = fx.store();
     let (rec, status) = store.task(&id).unwrap();
     assert_eq!(rec.title, "Rebuild the search index");
-    assert_eq!(rec.cde, "cde-a");
+    assert_eq!(rec.host, "host-a");
     assert_eq!(rec.worktree, Path::new(WORKTREE));
     assert_eq!(rec.owner, "supervisor");
     assert_eq!(rec.parent, None);
@@ -299,7 +299,7 @@ fn dispatch_creates_task_and_starts_agent() {
     assert_eq!(
         status.herdr,
         Some(HerdrTarget {
-            cde: "cde-a".to_owned(),
+            host: "host-a".to_owned(),
             workspace_id: WORKSPACE.to_owned(),
             pane_id: PANE.to_owned(),
             agent: "claude".to_owned(),
@@ -339,7 +339,7 @@ fn dispatch_creates_task_and_starts_agent() {
         .clone();
     let status_out = String::from_utf8(status_out.stdout).unwrap();
     assert!(
-        status_out.starts_with(&format!("{id}  working  cde-a  {PANE}  ")),
+        status_out.starts_with(&format!("{id}  working  host-a  {PANE}  ")),
         "{status_out}"
     );
 }
@@ -520,16 +520,16 @@ fn dispatch_fails_naming_the_pane_when_the_worker_never_starts() {
 }
 
 #[test]
-fn dispatch_unknown_cde_exits_2() {
+fn dispatch_unknown_host_exits_2() {
     let fx = Fixture::new();
     let mut args = dispatch_args(&["--worktree", WORKTREE]);
-    args[2] = "cde-z".to_owned();
+    args[2] = "host-z".to_owned();
 
     fx.flow(&[])
         .args(args)
         .assert()
         .code(2)
-        .stderr(predicates::str::contains("cde-z"));
+        .stderr(predicates::str::contains("host-z"));
 
     assert!(fx.calls().is_empty());
 }

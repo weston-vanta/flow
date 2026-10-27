@@ -28,7 +28,7 @@ fn setup() -> (tempfile::TempDir, PathBuf, Store) {
                 id: TASK.to_owned(),
                 parent: None,
                 title: "Add retry to the example client".to_owned(),
-                cde: "cde-a".to_owned(),
+                host: "host-a".to_owned(),
                 worktree: PathBuf::from("/workspaces/example-repo.wt/retry"),
                 harness: Harness::Claude,
                 created: Timestamp::now(),

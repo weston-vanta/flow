@@ -107,7 +107,7 @@ fn quiet(
 /// A worktree check under way for a quiet task.
 struct RunningCheck {
     check: WorktreeCheck,
-    cde: String,
+    host: String,
     /// The task's `last_event` when the check started.
     last_event: Timestamp,
 }
@@ -331,7 +331,7 @@ impl<'a> Watcher<'a> {
                 rec.id.clone(),
                 WaitSpec {
                     target: WaitTarget::Task(rec.id.clone()),
-                    cde: target.cde.clone(),
+                    host: target.host.clone(),
                     session: herdr::SESSION.to_owned(),
                     pane_id: target.pane_id.clone(),
                 },
@@ -340,7 +340,7 @@ impl<'a> Watcher<'a> {
         for followed in follow {
             let spec = WaitSpec {
                 target: WaitTarget::Adopted,
-                cde: followed.cde.clone(),
+                host: followed.host.clone(),
                 session: followed.session.clone(),
                 pane_id: followed.pane_id.clone(),
             };
@@ -352,16 +352,16 @@ impl<'a> Watcher<'a> {
             if self.waits.contains_key(&key) {
                 continue;
             }
-            let Some(cde) = self.config.cdes.iter().find(|cde| cde.name == spec.cde) else {
+            let Some(host) = self.config.hosts.iter().find(|host| host.name == spec.host) else {
                 self.log(&format!(
-                    "{key}: no CDE named {:?} in config.toml",
-                    spec.cde
+                    "{key}: no host named {:?} in config.toml",
+                    spec.host
                 ));
                 continue;
             };
             let herdr = Herdr::with_session(self.runner.clone(), &spec.session);
             self.waits
-                .insert(key, PaneWait::new(spec, cde.clone(), herdr));
+                .insert(key, PaneWait::new(spec, host.clone(), herdr));
         }
     }
 
@@ -376,7 +376,7 @@ impl<'a> Watcher<'a> {
             let obs = match wait.poll(timeout_ms) {
                 Polled::Running => continue,
                 Polled::Reached(status) => {
-                    reported.reachable(&wait.cde.name);
+                    reported.reachable(&wait.host.name);
                     reported.agent_seen(&wait.spec.key(), status);
                     if !wait.spec.wake_statuses().contains(&status) {
                         notes.push(format!("{}: agent {}", wait.spec.key(), status.as_str()));
@@ -385,15 +385,15 @@ impl<'a> Watcher<'a> {
                     wait.spec.observe(status)
                 }
                 Polled::TimedOut => {
-                    reported.reachable(&wait.cde.name);
+                    reported.reachable(&wait.host.name);
                     continue;
                 }
                 Polled::Gone => {
-                    reported.reachable(&wait.cde.name);
+                    reported.reachable(&wait.host.name);
                     wait.spec.gone()
                 }
-                Polled::Unreachable => Observation::CdeUnreachable {
-                    cde: wait.cde.name.clone(),
+                Polled::Unreachable => Observation::HostUnreachable {
+                    host: wait.host.name.clone(),
                 },
                 Polled::Failed(problem) => {
                     notes.push(problem);
@@ -438,12 +438,12 @@ impl<'a> Watcher<'a> {
             let worktree_written = match checked {
                 Checked::Running => unreachable!("only ended checks are handled"),
                 Checked::Written(written) => {
-                    self.memory.reported.reachable(&running.cde);
+                    self.memory.reported.reachable(&running.host);
                     written
                 }
                 Checked::Unreachable => {
-                    let cde = running.cde;
-                    observed.push((Observation::CdeUnreachable { cde }, Progress::Nothing));
+                    let host = running.host;
+                    observed.push((Observation::HostUnreachable { host }, Progress::Nothing));
                     continue;
                 }
                 Checked::TimedOut => {
@@ -471,24 +471,24 @@ impl<'a> Watcher<'a> {
                 continue;
             }
             self.quiet_checked.insert(rec.id.clone(), Instant::now());
-            let cde = self.config.cdes.iter().find(|cde| cde.name == rec.cde);
-            let Some(cde) = cde.filter(|_| !rec.worktree.as_os_str().is_empty()) else {
+            let host = self.config.hosts.iter().find(|host| host.name == rec.host);
+            let Some(host) = host.filter(|_| !rec.worktree.as_os_str().is_empty()) else {
                 observed.push(quiet(&rec.id, status, since_secs, false));
                 continue;
             };
-            match WorktreeCheck::start(&*self.runner, cde, &rec.worktree, status.last_event) {
+            match WorktreeCheck::start(&*self.runner, host, &rec.worktree, status.last_event) {
                 Ok(check) => {
                     let running = RunningCheck {
                         check,
-                        cde: cde.name.clone(),
+                        host: host.name.clone(),
                         last_event: status.last_event,
                     };
                     self.worktree_checks.insert(rec.id.clone(), running);
                 }
                 Err(err) => {
-                    let cde = cde.name.clone();
+                    let host = host.name.clone();
                     self.log(&format!("checking {}: {err:#}", rec.worktree.display()));
-                    observed.push((Observation::CdeUnreachable { cde }, Progress::Nothing));
+                    observed.push((Observation::HostUnreachable { host }, Progress::Nothing));
                 }
             }
         }
@@ -579,10 +579,10 @@ worktree_tool = { create = ["wt", "create", "{branch}"] }
 path = "/work/repo"
 default_branch = "main"
 
-[[cdes]]
-name = "cde-a"
+[[hosts]]
+name = "host-a"
 env_id = "env-0001"
-ssh_alias = "cde-a.example"
+ssh_alias = "host-a.example"
 "#;
     const TASK: &str = "aaaaaaab";
     const IDLE: &str = r#"{"id":"cli:agent:wait","result":{"agent":{"agent":"claude","agent_status":"idle","pane_id":"w1:p1","workspace_id":"w1"},"type":"agent_info"}}"#;
@@ -604,14 +604,14 @@ ssh_alias = "cde-a.example"
             Fixture { _dir: dir, state }
         }
 
-        /// A working task on `cde-a`, its worker in `w1:p1` when `with_pane`.
+        /// A working task on `host-a`, its worker in `w1:p1` when `with_pane`.
         fn task(&self, with_pane: bool) {
             let store = Store::open(&self.state);
             let rec = TaskRecord {
                 id: TASK.to_owned(),
                 parent: None,
                 title: "Build feature".to_owned(),
-                cde: "cde-a".to_owned(),
+                host: "host-a".to_owned(),
                 worktree: PathBuf::from("/work/repo.wt/feature"),
                 harness: Harness::Claude,
                 created: Timestamp::now(),
@@ -622,7 +622,7 @@ ssh_alias = "cde-a.example"
                 .set_status(TASK, |status| {
                     status.state = State::Working;
                     status.herdr = with_pane.then(|| HerdrTarget {
-                        cde: "cde-a".to_owned(),
+                        host: "host-a".to_owned(),
                         workspace_id: "w1".to_owned(),
                         pane_id: "w1:p1".to_owned(),
                         agent: "claude".to_owned(),
@@ -634,7 +634,7 @@ ssh_alias = "cde-a.example"
         fn follow(&self) {
             FollowList::update(&self.state, |list| {
                 list.follow.push(Followed {
-                    cde: "cde-a".to_owned(),
+                    host: "host-a".to_owned(),
                     pane_id: "w1:p1".to_owned(),
                     session: "default".to_owned(),
                 });
@@ -724,7 +724,7 @@ ssh_alias = "cde-a.example"
         let mut first = fx.watcher(&runner, DEFAULT_QUIET_SECS);
         assert_eq!(
             two_cycles(&mut first).as_deref(),
-            Some("adopted-idle: cde-a/w1:p1")
+            Some("adopted-idle: host-a/w1:p1")
         );
         drop(first);
 

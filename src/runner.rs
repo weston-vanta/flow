@@ -1,4 +1,4 @@
-//! Runs commands on a CDE: directly when the CDE is this machine, over ssh otherwise. Every
+//! Runs commands on a host: directly when the host is this machine, over ssh otherwise. Every
 //! remote operation goes through a `Runner`.
 
 use std::ffi::{OsStr, OsString};
@@ -13,8 +13,8 @@ use std::sync::Mutex;
 use anyhow::{Context, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::cde;
-use crate::state::config::Cde;
+use crate::host;
+use crate::state::config::Host;
 
 /// Names a JSON script file; when set, `from_env` returns a `FakeRunner` reading it.
 const FAKE_RUNNER_VAR: &str = "FLOW_FAKE_RUNNER";
@@ -30,12 +30,12 @@ pub struct Output {
 }
 
 pub trait Runner: Send + Sync {
-    /// Runs `argv` on `cde` to completion, feeding it `stdin` when given.
-    fn run(&self, cde: &Cde, argv: &[String], stdin: Option<&[u8]>) -> anyhow::Result<Output>;
+    /// Runs `argv` on `host` to completion, feeding it `stdin` when given.
+    fn run(&self, host: &Host, argv: &[String], stdin: Option<&[u8]>) -> anyhow::Result<Output>;
 
-    /// Starts `argv` on `cde` with stdout piped and stdin and stderr closed, so a long-lived
+    /// Starts `argv` on `host` with stdout piped and stdin and stderr closed, so a long-lived
     /// child never blocks on a pipe nobody drains.
-    fn spawn(&self, cde: &Cde, argv: &[String]) -> anyhow::Result<Child>;
+    fn spawn(&self, host: &Host, argv: &[String]) -> anyhow::Result<Child>;
 }
 
 /// The runner for this process: a `FakeRunner` when `$FLOW_FAKE_RUNNER` names a script,
@@ -45,7 +45,7 @@ pub fn from_env() -> anyhow::Result<Box<dyn Runner>> {
         return Ok(Box::new(FakeRunner::from_file(Path::new(&script))?));
     }
     Ok(Box::new(LocalSshRunner::new(
-        cde::local_env_id(),
+        host::local_env_id(),
         default_control_dir(),
     )?))
 }
@@ -82,7 +82,7 @@ pub fn ensure_control_dir(control_dir: &Path) -> anyhow::Result<()> {
         .with_context(|| format!("creating {}", control_dir.display()))
 }
 
-/// Runs argv directly on the CDE whose env id is `local_env_id`, and over ssh on the others.
+/// Runs argv directly on the host whose env id is `local_env_id`, and over ssh on the others.
 #[derive(Debug)]
 pub struct LocalSshRunner {
     local_env_id: Option<String>,
@@ -100,11 +100,11 @@ impl LocalSshRunner {
         })
     }
 
-    fn command(&self, cde: &Cde, argv: &[String]) -> anyhow::Result<Command> {
-        let full = build_argv(cde, self.local_env_id.as_deref(), &self.control_dir, argv);
+    fn command(&self, host: &Host, argv: &[String]) -> anyhow::Result<Command> {
+        let full = build_argv(host, self.local_env_id.as_deref(), &self.control_dir, argv);
         let (program, args) = full
             .split_first()
-            .ok_or_else(|| anyhow!("empty command for CDE {}", cde.name))?;
+            .ok_or_else(|| anyhow!("empty command for host {}", host.name))?;
         let mut command = Command::new(program);
         command.args(args);
         Ok(command)
@@ -112,8 +112,8 @@ impl LocalSshRunner {
 }
 
 impl Runner for LocalSshRunner {
-    fn run(&self, cde: &Cde, argv: &[String], stdin: Option<&[u8]>) -> anyhow::Result<Output> {
-        let mut command = self.command(cde, argv)?;
+    fn run(&self, host: &Host, argv: &[String], stdin: Option<&[u8]>) -> anyhow::Result<Output> {
+        let mut command = self.command(host, argv)?;
         command
             .stdin(if stdin.is_some() {
                 Stdio::piped()
@@ -124,7 +124,7 @@ impl Runner for LocalSshRunner {
             .stderr(Stdio::piped());
         let mut child = command
             .spawn()
-            .with_context(|| format!("starting {argv:?} on {}", cde.name))?;
+            .with_context(|| format!("starting {argv:?} on {}", host.name))?;
         let output = std::thread::scope(|scope| {
             if let (Some(input), Some(mut pipe)) = (stdin, child.stdin.take()) {
                 // Written from its own thread so a child that fills stdout before reading all
@@ -136,7 +136,7 @@ impl Runner for LocalSshRunner {
             }
             child.wait_with_output()
         })
-        .with_context(|| format!("running {argv:?} on {}", cde.name))?;
+        .with_context(|| format!("running {argv:?} on {}", host.name))?;
         Ok(Output {
             status: exit_code(output.status),
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -144,26 +144,26 @@ impl Runner for LocalSshRunner {
         })
     }
 
-    fn spawn(&self, cde: &Cde, argv: &[String]) -> anyhow::Result<Child> {
-        self.command(cde, argv)?
+    fn spawn(&self, host: &Host, argv: &[String]) -> anyhow::Result<Child> {
+        self.command(host, argv)?
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .with_context(|| format!("starting {argv:?} on {}", cde.name))
+            .with_context(|| format!("starting {argv:?} on {}", host.name))
     }
 }
 
-/// The argv that runs `argv` on `cde`: `argv` itself when `cde` is local, else an ssh call
+/// The argv that runs `argv` on `host`: `argv` itself when `host` is local, else an ssh call
 /// multiplexed through a control socket in `control_dir`. The remote side runs the command
 /// under `zsh -lc` because a non-login ssh command lacks `~/.local/bin` on PATH.
 pub fn build_argv(
-    cde: &Cde,
+    host: &Host,
     local_env_id: Option<&str>,
     control_dir: &Path,
     argv: &[String],
 ) -> Vec<String> {
-    if cde::is_local(cde, local_env_id) {
+    if host::is_local(host, local_env_id) {
         return argv.to_vec();
     }
     let mut ssh = vec![
@@ -172,18 +172,18 @@ pub fn build_argv(
         "BatchMode=yes".to_owned(),
     ];
     ssh.extend(ssh_connection_options(control_dir));
-    ssh.push(cde.ssh_alias.clone());
+    ssh.push(host.ssh_alias.clone());
     ssh.push(remote_command(argv));
     ssh
 }
 
-/// The ssh options every connection to a CDE uses: a short connect timeout and multiplexing
+/// The ssh options every connection to a host uses: a short connect timeout and multiplexing
 /// through a control socket in `control_dir`.
 pub fn ssh_connection_options(control_dir: &Path) -> Vec<String> {
     let control_path = control_dir.join("ssh-%C");
     vec![
         "-o".to_owned(),
-        // A stopped CDE then fails within seconds instead of hanging on the TCP connect.
+        // A stopped host then fails within seconds instead of hanging on the TCP connect.
         "ConnectTimeout=10".to_owned(),
         "-o".to_owned(),
         "ControlMaster=auto".to_owned(),
@@ -194,7 +194,7 @@ pub fn ssh_connection_options(control_dir: &Path) -> Vec<String> {
     ]
 }
 
-/// The remote command argument that makes ssh run `argv` under `zsh -lc` on the CDE.
+/// The remote command argument that makes ssh run `argv` under `zsh -lc` on the host.
 pub fn remote_command(argv: &[String]) -> String {
     // ssh joins its remote arguments into one string for the remote login shell to parse, so
     // the command line zsh receives must be quoted a second time.
@@ -225,8 +225,8 @@ fn exit_code(status: ExitStatus) -> i32 {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Scripted {
-    /// Only calls to the CDE with this name use the entry; absent matches every CDE.
-    pub cde: Option<String>,
+    /// Only calls to the host with this name use the entry; absent matches every host.
+    pub host: Option<String>,
     pub status: i32,
     pub stdout: String,
     pub stderr: String,
@@ -237,11 +237,11 @@ pub struct Scripted {
 /// One call a `FakeRunner` received.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Call {
-    pub cde: String,
+    pub host: String,
     pub argv: Vec<String>,
 }
 
-/// Test runner: answers each call with the first unused scripted entry matching the CDE and
+/// Test runner: answers each call with the first unused scripted entry matching the host and
 /// records every call, in memory and optionally as JSON lines in a log file.
 #[derive(Debug)]
 pub struct FakeRunner {
@@ -279,9 +279,9 @@ impl FakeRunner {
     }
 
     /// Records the call and returns the scripted result for it.
-    fn answer(&self, cde: &Cde, argv: &[String]) -> anyhow::Result<Scripted> {
+    fn answer(&self, host: &Host, argv: &[String]) -> anyhow::Result<Scripted> {
         let call = Call {
-            cde: cde.name.clone(),
+            host: host.name.clone(),
             argv: argv.to_vec(),
         };
         if let Some(log) = &self.calls_log {
@@ -298,11 +298,11 @@ impl FakeRunner {
 
         let mut script = self.script.lock().expect("script lock");
         let Some((entry, used)) = script.iter_mut().find(|(entry, used)| {
-            !*used && entry.cde.as_deref().is_none_or(|name| name == cde.name)
+            !*used && entry.host.as_deref().is_none_or(|name| name == host.name)
         }) else {
             bail!(
                 "fake runner has no scripted output for {argv:?} on {}",
-                cde.name
+                host.name
             );
         };
         *used = !entry.repeat;
@@ -311,8 +311,8 @@ impl FakeRunner {
 }
 
 impl Runner for FakeRunner {
-    fn run(&self, cde: &Cde, argv: &[String], _stdin: Option<&[u8]>) -> anyhow::Result<Output> {
-        let entry = self.answer(cde, argv)?;
+    fn run(&self, host: &Host, argv: &[String], _stdin: Option<&[u8]>) -> anyhow::Result<Output> {
+        let entry = self.answer(host, argv)?;
         Ok(Output {
             status: entry.status,
             stdout: entry.stdout,
@@ -320,8 +320,8 @@ impl Runner for FakeRunner {
         })
     }
 
-    fn spawn(&self, cde: &Cde, argv: &[String]) -> anyhow::Result<Child> {
-        let entry = self.answer(cde, argv)?;
+    fn spawn(&self, host: &Host, argv: &[String]) -> anyhow::Result<Child> {
+        let entry = self.answer(host, argv)?;
         Command::new("sh")
             .args(["-c", r#"printf %s "$1"; exit "$2""#, "sh"])
             .arg(&entry.stdout)
@@ -340,8 +340,8 @@ mod tests {
 
     use super::*;
 
-    fn cde(name: &str, env_id: &str) -> Cde {
-        Cde {
+    fn host(name: &str, env_id: &str) -> Host {
+        Host {
             name: name.to_owned(),
             env_id: env_id.to_owned(),
             ssh_alias: format!("{name}.example"),
@@ -371,10 +371,10 @@ mod tests {
     }
 
     #[test]
-    fn local_cde_runs_directly() {
+    fn local_host_runs_directly() {
         let argv = words(&["echo", "hi"]);
         let built = build_argv(
-            &cde("cde-a", "env-0001"),
+            &host("host-a", "env-0001"),
             Some("env-0001"),
             Path::new("/run/user/1000/flow"),
             &argv,
@@ -383,9 +383,9 @@ mod tests {
     }
 
     #[test]
-    fn remote_cde_wraps_in_ssh_zsh_lc() {
+    fn remote_host_wraps_in_ssh_zsh_lc() {
         let built = build_argv(
-            &cde("cde-b", "env-0002"),
+            &host("host-b", "env-0002"),
             Some("env-0001"),
             Path::new("/run/user/1000/flow"),
             &words(&["echo", "a b"]),
@@ -404,7 +404,7 @@ mod tests {
                 "ControlPath=/run/user/1000/flow/ssh-%C",
                 "-o",
                 "ControlPersist=600",
-                "cde-b.example",
+                "host-b.example",
                 r#"zsh -lc ''\''echo'\'' '\''a b'\'''"#,
             ])
         );
@@ -438,9 +438,9 @@ mod tests {
     }
 
     #[test]
-    fn unknown_local_env_id_treats_every_cde_as_remote() {
+    fn unknown_local_env_id_treats_every_host_as_remote() {
         let built = build_argv(
-            &cde("cde-a", "env-0001"),
+            &host("host-a", "env-0001"),
             None,
             Path::new("/run/user/1000/flow"),
             &words(&["true"]),
@@ -465,16 +465,16 @@ mod tests {
         assert_eq!(sh_words(&outer), words(&["a b", "it's"]));
     }
 
-    fn scripted(cde: Option<&str>, stdout: &str, repeat: bool) -> Scripted {
+    fn scripted(host: Option<&str>, stdout: &str, repeat: bool) -> Scripted {
         Scripted {
-            cde: cde.map(str::to_owned),
+            host: host.map(str::to_owned),
             stdout: stdout.to_owned(),
             repeat,
             ..Scripted::default()
         }
     }
 
-    fn run_stdout(fake: &FakeRunner, target: &Cde) -> anyhow::Result<String> {
+    fn run_stdout(fake: &FakeRunner, target: &Host) -> anyhow::Result<String> {
         fake.run(target, &words(&["true"]), None)
             .map(|out| out.stdout)
     }
@@ -482,22 +482,22 @@ mod tests {
     #[test]
     fn fake_answers_with_first_unused_matching_entry() {
         let fake = FakeRunner::new(vec![
-            scripted(Some("cde-b"), "b1", false),
+            scripted(Some("host-b"), "b1", false),
             scripted(None, "any", false),
-            scripted(Some("cde-b"), "b2", false),
+            scripted(Some("host-b"), "b2", false),
         ]);
-        let (a, b) = (cde("cde-a", "env-0001"), cde("cde-b", "env-0002"));
+        let (a, b) = (host("host-a", "env-0001"), host("host-b", "env-0002"));
         assert_eq!(run_stdout(&fake, &a).unwrap(), "any");
         assert_eq!(run_stdout(&fake, &b).unwrap(), "b1");
         assert_eq!(run_stdout(&fake, &b).unwrap(), "b2");
         let err = run_stdout(&fake, &a).unwrap_err().to_string();
-        assert!(err.contains("cde-a") && err.contains("\"true\""), "{err}");
+        assert!(err.contains("host-a") && err.contains("\"true\""), "{err}");
     }
 
     #[test]
     fn fake_repeat_entry_is_never_used_up() {
-        let fake = FakeRunner::new(vec![scripted(Some("cde-b"), "down", true)]);
-        let b = cde("cde-b", "env-0002");
+        let fake = FakeRunner::new(vec![scripted(Some("host-b"), "down", true)]);
+        let b = host("host-b", "env-0002");
         for _ in 0..3 {
             assert_eq!(run_stdout(&fake, &b).unwrap(), "down");
         }
@@ -513,7 +513,7 @@ mod tests {
         }]);
         let argv = words(&["herdr", "wait"]);
         let out = fake
-            .spawn(&cde("cde-a", "env-0001"), &argv)
+            .spawn(&host("host-a", "env-0001"), &argv)
             .unwrap()
             .wait_with_output()
             .unwrap();
@@ -522,7 +522,7 @@ mod tests {
         assert_eq!(
             fake.calls(),
             [Call {
-                cde: "cde-a".to_owned(),
+                host: "host-a".to_owned(),
                 argv
             }]
         );

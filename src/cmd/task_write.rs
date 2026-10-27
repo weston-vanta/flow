@@ -105,13 +105,13 @@ pub fn run_done(state: &StateDir, id: &str, report: &Path) -> anyhow::Result<()>
 }
 
 /// Files a request for the supervisor to dispatch sibling work, copying `brief` into the state
-/// directory so it is readable from every CDE, and prints the request id.
+/// directory so it is readable from every host, and prints the request id.
 pub fn run_request_dispatch(
     state: &StateDir,
     id: &str,
     title: &str,
     brief: &Path,
-    cde: Option<&str>,
+    host: Option<&str>,
 ) -> anyhow::Result<()> {
     if !brief.is_file() {
         bail!("brief not found: {}", brief.display());
@@ -120,7 +120,7 @@ pub fn run_request_dispatch(
     let store = Store::open(state);
     let new = NewRequest {
         title,
-        cde,
+        host,
         brief: &body,
     };
     let (req_id, req) = store.add_request(id, &new)?;

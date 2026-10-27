@@ -29,7 +29,7 @@ fn record(id: &str, title: &str) -> TaskRecord {
         id: id.to_owned(),
         parent: None,
         title: title.to_owned(),
-        cde: "cde-a".to_owned(),
+        host: "host-a".to_owned(),
         worktree: PathBuf::from("/workspaces/example-repo.wt/retry"),
         harness: Harness::Claude,
         created: Timestamp::now(),
@@ -63,7 +63,10 @@ fn status_lists_open_tasks_compactly() {
     let lines: Vec<_> = out.lines().collect();
     assert_eq!(lines.len(), 2, "{out}");
     let task_line = lines[0];
-    assert!(task_line.starts_with("aaaaaaab  pending  cde-a  "), "{out}");
+    assert!(
+        task_line.starts_with("aaaaaaab  pending  host-a  "),
+        "{out}"
+    );
     assert!(
         task_line.ends_with("  Add retry to the example client"),
         "{out}"
@@ -94,7 +97,7 @@ fn status_lists_holds() {
     let lines: Vec<_> = out.lines().collect();
     assert_eq!(lines.len(), 4, "{out}");
     assert!(
-        lines[0].starts_with("aaaaaaab  needs-decision  cde-a  "),
+        lines[0].starts_with("aaaaaaab  needs-decision  host-a  "),
         "{out}"
     );
     assert_eq!(lines[1], "holds:");

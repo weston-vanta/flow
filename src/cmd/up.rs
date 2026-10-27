@@ -1,4 +1,4 @@
-//! `flow up`: attaches to the live supervisor, or starts one on this CDE and attaches to it.
+//! `flow up`: attaches to the live supervisor, or starts one on this host and attaches to it.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -6,12 +6,12 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail};
 
 use super::attach;
-use crate::cde;
 use crate::harness::handshake::{self, AgentStart};
 use crate::herdr::{self, Herdr};
+use crate::host;
 use crate::paths::StateDir;
 use crate::runner::{self, Runner};
-use crate::state::config::{Cde, Config};
+use crate::state::config::{Config, Host};
 use crate::state::task::HerdrTarget;
 use crate::supervisor::{self, Lock, SUPERVISOR_CWD, SUPERVISOR_ENV, SUPERVISOR_NAME};
 
@@ -26,21 +26,21 @@ pub fn run(state: &StateDir) -> anyhow::Result<()> {
     {
         return attach::exec(&lock, host);
     }
-    let here = local_cde(&config)?;
+    let here = local_host(&config)?;
     let lock = start(state, &herdr, here)?;
     attach::exec(&lock, here)
 }
 
-/// The CDE running the supervisor `lock` names, when its pane still holds an agent. Fails when
-/// that CDE cannot be reached, since the supervisor may well be alive there.
+/// The host running the supervisor `lock` names, when its pane still holds an agent. Fails when
+/// that host cannot be reached, since the supervisor may well be alive there.
 fn live_host<'a>(
     config: &'a Config,
     herdr: &Herdr,
     lock: &Lock,
-) -> anyhow::Result<Option<&'a Cde>> {
+) -> anyhow::Result<Option<&'a Host>> {
     let Some(host) = attach::host(config, lock) else {
         eprintln!(
-            "supervisor host {} is not a CDE in config.toml; starting a new supervisor here",
+            "supervisor host {} is not in config.toml; starting a new supervisor here",
             lock.host_env_id
         );
         return Ok(None);
@@ -63,16 +63,16 @@ fn live_host<'a>(
     Ok(live.then_some(host))
 }
 
-fn local_cde(config: &Config) -> anyhow::Result<&Cde> {
-    let local_env_id = cde::local_env_id();
+fn local_host(config: &Config) -> anyhow::Result<&Host> {
+    let local_env_id = host::local_env_id();
     config
-        .cdes
+        .hosts
         .iter()
-        .find(|c| cde::is_local(c, local_env_id.as_deref()))
+        .find(|c| host::is_local(c, local_env_id.as_deref()))
         .ok_or_else(|| {
             anyhow!(
-                "this machine is not a CDE in config.toml ($ONA_ID is {}); flow up starts the \
-                 supervisor only on a configured CDE",
+                "this machine is not a host in config.toml ($ONA_ID is {}); flow up starts the \
+                 supervisor only on a configured host",
                 local_env_id.as_deref().unwrap_or("unset")
             )
         })
@@ -82,7 +82,7 @@ fn local_cde(config: &Config) -> anyhow::Result<&Cde> {
 /// that does not come up is dropped from the lock and the start retried once without it, since
 /// a session `claude --resume` cannot find would otherwise fail every later `flow up` the same
 /// way.
-fn start(state: &StateDir, herdr: &Herdr, here: &Cde) -> anyhow::Result<Lock> {
+fn start(state: &StateDir, herdr: &Herdr, here: &Host) -> anyhow::Result<Lock> {
     herdr.ensure_server(here)?;
     let (lock, started) = launch(state, herdr, here)?;
     let err = match started {
@@ -111,7 +111,7 @@ fn start(state: &StateDir, herdr: &Herdr, here: &Cde) -> anyhow::Result<Lock> {
 fn launch(
     state: &StateDir,
     herdr: &Herdr,
-    here: &Cde,
+    here: &Host,
 ) -> anyhow::Result<(Lock, anyhow::Result<AgentStart>)> {
     let (workspace_id, pane_id) =
         herdr.create_workspace(here, Path::new(SUPERVISOR_CWD), SUPERVISOR_NAME)?;
@@ -121,7 +121,7 @@ fn launch(
         state,
         &here.env_id,
         HerdrTarget {
-            cde: here.name.clone(),
+            host: here.name.clone(),
             workspace_id: workspace_id.clone(),
             pane_id: pane_id.clone(),
             agent: AGENT_KIND.to_owned(),

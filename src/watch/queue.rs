@@ -180,8 +180,8 @@ mod tests {
     #[test]
     fn pending_excludes_acked() {
         let (_dir, state) = state();
-        let obs = Observation::CdeUnreachable {
-            cde: "cde-b".to_owned(),
+        let obs = Observation::HostUnreachable {
+            host: "host-b".to_owned(),
         };
         for reason in ["first", "second", "third"] {
             push(&state, reason, &obs).unwrap();

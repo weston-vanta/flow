@@ -35,7 +35,7 @@ fn render_text(task: &TaskRecord, status: &Status, brief: &str, now: Timestamp) 
         ("id", task.id.clone()),
         ("title", task.title.clone()),
         ("state", status.state.to_string()),
-        ("cde", task.cde.clone()),
+        ("host", task.host.clone()),
         ("worktree", task.worktree.display().to_string()),
         ("harness", task.harness.to_string()),
         ("created", render::relative(task.created, now)),
@@ -51,7 +51,7 @@ fn render_text(task: &TaskRecord, status: &Status, brief: &str, now: Timestamp) 
     if let Some(herdr) = &status.herdr {
         let target = format!(
             "{} {}/{} ({})",
-            herdr.cde, herdr.workspace_id, herdr.pane_id, herdr.agent
+            herdr.host, herdr.workspace_id, herdr.pane_id, herdr.agent
         );
         fields.push(("herdr", target));
     }

@@ -4,7 +4,7 @@ use crate::paths::StateDir;
 use crate::state::Store;
 use crate::state::requests::Request;
 
-const NO_CDE: &str = "-";
+const NO_HOST: &str = "-";
 
 #[derive(Debug, Serialize)]
 struct RequestView<'a> {
@@ -13,7 +13,7 @@ struct RequestView<'a> {
     request: &'a Request,
 }
 
-/// Pending dispatch requests across all tasks: `req-id  from-task  cde  title`.
+/// Pending dispatch requests across all tasks: `req-id  from-task  host  title`.
 pub fn run_list(state: &StateDir, json: bool) -> anyhow::Result<()> {
     let requests = Store::open(state).pending_requests()?;
     if json {
@@ -41,7 +41,7 @@ fn render_text(requests: &[(String, Request)]) -> String {
             vec![
                 id.clone(),
                 req.requested_by.clone(),
-                req.cde.clone().unwrap_or_else(|| NO_CDE.to_owned()),
+                req.host.clone().unwrap_or_else(|| NO_HOST.to_owned()),
                 req.title.clone(),
             ]
         })

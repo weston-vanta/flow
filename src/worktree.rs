@@ -1,21 +1,21 @@
-//! Creating worktrees on a CDE with the operator's worktree tool.
+//! Creating worktrees on a host with the operator's worktree tool.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail};
 
 use crate::runner::Runner;
-use crate::state::config::{Cde, WorktreeTool};
+use crate::state::config::{Host, WorktreeTool};
 
 const BRANCH_PLACEHOLDER: &str = "{branch}";
 /// `sh -c` script: `$1` is the directory, the remaining arguments the command to run there.
 const IN_DIR_SCRIPT: &str = r#"cd "$1" && shift && exec "$@""#;
 
-/// Runs `tool`'s create template for `branch` inside `monorepo` on `cde` and returns the
+/// Runs `tool`'s create template for `branch` inside `monorepo` on `host` and returns the
 /// worktree path, which the tool prints as its last non-empty stdout line.
 pub fn create(
     runner: &dyn Runner,
-    cde: &Cde,
+    host: &Host,
     monorepo: &Path,
     tool: &WorktreeTool,
     branch: &str,
@@ -28,12 +28,12 @@ pub fn create(
     if argv.is_empty() {
         bail!("worktree_tool.create in config.toml is empty");
     }
-    let output = runner.run(cde, &wrapped_argv(monorepo, &argv), None)?;
+    let output = runner.run(host, &wrapped_argv(monorepo, &argv), None)?;
     let command = format!("{} (in {})", argv.join(" "), monorepo.display());
     if output.status != 0 {
         bail!(
             "`{command}` on {} exited {}: {}",
-            cde.name,
+            host.name,
             output.status,
             output.stderr.trim()
         );
@@ -44,11 +44,11 @@ pub fn create(
         .map(str::trim)
         .rfind(|line| !line.is_empty())
         .map(PathBuf::from)
-        .ok_or_else(|| anyhow!("`{command}` on {} printed no worktree path", cde.name))?;
+        .ok_or_else(|| anyhow!("`{command}` on {} printed no worktree path", host.name))?;
     if !path.is_absolute() {
         bail!(
             "`{command}` on {} printed {}, not an absolute worktree path",
-            cde.name,
+            host.name,
             path.display()
         );
     }
@@ -77,11 +77,11 @@ mod tests {
     use super::*;
     use crate::runner::{FakeRunner, LocalSshRunner, Scripted};
 
-    fn cde() -> Cde {
-        Cde {
-            name: "cde-a".to_owned(),
+    fn host() -> Host {
+        Host {
+            name: "host-a".to_owned(),
             env_id: "env-0001".to_owned(),
-            ssh_alias: "cde-a.example".to_owned(),
+            ssh_alias: "host-a.example".to_owned(),
             local_marker_env: None,
         }
     }
@@ -130,7 +130,7 @@ mod tests {
 
         let output = runner
             .run(
-                &cde(),
+                &host(),
                 &wrapped_argv(&repo, &words(&["sh", "-c", "pwd"])),
                 None,
             )
@@ -150,7 +150,7 @@ mod tests {
             ..Scripted::default()
         }]);
 
-        let path = create(&fake, &cde(), Path::new(MONOREPO), &tool(), "feature-x").unwrap();
+        let path = create(&fake, &host(), Path::new(MONOREPO), &tool(), "feature-x").unwrap();
 
         assert_eq!(path, Path::new("/workspaces/acme-worktrees/feature-x"));
         assert_eq!(
@@ -181,7 +181,7 @@ mod tests {
             .map(|_| {
                 format!(
                     "{:#}",
-                    create(&fake, &cde(), Path::new(MONOREPO), &tool(), "feature-x").unwrap_err()
+                    create(&fake, &host(), Path::new(MONOREPO), &tool(), "feature-x").unwrap_err()
                 )
             })
             .collect();

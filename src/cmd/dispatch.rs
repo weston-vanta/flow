@@ -1,4 +1,4 @@
-//! `flow dispatch`: creates a task and starts its worker in a herdr pane on the chosen CDE.
+//! `flow dispatch`: creates a task and starts its worker in a herdr pane on the chosen host.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -9,13 +9,13 @@ use serde::Serialize;
 use serde_json::json;
 
 use super::Refused;
-use crate::cde;
 use crate::harness::handshake::{self, AgentStart};
 use crate::harness::{ClaudeAdapter, HarnessAdapter, brief};
 use crate::herdr::{Agent, Herdr};
+use crate::host;
 use crate::paths::StateDir;
 use crate::runner::{self, Runner};
-use crate::state::config::{Cde, Config};
+use crate::state::config::{Config, Host};
 use crate::state::events::Event;
 use crate::state::task::{Harness, HerdrTarget, Hold, HoldOn, State, TaskRecord};
 use crate::state::{Store, ids};
@@ -30,14 +30,14 @@ pub enum BriefSource {
 }
 
 pub enum WorktreeSource {
-    /// An existing worktree on the CDE.
+    /// An existing worktree on the host.
     Path(PathBuf),
     /// A branch to create a worktree for with the configured worktree tool.
     Branch(String),
 }
 
 pub struct DispatchArgs {
-    pub cde: String,
+    pub host: String,
     pub title: String,
     pub brief: BriefSource,
     pub criteria: String,
@@ -46,11 +46,11 @@ pub struct DispatchArgs {
     pub allow_shared_worktree: bool,
 }
 
-/// Creates the task, starts its worker, and prints `dispatched <id> on <cde> (<pane_id>)`.
+/// Creates the task, starts its worker, and prints `dispatched <id> on <host> (<pane_id>)`.
 /// A failure once the task exists leaves it `blocked` with a supervisor hold naming the failure.
 pub fn run(state: &StateDir, args: &DispatchArgs) -> anyhow::Result<()> {
     let config = Config::load(state)?;
-    let cde = cde::find(&config, &args.cde).map_err(|err| Refused(format!("{err:#}")))?;
+    let host = host::find(&config, &args.host).map_err(|err| Refused(format!("{err:#}")))?;
     let store = Store::open(state);
     if let Some(parent) = &args.parent {
         store
@@ -62,7 +62,7 @@ pub fn run(state: &StateDir, args: &DispatchArgs) -> anyhow::Result<()> {
     {
         return Err(Refused(format!(
             "--worktree must be an absolute path on {}: {}",
-            cde.name,
+            host.name,
             path.display()
         ))
         .into());
@@ -80,23 +80,23 @@ pub fn run(state: &StateDir, args: &DispatchArgs) -> anyhow::Result<()> {
         WorktreeSource::Path(path) => path.clone(),
         WorktreeSource::Branch(branch) => worktree::create(
             runner.as_ref(),
-            cde,
+            host,
             &config.monorepo.path,
             &config.worktree_tool,
             branch,
         )?,
     };
     let herdr = Herdr::new(runner);
-    herdr.ensure_server(cde)?;
+    herdr.ensure_server(host)?;
     if !args.allow_shared_worktree {
-        refuse_shared_worktree(&herdr.agents(cde)?, cde, &worktree)?;
+        refuse_shared_worktree(&herdr.agents(host)?, host, &worktree)?;
     }
 
     let rec = TaskRecord {
         id: ids::new_task_id(Timestamp::now(), &mut rand::rng()),
         parent: args.parent.clone(),
         title: args.title.clone(),
-        cde: cde.name.clone(),
+        host: host.name.clone(),
         worktree,
         harness: Harness::Claude,
         created: Timestamp::now(),
@@ -106,7 +106,7 @@ pub fn run(state: &StateDir, args: &DispatchArgs) -> anyhow::Result<()> {
         rec.clone(),
         &brief::render(&rec, &body, &args.criteria, &flow_bin),
     )?;
-    match start_worker(&store, &herdr, cde, &rec, &flow_bin) {
+    match start_worker(&store, &herdr, host, &rec, &flow_bin) {
         Ok((pane_id, start)) => {
             if let AgentStart::BlockedAtStart { .. } = start {
                 eprintln!(
@@ -117,7 +117,7 @@ pub fn run(state: &StateDir, args: &DispatchArgs) -> anyhow::Result<()> {
             }
             super::print(&format!(
                 "dispatched {} on {} ({pane_id})\n",
-                rec.id, cde.name
+                rec.id, host.name
             ))
         }
         Err(err) => {
@@ -129,8 +129,8 @@ pub fn run(state: &StateDir, args: &DispatchArgs) -> anyhow::Result<()> {
     }
 }
 
-/// Fails with `Refused` when an agent on `cde` already works in `worktree`.
-fn refuse_shared_worktree(agents: &[Agent], cde: &Cde, worktree: &Path) -> anyhow::Result<()> {
+/// Fails with `Refused` when an agent on `host` already works in `worktree`.
+fn refuse_shared_worktree(agents: &[Agent], host: &Host, worktree: &Path) -> anyhow::Result<()> {
     let Some(agent) = agents.iter().find(|agent| agent.cwd == worktree) else {
         return Ok(());
     };
@@ -143,7 +143,7 @@ fn refuse_shared_worktree(agents: &[Agent], cde: &Cde, worktree: &Path) -> anyho
         "agent {name}(pane {}) on {} already works in {}; pass --allow-shared-worktree to \
          dispatch there anyway",
         agent.pane_id,
-        cde.name,
+        host.name,
         worktree.display()
     ))
     .into())
@@ -154,7 +154,7 @@ fn refuse_shared_worktree(agents: &[Agent], cde: &Cde, worktree: &Path) -> anyho
 fn start_worker(
     store: &Store,
     herdr: &Herdr,
-    cde: &Cde,
+    host: &Host,
     rec: &TaskRecord,
     flow_bin: &Path,
 ) -> anyhow::Result<(String, AgentStart)> {
@@ -172,11 +172,11 @@ fn start_worker(
     }
     argv.extend(launch.argv);
 
-    let (workspace_id, pane_id) = herdr.create_workspace(cde, &rec.worktree, &rec.id)?;
+    let (workspace_id, pane_id) = herdr.create_workspace(host, &rec.worktree, &rec.id)?;
     store.set_status(&rec.id, |status| {
         status.state = State::Working;
         status.herdr = Some(HerdrTarget {
-            cde: cde.name.clone(),
+            host: host.name.clone(),
             workspace_id: workspace_id.clone(),
             pane_id: pane_id.clone(),
             agent: adapter.kind().to_owned(),
@@ -188,8 +188,8 @@ fn start_worker(
         "worker.started",
         json!({"pane_id": pane_id, "workspace_id": workspace_id, "argv": argv}),
     )?;
-    herdr.pane_run(cde, &pane_id, &argv)?;
-    let start = handshake::await_start(herdr, cde, &workspace_id, &pane_id)?;
+    herdr.pane_run(host, &pane_id, &argv)?;
+    let start = handshake::await_start(herdr, host, &workspace_id, &pane_id)?;
     if let AgentStart::BlockedAtStart { pane_text } = &start {
         append_event(
             store,
