@@ -39,5 +39,5 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     // The binary always runs from this repo's own build, so the build-time manifest dir is the repo root.
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let state = StateDir::resolve(repo_root)?;
-    cli::run(cli, &state)
+    cli::run(cli, &state, repo_root)
 }

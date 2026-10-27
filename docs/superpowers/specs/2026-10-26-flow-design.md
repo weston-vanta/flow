@@ -323,6 +323,54 @@ the user runs `flow up` on any CDE; it finds no live supervisor, starts one that
 the recorded session, reads `state/`, re-arms the watcher, and reports what changed while
 it was away.
 
+## CLI
+
+Commands exit 3 when the state directory is missing and 2 when they refuse a request as
+given. Commands that take `--json` print raw JSON instead of the compact view.
+`flow <command> --help` has the details.
+
+Operator:
+
+- `flow init [--force]`: write `state/config.toml` from what this machine can tell, then refresh the inventory; `--force` replaces an existing file.
+- `flow up`: attach to the live supervisor session, or start one on this host and attach.
+- `flow attach`: attach to the supervisor session.
+- `flow status [--json]`: open tasks, their holds, and adopted sessions.
+- `flow inventory [--refresh] [--json]`: worktrees, agents, and PRs per host; `--refresh` first discovers hosts from Ona (or the static list), probes each running one, and lists open PRs.
+- `flow host list [--json]`: known hosts from the cache, gone ones last, marking the one this runs on.
+- `flow host run <name> -- <argv>...`: run a command on a host, passing its output and exit code through.
+- `flow sessions [--json]`: herdr agents across hosts, with their tasks or as adopted sessions.
+- `flow follow <host> <pane-id>`: wake the supervisor when an adopted session changes state.
+- `flow unfollow <host> <pane-id>`: stop waking the supervisor for an adopted session.
+- `flow wake drain`: print the queued wakes not yet acknowledged.
+- `flow wake ack --through <N>`: acknowledge every queued wake up to and including N.
+
+Supervisor:
+
+- `flow dispatch --title <title> --criteria <text> (--brief <text> | --brief-file <file>) [--host <name>] [--dir <path> | --branch <name> [--repo <name>]] [--parent <id>] [--allow-shared-dir]`: start a worker session for a new task.
+- `flow steer <id> <text>`: send a message to a task's worker and log it.
+- `flow task show <id> [--json]`: a task's fields and the head of its brief.
+- `flow task brief <id>`: a task's brief in full.
+- `flow task events <id> [--last <N>] [--json]`: a task's event log.
+- `flow task list [--all] [--json]`: open tasks; `--all` includes done and orphaned ones.
+- `flow task decide <id> --by user|supervisor --answer <text>`: answer the task's hold and lift it.
+- `flow task hold <id> --on user|supervisor --what <text>`: hold the task until someone answers.
+- `flow task orphan <id> --reason <text>`: mark the task orphaned: its work will not finish.
+- `flow requests [--json]`: dispatch requests not yet consumed.
+- `flow requests consume <req-id>`: mark a request dispatched so it stops listing.
+
+Worker:
+
+- `flow task status <id> working|blocked|needs-decision [--message <text>]`: report the task's state; `--message` is required for `blocked` and `needs-decision`.
+- `flow task done <id> --report <file>`: finish the task with a report.
+- `flow task request-dispatch <id> --title <title> --brief <file> [--host <name>]`: ask the supervisor to dispatch sibling work.
+
+Hooks, run by Claude Code rather than by hand:
+
+- `flow guard`: Stop hook that blocks ending a turn while work is unwatched.
+- `flow watch [--heartbeat <secs>] [--once]`: watch tasks and exit 2 with a reason when the supervisor should wake.
+- `flow hook claude --task <id>`: record a worker's Claude Code hook event read as JSON from stdin.
+- `flow hook supervisor`: record the supervisor's Claude Code session from its SessionStart hook on stdin.
+
 ## Left to the builder
 
 - Exact JSON schemas and the event vocabulary.

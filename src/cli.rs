@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
@@ -23,6 +23,12 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Write state/config.toml from what this machine can tell, then refresh the inventory
+    Init {
+        /// Replace an existing state/config.toml
+        #[arg(long)]
+        force: bool,
+    },
     /// Show open tasks, their holds, and adopted sessions
     Status {
         /// Print raw JSON instead of the compact view
@@ -345,8 +351,10 @@ impl From<Party> for HoldOn {
     }
 }
 
-pub fn run(cli: Cli, state: &StateDir) -> anyhow::Result<ExitCode> {
+/// Runs `cli`; `repo_root` is this flow checkout.
+pub fn run(cli: Cli, state: &StateDir, repo_root: &Path) -> anyhow::Result<ExitCode> {
     let done = match cli.command {
+        Command::Init { force } => cmd::init::run(state, repo_root, force),
         Command::Host { command } => return run_host(command, state),
         Command::Status { json } => cmd::status::run(state, json),
         Command::Task { command } => run_task(command, state),
