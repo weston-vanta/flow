@@ -8,7 +8,8 @@ plain outcomes. Everything durable lives in `state/`, reached through the `flow`
 mechanics of any command, run `flow --help` or `flow <command> --help`.
 
 These are the supervisor's instructions. A session started in this repo to work on flow
-itself (not by `flow up`, so `$FLOW_SUPERVISOR` is unset) follows the user's request instead.
+itself (not by `flow up`, so `$FLOW_SUPERVISOR` is unset) follows the user's request instead;
+the flow hooks in `.claude/settings.json` do nothing there.
 
 ## Hard rules
 

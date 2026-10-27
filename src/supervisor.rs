@@ -18,6 +18,12 @@ use crate::state::task::HerdrTarget;
 /// Set in the supervisor's environment, so its hooks can tell it from other sessions started in
 /// the same repo.
 pub const SUPERVISOR_ENV: &str = "FLOW_SUPERVISOR";
+/// Whether this process runs under the supervisor session `flow up` started, as opposed to
+/// another Claude Code session in the same repo, whose hooks must leave supervision alone.
+pub fn is_supervisor_session() -> bool {
+    std::env::var_os(SUPERVISOR_ENV).is_some()
+}
+
 /// The supervisor always runs from the clone's fixed path, because the harness keys
 /// transcripts by cwd and `--resume` must find the same conversation on every CDE.
 pub const SUPERVISOR_CWD: &str = "/workspaces/flow";

@@ -1,6 +1,7 @@
 //! `flow guard`: the supervisor's blocking Stop hook, the turn-end backstop. Exits 2 with a
 //! reason on stdout and stderr, which Claude Code delivers to the supervisor, while wakes are
-//! unhandled, or while tasks are open and no `flow watch` holds the lock. Exits 0 otherwise.
+//! unhandled, or while tasks are open and no `flow watch` holds the lock. Exits 0 otherwise,
+//! and at once in a session that is not the supervisor.
 
 use std::io::{IsTerminal, Read};
 use std::process::ExitCode;
@@ -12,6 +13,7 @@ use serde::Deserialize;
 
 use crate::paths::StateDir;
 use crate::state::Store;
+use crate::supervisor;
 use crate::watch::{lock, queue};
 
 /// Overrides how long to wait for a watcher to take the lock, in milliseconds.
@@ -29,6 +31,9 @@ struct StopInput {
 }
 
 pub fn run(state: &StateDir) -> anyhow::Result<ExitCode> {
+    if !supervisor::is_supervisor_session() {
+        return Ok(ExitCode::SUCCESS);
+    }
     let input = read_input();
     let wakes = queue::pending(state)?.len();
     if wakes > 0 {

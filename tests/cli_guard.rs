@@ -6,6 +6,7 @@ use assert_cmd::Command;
 use flow::paths::StateDir;
 use flow::state::Store;
 use flow::state::task::{Harness, State, TaskRecord};
+use flow::supervisor::SUPERVISOR_ENV;
 use flow::watch::classify::Observation;
 use flow::watch::lock::Owner;
 use flow::watch::queue;
@@ -68,17 +69,24 @@ impl Fixture {
         store.set_status(id, |status| status.state = state).unwrap();
     }
 
+    /// `flow guard` as the supervisor's Stop hook runs it.
     fn guard(&self, input: &str) -> assert_cmd::assert::Assert {
-        Command::cargo_bin("flow")
-            .expect("flow binary is built")
-            .arg("guard")
+        let mut cmd = self.guard_command();
+        cmd.env(SUPERVISOR_ENV, "1");
+        cmd.write_stdin(input).assert()
+    }
+
+    /// `flow guard` with no supervisor marker in its environment.
+    fn guard_command(&self) -> Command {
+        let mut cmd = Command::cargo_bin("flow").expect("flow binary is built");
+        cmd.arg("guard")
             .env("FLOW_STATE", &self.state)
             .env("ONA_ID", HOST)
             .env("FLOW_GUARD_GRACE_MS", GRACE_MS)
             .env("HOME", self.dir.path())
-            .write_stdin(input)
-            .timeout(GUARD_BUDGET)
-            .assert()
+            .env_remove(SUPERVISOR_ENV)
+            .timeout(GUARD_BUDGET);
+        cmd
     }
 }
 
@@ -144,6 +152,22 @@ fn guard_respects_stop_hook_active() {
     fixture.task("aaaaaaab", State::Working);
     fixture
         .guard(r#"{"hook_event_name":"Stop","stop_hook_active":true}"#)
+        .code(0)
+        .stdout("")
+        .stderr("");
+}
+
+#[test]
+fn guard_ignores_non_supervisor_sessions() {
+    let fixture = Fixture::new();
+    fixture.task("aaaaaaab", State::Working);
+    fixture.task("aaaaaaac", State::Blocked);
+    fixture.guard(STOP_INPUT).code(2).stdout(NO_WATCHER);
+
+    fixture
+        .guard_command()
+        .write_stdin(STOP_INPUT)
+        .assert()
         .code(0)
         .stdout("")
         .stderr("");

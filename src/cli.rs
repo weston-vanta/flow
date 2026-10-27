@@ -8,7 +8,7 @@ use flow::cmd::dispatch::{BriefSource, DispatchArgs, WorktreeSource};
 use flow::cmd::task_write::ReportedState;
 use flow::paths::StateDir;
 use flow::state::task::HoldOn;
-use flow::supervisor::SUPERVISOR_ENV;
+use flow::supervisor;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -334,7 +334,7 @@ pub fn run(cli: Cli, state: &StateDir) -> anyhow::Result<ExitCode> {
             command: HookCommand::Supervisor,
         } => cmd::hook::run_supervisor(
             state,
-            std::env::var_os(SUPERVISOR_ENV).is_some(),
+            supervisor::is_supervisor_session(),
             std::io::stdin().lock(),
         ),
         Command::Requests { command, json } => match command {

@@ -8,6 +8,7 @@ use assert_cmd::Command;
 use flow::paths::StateDir;
 use flow::state::Store;
 use flow::state::task::{Harness, HerdrTarget, State, TaskRecord};
+use flow::supervisor::SUPERVISOR_ENV;
 use flow::watch::classify::Observation;
 use flow::watch::queue;
 use jiff::Timestamp;
@@ -103,6 +104,7 @@ impl Fixture {
             ("FLOW_FAKE_RUNNER", self.script_path()),
             ("FLOW_WATCH_POLL_MS", PathBuf::from(POLL_MS)),
             ("HOME", self.dir.path().to_owned()),
+            (SUPERVISOR_ENV, PathBuf::from("1")),
         ]
     }
 
@@ -296,4 +298,28 @@ fn unreachable_cde_reported_once() {
             .any(|line| line.contains("absorb") && line.contains(r#""cde":"cde-b""#)),
         "{log}"
     );
+}
+
+#[test]
+fn watch_ignores_non_supervisor_sessions() {
+    let fx = Fixture::new();
+    fx.task(TASK, "cde-b", Some("w1:p1"));
+    fx.script(&[json!({
+        "cde": "cde-b",
+        "status": 255,
+        "stderr": "ssh: connect to host cde-b.example port 22: Connection refused",
+        "repeat": true,
+    })]);
+
+    fx.flow()
+        .env_remove(SUPERVISOR_ENV)
+        .args(["watch", "--once"])
+        .assert()
+        .code(0)
+        .stdout("")
+        .stderr("");
+
+    assert!(fx.queue_lines().is_empty());
+    assert!(!fx.supervisor("watch.lock").exists());
+    assert!(!fx.supervisor("watch.log").exists());
 }
