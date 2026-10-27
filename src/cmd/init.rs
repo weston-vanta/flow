@@ -25,8 +25,9 @@ const WORKTREE_TOOL: &str = "wt";
 const FALLBACK_BRANCH: &str = "main";
 
 const HEADER: &str = "# flow operator config, written by `flow init`.\n";
-const TOOL_LINE: &str =
-    r#"worktree_tool = { create = ["wt", "create", "{branch}"], list = ["wt", "--json", "list"] }"#;
+const TOOL_COMMENT: &str = "# worktree_tool.create prints the new worktree's path: a JSON object with a \"path\" \
+     field, or a last line starting with the path, which then cannot contain spaces.\n";
+const TOOL_LINE: &str = r#"worktree_tool = { create = ["wt", "--json", "create", "{branch}"], list = ["wt", "--json", "list"] }"#;
 const NO_TOOL_COMMENT: &str = "# no worktree tool found; flow will use git worktree\n";
 const REPO_EXAMPLE: &str = r#"# No repository found. Describe each one tasks can get worktrees of:
 # [[repos]]
@@ -213,12 +214,14 @@ fn render(repo: Option<&DetectedRepo>) -> String {
                 out.push_str(&format!("{key} = {}\n", toml_string(value)));
             }
             if repo.worktree_tool {
+                out.push_str(TOOL_COMMENT);
                 out.push_str(TOOL_LINE);
                 out.push('\n');
             }
         }
         None => {
             out.push_str(REPO_EXAMPLE);
+            out.push_str(TOOL_COMMENT);
             out.push_str("# ");
             out.push_str(TOOL_LINE);
             out.push('\n');

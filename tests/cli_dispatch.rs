@@ -376,9 +376,9 @@ fn dispatch_creates_task_and_starts_agent() {
 fn dispatch_with_branch_runs_worktree_tool() {
     let fx = Fixture::new();
     let created = "/workspaces/acme-worktrees/feature-x";
-    let tool_output = format!("Preparing worktree (new branch 'feature-x')\n{created}\n\n");
+    let tool_output = format!("{created}  (new branch feature-x, 1.5s)\n");
 
-    fx.flow(&starts_working(vec![ok(&tool_output)]))
+    fx.flow(&starts_working(vec![ok(&tool_output), ok("")]))
         .args(dispatch_args(&["--branch", "feature-x"]))
         .assert()
         .success();
@@ -397,6 +397,7 @@ fn dispatch_with_branch_runs_worktree_tool() {
             "feature-x"
         ]
     );
+    assert_eq!(calls[1], ["test", "-d", created]);
     let (rec, _) = fx.store().task(&fx.only_task()).unwrap();
     assert_eq!(rec.cwd, Path::new(created));
     let create = herdr_calls(&calls, &["workspace", "create"]);

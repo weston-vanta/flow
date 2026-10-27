@@ -72,7 +72,9 @@ pub struct Repo {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct WorktreeTool {
-    /// Argv template; `{branch}` is replaced with the branch name.
+    /// Argv template; `{branch}` is replaced with the branch name. It prints the new
+    /// worktree's path: a JSON object with a `path` field, or a last line whose first word is
+    /// the path.
     pub create: Vec<String>,
     /// Argv that prints the tool's worktrees as JSON: `{"worktrees": [{"path", "busy",
     /// "dirty_files"}, ...]}`.

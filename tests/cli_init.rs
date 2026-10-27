@@ -23,6 +23,8 @@ const CHECKLIST: [&str; 5] = [
     "  - `gh auth login` on hosts where PR listing matters (optional)",
 ];
 
+const TOOL_COMMENT: &str = "# worktree_tool.create prints the new worktree's path: a JSON object with a \"path\" \
+     field, or a last line starting with the path, which then cannot contain spaces.\n";
 const HOSTS_BLOCK: &str = r#"
 [hosts]
 source = "ona"
@@ -191,7 +193,8 @@ fn init_writes_config_from_the_local_machine() {
              name = \"example-repo\"\n\
              path = \"{repo_path}\"\n\
              default_branch = \"trunk\"\n\
-             worktree_tool = {{ create = [\"wt\", \"create\", \"{{branch}}\"], list = [\"wt\", \"--json\", \"list\"] }}\n\
+             {TOOL_COMMENT}\
+             worktree_tool = {{ create = [\"wt\", \"--json\", \"create\", \"{{branch}}\"], list = [\"wt\", \"--json\", \"list\"] }}\n\
              {HOSTS_BLOCK}"
         )
     );
@@ -265,7 +268,8 @@ fn init_force_overwrites() {
              # name = \"example-repo\"\n\
              # path = \"/workspaces/example-repo\"\n\
              # default_branch = \"main\"\n\
-             # worktree_tool = {{ create = [\"wt\", \"create\", \"{{branch}}\"], list = [\"wt\", \"--json\", \"list\"] }}\n\
+             {TOOL_COMMENT}\
+             # worktree_tool = {{ create = [\"wt\", \"--json\", \"create\", \"{{branch}}\"], list = [\"wt\", \"--json\", \"list\"] }}\n\
              {HOSTS_BLOCK}"
         )
     );

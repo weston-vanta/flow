@@ -81,7 +81,7 @@ fn sibling_worktrees_dir(repo_path: &Path) -> Option<PathBuf> {
 }
 
 /// Runs `tool`'s create template for `branch` inside `repo_path` on `host` and returns the
-/// worktree path, which the tool prints as its last non-empty stdout line.
+/// worktree path the tool prints, once it is a directory on `host`.
 fn create_with_tool(
     runner: &dyn Runner,
     host: &Host,
@@ -107,21 +107,46 @@ fn create_with_tool(
             output.stderr.trim()
         );
     }
-    let path = output
-        .stdout
-        .lines()
-        .map(str::trim)
-        .rfind(|line| !line.is_empty())
-        .map(PathBuf::from)
+    let (printed, path) = printed_path(&output.stdout)
         .ok_or_else(|| anyhow!("`{command}` on {} printed no worktree path", host.name))?;
     if !path.is_absolute() {
         bail!(
-            "`{command}` on {} printed {}, not an absolute worktree path",
+            "`{command}` on {} printed {printed:?}, not an absolute worktree path",
+            host.name
+        );
+    }
+    let test = vec![
+        "test".to_owned(),
+        "-d".to_owned(),
+        path.display().to_string(),
+    ];
+    if runner.run(host, &test, None)?.status != 0 {
+        bail!(
+            "`{command}` on {} printed {printed:?}, but {} is not a directory on {}",
             host.name,
-            path.display()
+            path.display(),
+            host.name
         );
     }
     Ok(path)
+}
+
+/// The worktree path in a create command's `stdout`, with the text it came from: the `path`
+/// field when `stdout` is a JSON object, else the first word of the last non-empty line, since
+/// tools follow the path with notes such as `(new branch x, 1.2s)`.
+fn printed_path(stdout: &str) -> Option<(String, PathBuf)> {
+    let text = stdout.trim();
+    if text.starts_with('{') {
+        let path = serde_json::from_str::<serde_json::Value>(text)
+            .ok()?
+            .get("path")?
+            .as_str()?
+            .to_owned();
+        return Some((text.to_owned(), PathBuf::from(path)));
+    }
+    let line = text.lines().map(str::trim).rfind(|line| !line.is_empty())?;
+    let word = line.split_whitespace().next()?;
+    Some((line.to_owned(), PathBuf::from(word)))
 }
 
 /// `tool` run with `dir` as its working directory. Worktree tools and `gh` act on the repository
@@ -222,20 +247,84 @@ mod tests {
         );
     }
 
+    fn printed(stdout: &str) -> Scripted {
+        Scripted {
+            stdout: stdout.to_owned(),
+            ..Scripted::default()
+        }
+    }
+
     #[test]
     fn create_fills_branch_and_takes_last_printed_line() {
-        let fake = FakeRunner::new(vec![Scripted {
-            stdout: "Preparing worktree\n/workspaces/acme-worktrees/feature-x\n\n".to_owned(),
-            ..Scripted::default()
-        }]);
+        let fake = FakeRunner::new(vec![
+            printed("Preparing worktree\n/workspaces/acme-worktrees/feature-x\n\n"),
+            Scripted::default(),
+        ]);
 
         let path = create(&fake, &host(), &with_tool(), "feature-x").unwrap();
 
         assert_eq!(path, Path::new("/workspaces/acme-worktrees/feature-x"));
+        let calls = fake.calls();
         assert_eq!(
-            fake.calls()[0].argv,
+            calls[0].argv,
             wrapped_argv(Path::new(REPO_PATH), &words(&["wt", "create", "feature-x"]))
         );
+        assert_eq!(
+            calls[1].argv,
+            words(&["test", "-d", "/workspaces/acme-worktrees/feature-x"])
+        );
+    }
+
+    #[test]
+    fn create_takes_the_path_before_the_tools_note() {
+        let fake = FakeRunner::new(vec![
+            printed("/workspaces/acme.wt/feature-x  (new branch feature-x, 109.6s)\n"),
+            Scripted::default(),
+        ]);
+
+        let path = create(&fake, &host(), &with_tool(), "feature-x").unwrap();
+
+        assert_eq!(path, Path::new("/workspaces/acme.wt/feature-x"));
+        assert_eq!(
+            fake.calls()[1].argv,
+            words(&["test", "-d", "/workspaces/acme.wt/feature-x"])
+        );
+    }
+
+    #[test]
+    fn create_reads_the_path_from_json() {
+        let json = r#"{
+  "path": "/workspaces/acme.wt/feature x",
+  "branch": "feature-x",
+  "created_branch": true,
+  "create_seconds": 1.2
+}
+"#;
+        let fake = FakeRunner::new(vec![printed(json), Scripted::default()]);
+
+        let path = create(&fake, &host(), &with_tool(), "feature-x").unwrap();
+
+        assert_eq!(path, Path::new("/workspaces/acme.wt/feature x"));
+    }
+
+    #[test]
+    fn create_fails_when_the_printed_path_is_not_a_directory_on_the_host() {
+        let line = "/workspaces/acme.wt/feature-x  (new branch feature-x, 2.0s)";
+        let fake = FakeRunner::new(vec![
+            printed(&format!("{line}\n")),
+            Scripted {
+                status: 1,
+                ..Scripted::default()
+            },
+        ]);
+
+        let err = format!(
+            "{:#}",
+            create(&fake, &host(), &with_tool(), "feature-x").unwrap_err()
+        );
+
+        assert!(err.contains(&format!("{line:?}")), "{err}");
+        assert!(err.contains("not a directory on host-a"), "{err}");
     }
 
     #[test]
