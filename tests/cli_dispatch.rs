@@ -676,6 +676,14 @@ fn dispatch_without_dir_creates_the_task_work_dir() {
     let calls = fx.calls();
     let create = herdr_calls(&calls, &["workspace", "create"]);
     assert_eq!(create[0][5..7], ["--cwd", work.to_str().unwrap()]);
+    let task_dir = work.parent().unwrap().display().to_string();
+    let run = &herdr_calls(&calls, &["pane", "run"])[0][6];
+    assert!(
+        run.contains(&format!("--settings {task_dir}/claude-settings.json ")),
+        "{run}"
+    );
+    assert!(run.contains(&format!("Read {task_dir}/brief.md")), "{run}");
+    assert!(!run.contains("linked-state"), "{run}");
 
     let brief = store.brief(&id).unwrap();
     assert!(

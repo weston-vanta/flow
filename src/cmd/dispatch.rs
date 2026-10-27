@@ -59,6 +59,12 @@ pub struct DispatchArgs {
 /// Creates the task, starts its worker, and prints `dispatched <id> on <host> (<pane_id>)`.
 /// A failure once the task exists leaves it `blocked` with a supervisor hold naming the failure.
 pub fn run(state: &StateDir, args: &DispatchArgs) -> anyhow::Result<()> {
+    // Workers get task paths (work dir, settings, brief) under the physical shared-volume path:
+    // the repo's `state` symlink exists only where this checkout does, and a path through it
+    // would put the worker inside this repo.
+    let state = &state
+        .canonical()
+        .with_context(|| format!("resolving {}", state.root().display()))?;
     let config = Config::load(state)?;
     let host = match &args.host {
         Some(name) => host::find(&config, name),
@@ -87,14 +93,7 @@ pub fn run(state: &StateDir, args: &DispatchArgs) -> anyhow::Result<()> {
         WorkDir::Worktree { repo, branch } => {
             worktree::create(runner.as_ref(), host, repo, branch)?
         }
-        WorkDir::Task => {
-            // The repo's `state` symlink exists only where this checkout does; the physical path
-            // is the one every host can reach, and it keeps the worker outside this repo.
-            let physical = state
-                .canonical()
-                .with_context(|| format!("resolving {}", state.root().display()))?;
-            Store::open(&physical).task_dir(&id)?.join(WORK_DIR)
-        }
+        WorkDir::Task => store.task_dir(&id)?.join(WORK_DIR),
     };
     let herdr = Herdr::new(runner);
     herdr.ensure_server(host)?;
