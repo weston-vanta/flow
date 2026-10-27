@@ -19,8 +19,8 @@ You provide:
 - A `~/.claude` shared across hosts. Without it, flow cannot summarize adopted sessions
   running on other hosts, and the supervisor's conversation cannot be resumed with
   `--resume` after the supervisor moves to another host.
-- The Ona CLI logged in on the supervisor's machine: `gitpod login`, then
-  `gitpod environment ssh-config` so every environment has an ssh alias.
+- The Ona CLI logged in as you on every host that may run or attach to the supervisor:
+  `gitpod login`, then `gitpod environment ssh-config` so every environment has an ssh alias.
 - Optionally, `gh auth login` on the hosts where flow should list your open PRs.
 
 Then, on each host:

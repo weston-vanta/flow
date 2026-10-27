@@ -503,7 +503,18 @@ fn up_refuses_when_lock_host_unreachable() {
         stderr.contains("supervisor host host-b unreachable"),
         "{stderr}"
     );
-    assert!(stderr.contains("state/supervisor/lock.json"), "{stderr}");
+    assert!(stderr.contains("ssh: connect timed out"), "{stderr}");
+    assert!(
+        stderr.contains(
+            "running or attaching to the supervisor from this machine needs the operator's Ona \
+             login (`gitpod login`) and `gitpod environment ssh-config` here"
+        ),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains("lock.json"),
+        "removing the lock would lose the session to resume: {stderr}"
+    );
     assert!(!has_subcommand(&fx.calls(), &["workspace", "create"]));
     assert_eq!(fx.lock().unwrap().herdr.host, "host-b");
 }

@@ -73,8 +73,9 @@ fn live_host<'a>(
     let agents = match herdr.agents_if_running(host) {
         Ok(agents) => agents,
         Err(err) if herdr::is_unreachable(&err) => bail!(
-            "supervisor host {} unreachable; fix connectivity or remove \
-             state/supervisor/lock.json to start fresh: {err:#}",
+            "supervisor host {} unreachable: {err:#}\nrunning or attaching to the supervisor \
+             from this machine needs the operator's Ona login (`gitpod login`) and `gitpod \
+             environment ssh-config` here; set them up, or run `flow up` where they are",
             host.name
         ),
         Err(err) => return Err(err),

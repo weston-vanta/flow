@@ -195,7 +195,8 @@ designer's call.
     output, steering with confirmation, session identity (once the hook path is fixed),
     and attaching. A herdr server is started on demand on each CDE. The adapter pins a
     minimum herdr protocol and fails loudly on mismatch. tmux is not a fallback.
-15. **The supervisor host needs the user's Ona login.** There is no dedicated check or
+15. **Every host that may run or attach to the supervisor needs the user's Ona login**
+    (`gitpod login`, then `gitpod environment ssh-config`). There is no dedicated check or
     repair command. When an ssh or `gitpod` call fails because the login is missing or
     expired, the supervisor keeps working from EFS state and says plainly that it cannot
     reach other CDEs until the user logs in again.
