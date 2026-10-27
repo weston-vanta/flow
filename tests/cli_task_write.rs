@@ -488,29 +488,53 @@ fn close_of_a_workspace_already_gone_still_retires_the_pane() {
 }
 
 #[test]
-fn close_refuses_a_working_task_unless_forced() {
+fn close_refuses_an_open_task_unless_forced() {
+    for open in [
+        State::Working,
+        State::Pending,
+        State::Blocked,
+        State::NeedsDecision,
+    ] {
+        let ok = json!({"status": 0, "stdout": WORKSPACE_CLOSED, "stderr": ""});
+        let (_repo, state, store, script) = setup_close(open, &[ok]);
+
+        flow(&state)
+            .env("FLOW_FAKE_RUNNER", &script)
+            .args(["task", "close", TASK])
+            .assert()
+            .code(2)
+            .stderr(predicates::str::contains(format!(
+                "task {TASK} is {open}, still open"
+            )))
+            .stderr(predicates::str::contains("--force"));
+        assert!(runner_calls(&script).is_empty(), "{open}");
+        assert!(store.task(TASK).unwrap().1.herdr.is_some(), "{open}");
+
+        flow(&state)
+            .env("FLOW_FAKE_RUNNER", &script)
+            .args(["task", "close", TASK, "--force"])
+            .assert()
+            .success();
+        assert_eq!(runner_calls(&script).len(), 1, "{open}");
+        let (_, status) = store.task(TASK).unwrap();
+        assert_eq!(status.state, open);
+        assert_eq!(status.herdr, None, "{open}");
+        assert_eq!(last_event(&store, TASK).data["forced"], true, "{open}");
+    }
+}
+
+#[test]
+fn close_of_an_orphaned_task_needs_no_force() {
     let ok = json!({"status": 0, "stdout": WORKSPACE_CLOSED, "stderr": ""});
-    let (_repo, state, store, script) = setup_close(State::Working, &[ok]);
+    let (_repo, state, store, script) = setup_close(State::Orphaned, &[ok]);
 
     flow(&state)
         .env("FLOW_FAKE_RUNNER", &script)
         .args(["task", "close", TASK])
         .assert()
-        .code(2)
-        .stderr(predicates::str::contains("--force"));
-    assert!(runner_calls(&script).is_empty());
-    assert!(store.task(TASK).unwrap().1.herdr.is_some());
-
-    flow(&state)
-        .env("FLOW_FAKE_RUNNER", &script)
-        .args(["task", "close", TASK, "--force"])
-        .assert()
         .success();
     assert_eq!(runner_calls(&script).len(), 1);
-    let (_, status) = store.task(TASK).unwrap();
-    assert_eq!(status.state, State::Working);
-    assert_eq!(status.herdr, None);
-    assert_eq!(last_event(&store, TASK).data["forced"], true);
+    assert_eq!(store.task(TASK).unwrap().1.herdr, None);
 }
 
 #[test]

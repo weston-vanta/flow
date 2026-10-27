@@ -292,7 +292,7 @@ pub enum TaskCommand {
     /// Close the task's herdr workspace, keeping its record, working directory and branch
     Close {
         id: String,
-        /// Close it even while the task is working or pending
+        /// Close it even while the task is still open: not done or orphaned
         #[arg(long)]
         force: bool,
     },

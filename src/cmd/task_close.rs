@@ -14,21 +14,20 @@ use crate::paths::StateDir;
 use crate::runner;
 use crate::state::Store;
 use crate::state::events::Event;
-use crate::state::task::State;
 
 const EVENT_SOURCE: &str = "supervisor";
 
 /// Closes the herdr workspace of task `id`, appends a `close` event and clears the task's
 /// herdr target, then prints `closed <id> (workspace <ws> on <host>)`, or `closed <id>
 /// (workspace already gone)` when herdr no longer knows the workspace. Refuses a task still
-/// `working` or `pending` unless `force`, and one with no herdr target.
+/// open (anything but `done` or `orphaned`) unless `force`, and one with no herdr target.
 pub fn run(state: &StateDir, id: &str, force: bool) -> anyhow::Result<()> {
     let store = Store::open(state);
     let (_, status) = store.task(id)?;
-    if matches!(status.state, State::Working | State::Pending) && !force {
+    if status.state.is_open() && !force {
         return Err(Refused(format!(
-            "task {id} is {}; closing its pane ends the worker's session (pass --force to close \
-             it anyway)",
+            "task {id} is {}, still open; its worker may be running or waiting on its hold, and \
+             closing its pane ends the worker's session (pass --force to close it anyway)",
             status.state
         ))
         .into());
