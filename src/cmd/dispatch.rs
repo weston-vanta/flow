@@ -21,10 +21,15 @@ use crate::state::config::{Config, Host, Repo};
 use crate::state::events::Event;
 use crate::state::task::{Harness, HerdrTarget, Hold, HoldOn, State, TaskRecord};
 use crate::state::{Store, ids};
+use crate::supervisor;
 use crate::worktree;
 
 const EVENT_SOURCE: &str = "cli";
 const OWNER: &str = "supervisor";
+/// Printed after a dispatch from outside the supervisor's session: `flow watch` starts when a
+/// supervisor turn ends, so none may be watching the new task yet.
+const HAND_DISPATCH_NOTE: &str = "note: no supervisor turn is watching; the supervisor hears of \
+     this task when it next ends a turn\n";
 /// The task's own working directory, inside its task directory, for work outside any repo.
 const WORK_DIR: &str = "work";
 
@@ -57,7 +62,8 @@ pub struct DispatchArgs {
     pub allow_shared_dir: bool,
 }
 
-/// Creates the task, starts its worker, and prints `dispatched <id> on <host> (<pane_id>)`.
+/// Creates the task, starts its worker, and prints `dispatched <id> on <host> (<pane_id>)`,
+/// with a note when run outside the supervisor's session.
 /// A failure once the task exists leaves it `blocked` with a supervisor hold naming the failure.
 pub fn run(state: &StateDir, args: &DispatchArgs) -> anyhow::Result<()> {
     // Workers get task paths (work dir, settings, brief) under the physical shared-volume path:
@@ -138,7 +144,11 @@ pub fn run(state: &StateDir, args: &DispatchArgs) -> anyhow::Result<()> {
             super::print(&format!(
                 "dispatched {} on {} ({pane_id})\n",
                 rec.id, host.name
-            ))
+            ))?;
+            if !supervisor::is_supervisor_session() {
+                super::print(HAND_DISPATCH_NOTE)?;
+            }
+            Ok(())
         }
         Err(err) => {
             if let Err(record_err) = record_failure(&store, &rec.id, &err) {

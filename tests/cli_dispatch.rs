@@ -32,6 +32,10 @@ const WORKTREE: &str = "/workspaces/acme-worktrees/search-index";
 const PANE: &str = "w3:p1";
 const WORKSPACE: &str = "w3";
 
+/// What `flow dispatch` adds when run outside the supervisor's session.
+const HAND_DISPATCH_NOTE: &str = "note: no supervisor turn is watching; the supervisor hears of \
+     this task when it next ends a turn\n";
+
 const TRUST_DIALOG: &str = "\
  Accessing workspace:
 
@@ -83,7 +87,8 @@ impl Fixture {
         let mut cmd = Command::cargo_bin("flow").expect("flow binary is built");
         cmd.env("FLOW_STATE", &self.state)
             .env("ONA_ID", "env-0001")
-            .env("FLOW_FAKE_RUNNER", self.script_path());
+            .env("FLOW_FAKE_RUNNER", self.script_path())
+            .env_remove("FLOW_SUPERVISOR");
         cmd
     }
 
@@ -265,7 +270,7 @@ fn dispatch_creates_task_and_starts_agent() {
     let id = fx.only_task();
     assert_eq!(
         String::from_utf8(out.stdout).unwrap(),
-        format!("dispatched {id} on host-a ({PANE})\n")
+        format!("dispatched {id} on host-a ({PANE})\n{HAND_DISPATCH_NOTE}")
     );
     let calls = fx.calls();
     for argv in &calls {
@@ -637,6 +642,8 @@ fn dispatch_defaults_to_the_local_host() {
     let out = fx
         .flow(&starts_working(Vec::new()))
         .env("ONA_ID", "env-0002")
+        // From the supervisor's own session, which hears of the task, there is no note.
+        .env("FLOW_SUPERVISOR", "1")
         .args(local_dispatch_args(&["--dir", WORKTREE]))
         .assert()
         .success()
