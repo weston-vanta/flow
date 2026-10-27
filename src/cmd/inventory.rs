@@ -78,10 +78,11 @@ fn refresh_all(state: &StateDir) -> anyhow::Result<Vec<String>> {
     let prs = list_prs(runner.as_ref(), &config, &refreshed);
     for (_, inventory) in refreshed.iter_mut().filter(|(_, inv)| inv.reachable) {
         match &prs {
-            Some(prs) => inventory::join_prs(inventory, prs),
-            None => {
+            Ok(prs) => inventory::join_prs(inventory, prs),
+            Err(error) => {
                 let cached = inventory::load(state, &inventory.env_id)?;
                 inventory::join_prs(inventory, &cached.map(|c| c.prs).unwrap_or_default());
+                inventory.pr_error = Some(error.clone());
             }
         }
     }
@@ -119,13 +120,13 @@ fn refresh_one(
 }
 
 /// The user's open PRs, listed on this machine when it is a reachable configured CDE, else on
-/// the first reachable one (gh's login is shared across CDEs). `None`, after a warning, when no
+/// the first reachable one (gh's login is shared across CDEs). Fails with the reason when no
 /// CDE is reachable or the listing fails.
 fn list_prs(
     runner: &dyn Runner,
     config: &Config,
     refreshed: &[(&Cde, CdeInventory)],
-) -> Option<Vec<inventory::Pr>> {
+) -> Result<Vec<inventory::Pr>, String> {
     let local_env_id = cde::local_env_id();
     let mut reachable = refreshed
         .iter()
@@ -136,16 +137,9 @@ fn list_prs(
         .find(|cde| cde::is_local(cde, local_env_id.as_deref()))
         .or_else(|| reachable.next());
     let Some(host) = host else {
-        eprintln!("no CDE reachable to list open PRs; keeping cached PRs");
-        return None;
+        return Err("no CDE reachable to list open PRs".to_owned());
     };
-    match inventory::open_prs(runner, host, &config.monorepo.path) {
-        Ok(prs) => Some(prs),
-        Err(err) => {
-            eprintln!("listing open PRs: {err:#}; keeping cached PRs");
-            None
-        }
-    }
+    inventory::open_prs(runner, host, &config.monorepo.path).map_err(|err| format!("{err:#}"))
 }
 
 fn render_all(inventories: &[CdeInventory], now: Timestamp) -> String {
@@ -177,6 +171,7 @@ fn render_block(inv: &CdeInventory, now: Timestamp) -> String {
     for (what, error) in [
         ("worktree tool", &inv.tool_error),
         ("herdr", &inv.herdr_error),
+        ("gh", &inv.pr_error),
     ] {
         if let Some(error) = error {
             out.push_str(&format!(

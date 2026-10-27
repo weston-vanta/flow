@@ -53,6 +53,9 @@ pub struct CdeInventory {
     /// Why herdr could not be asked for agents; `agents` is then empty.
     #[serde(default)]
     pub herdr_error: Option<String>,
+    /// Why open PRs could not be listed; `prs` then holds the previously cached PRs.
+    #[serde(default)]
+    pub pr_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -176,15 +179,22 @@ pub fn refresh(
         prs: Vec::new(),
         tool_error,
         herdr_error,
+        pr_error: None,
     })
 }
 
-/// The inventory of a CDE that did not answer: the cached worktrees, agents, and PRs as of the
-/// cached `seen`, or an empty inventory seen `now` when nothing is cached.
+/// The inventory of a CDE that did not answer: the cached worktrees, agents, PRs, and PR error as
+/// of the cached `seen`, or an empty inventory seen `now` when nothing is cached.
 pub fn unreachable(cde: &Cde, cached: Option<CdeInventory>, now: Timestamp) -> CdeInventory {
-    let (seen, worktrees, agents, prs) = match cached {
-        Some(cached) => (cached.seen, cached.worktrees, cached.agents, cached.prs),
-        None => (now, Vec::new(), Vec::new(), Vec::new()),
+    let (seen, worktrees, agents, prs, pr_error) = match cached {
+        Some(cached) => (
+            cached.seen,
+            cached.worktrees,
+            cached.agents,
+            cached.prs,
+            cached.pr_error,
+        ),
+        None => (now, Vec::new(), Vec::new(), Vec::new(), None),
     };
     CdeInventory {
         name: cde.name.clone(),
@@ -197,6 +207,7 @@ pub fn unreachable(cde: &Cde, cached: Option<CdeInventory>, now: Timestamp) -> C
         prs,
         tool_error: None,
         herdr_error: None,
+        pr_error,
     }
 }
 
@@ -204,7 +215,14 @@ pub fn unreachable(cde: &Cde, cached: Option<CdeInventory>, now: Timestamp) -> C
 pub fn open_prs(runner: &dyn Runner, cde: &Cde, monorepo: &Path) -> anyhow::Result<Vec<Pr>> {
     let argv = words(&PR_LIST_ARGV);
     let output = runner.run(cde, &worktree::wrapped_argv(monorepo, &argv), None)?;
-    check_status(cde, &argv, &output)?;
+    if output.status != 0 {
+        bail!(
+            "`gh pr list` on {} exited {}: {}",
+            cde.name,
+            output.status,
+            output.stderr.trim()
+        );
+    }
     parse_prs(&output.stdout)
 }
 

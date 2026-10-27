@@ -340,3 +340,59 @@ fn inventory_without_refresh_reads_cache() {
     assert_eq!(parsed[0]["worktrees"][0]["dirty_files"], 2);
     assert!(fx.calls().is_empty());
 }
+
+#[test]
+fn gh_failure_is_recorded_in_cache_and_output() {
+    let gh_failed = json!({
+        "cde": "cde-a", "status": 4, "stdout": "",
+        "stderr": "To get started with GitHub CLI, please run:  gh auth login\n",
+    });
+    let mut script = cde_a_probes();
+    script.push(gh_failed);
+
+    let with_cache = Fixture::new();
+    single_cde_config(&with_cache);
+    with_cache.write_cache(
+        "env-0001",
+        &json!({
+            "name": "cde-a", "env_id": "env-0001", "seen": "2026-10-26T09:00:00Z",
+            "reachable": true, "load1": 0.5, "worktrees": [], "agents": [],
+            "prs": [
+                {"branch": "feature-x", "number": 12, "url": "https://github.com/example/acme/pull/12", "state": "OPEN"},
+                {"branch": "removed", "number": 9, "url": "https://github.com/example/acme/pull/9", "state": "OPEN"},
+            ],
+        }),
+    );
+    let without_cache = Fixture::new();
+    single_cde_config(&without_cache);
+
+    for (fx, expected_prs) in [(&with_cache, json!([12])), (&without_cache, json!([]))] {
+        let stdout = stdout_of(fx.flow(&script).args(["inventory", "--refresh"]));
+
+        let gh_line = stdout.lines().nth(1).unwrap();
+        assert!(gh_line.starts_with("  gh failed: "), "{stdout}");
+        assert!(gh_line.contains("gh auth login"), "{stdout}");
+        assert_eq!(
+            stdout.contains("PR #12 OPEN"),
+            expected_prs == json!([12]),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("PR #9"), "{stdout}");
+
+        let cached = fx.cached("env-0001");
+        let pr_error = cached["pr_error"].as_str().unwrap();
+        assert!(pr_error.contains("gh auth login"), "{pr_error}");
+        let numbers: Vec<Value> = cached["prs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|pr| pr["number"].clone())
+            .collect();
+        assert_eq!(Value::from(numbers), expected_prs);
+    }
+
+    let mut recovered = cde_a_probes();
+    recovered.push(on("cde-a", PR_LIST));
+    stdout_of(with_cache.flow(&recovered).args(["inventory", "--refresh"]));
+    assert_eq!(with_cache.cached("env-0001")["pr_error"], Value::Null);
+}
