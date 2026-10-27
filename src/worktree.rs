@@ -104,7 +104,7 @@ fn create_with_tool(
             "`{command}` on {} exited {}: {}",
             host.name,
             output.status,
-            output.stderr.trim()
+            failure_text(&output.stdout, &output.stderr)
         );
     }
     let (printed, path) = printed_path(&output.stdout)
@@ -129,6 +129,21 @@ fn create_with_tool(
         );
     }
     Ok(path)
+}
+
+/// What a failed create command said: the `error` field of a JSON object on stdout, which is
+/// how `wt --json` refuses, else stdout itself, followed by stderr.
+fn failure_text(stdout: &str, stderr: &str) -> String {
+    let stdout = stdout.trim();
+    let reason = serde_json::from_str::<serde_json::Value>(stdout)
+        .ok()
+        .and_then(|value| value.get("error")?.as_str().map(str::to_owned))
+        .unwrap_or_else(|| stdout.to_owned());
+    [reason.as_str(), stderr.trim()]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// The worktree path in a create command's `stdout`, with the text it came from: the `path`
@@ -325,6 +340,43 @@ mod tests {
 
         assert!(err.contains(&format!("{line:?}")), "{err}");
         assert!(err.contains("not a directory on host-a"), "{err}");
+    }
+
+    #[test]
+    fn create_failure_reports_what_the_tool_printed_on_stdout() {
+        let fake = FakeRunner::new(vec![
+            Scripted {
+                status: 1,
+                stdout: "{\"error\": \"branch already checked out\"}\n".to_owned(),
+                ..Scripted::default()
+            },
+            Scripted {
+                status: 2,
+                stdout: "refusing: dirty base\n".to_owned(),
+                stderr: "wt: see wt guide\n".to_owned(),
+                ..Scripted::default()
+            },
+        ]);
+
+        let errors: Vec<String> = (0..2)
+            .map(|_| {
+                format!(
+                    "{:#}",
+                    create(&fake, &host(), &with_tool(), "feature-x").unwrap_err()
+                )
+            })
+            .collect();
+
+        assert!(
+            errors[0].contains("exited 1: branch already checked out"),
+            "{}",
+            errors[0]
+        );
+        assert!(
+            errors[1].contains("refusing: dirty base") && errors[1].contains("wt: see wt guide"),
+            "{}",
+            errors[1]
+        );
     }
 
     #[test]
