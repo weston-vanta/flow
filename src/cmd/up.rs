@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, anyhow, bail};
 
-use super::attach;
+use super::attach::{self, Instead};
 use crate::harness::handshake::{self, AgentStart, StoppedEarly};
 use crate::herdr::{self, Herdr};
 use crate::host;
@@ -30,7 +30,11 @@ pub fn run(state: &StateDir) -> anyhow::Result<()> {
     if let Some(lock) = supervisor::load(state)?
         && let Some(host) = live_host(&hosts, &live, &herdr, &lock)?
     {
-        return attach::exec(&lock, host);
+        eprintln!(
+            "attaching to the supervisor on {} (pane {})",
+            host.name, lock.herdr.pane_id
+        );
+        return attach::exec(&lock, host, Instead::FlowAttach);
     }
     let here = local_host(&live)?;
     // No supervisor is live, so whatever holds the watch lock is a watcher that outlived its
@@ -44,7 +48,17 @@ pub fn run(state: &StateDir) -> anyhow::Result<()> {
         .canonical()
         .with_context(|| format!("resolving {}", state.root().display()))?;
     let lock = start(state, &herdr, here, state_root.root())?;
-    attach::exec(&lock, here)
+    match &lock.claude_session {
+        Some(session) => eprintln!(
+            "resumed supervisor session {session} on {} (pane {})",
+            here.name, lock.herdr.pane_id
+        ),
+        None => eprintln!(
+            "started a fresh supervisor on {} (pane {})",
+            here.name, lock.herdr.pane_id
+        ),
+    }
+    attach::exec(&lock, here, Instead::FlowAttach)
 }
 
 /// The host running the supervisor `lock` names, when its pane still holds an agent. When it

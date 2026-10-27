@@ -722,7 +722,7 @@ fn error_code(stderr: &str) -> Option<String> {
 
 /// `word` as typed into an interactive shell: bare when it has no characters any shell treats
 /// specially, single-quoted otherwise.
-fn shell_word(word: &str) -> Cow<'_, str> {
+pub(crate) fn shell_word(word: &str) -> Cow<'_, str> {
     let plain = !word.is_empty()
         && word
             .chars()

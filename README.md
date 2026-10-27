@@ -72,7 +72,7 @@ Operator:
 
 - `flow init [--force]`: write `state/config.toml` from what this machine can tell, then refresh the inventory; `--force` replaces an existing file.
 - `flow up`: attach to the live supervisor session, or start one on this host and attach.
-- `flow attach`: attach to the supervisor session.
+- `flow attach`: attach to the supervisor session. When stdout is not a terminal, `flow up` and `flow attach` print the command to attach with instead of attaching.
 - `flow status [--json]`: open tasks, their holds, and adopted sessions.
 - `flow inventory [--refresh] [--json]`: worktrees, agents, and PRs per host; `--refresh` first discovers hosts from Ona (or the static list), probes each running one, and lists open PRs.
 - `flow host list [--json]`: known hosts from the cache, gone ones last, marking the one this runs on.

@@ -74,13 +74,15 @@ impl Fixture {
         self.dir.path().join("runner.json")
     }
 
-    /// `flow` on host-a over this state dir, answering runner calls from `script` in order.
+    /// `flow` on host-a over this state dir, answering runner calls from `script` in order,
+    /// with stdout counted as a terminal so attaching prints the command it would run.
     fn flow(&self, script: &[Value]) -> Command {
         fs::write(self.script_path(), Value::from(script.to_vec()).to_string()).unwrap();
         let mut cmd = Command::cargo_bin("flow").expect("flow binary is built");
         cmd.env("FLOW_STATE", &self.state)
             .env("ONA_ID", "env-0001")
             .env("FLOW_FAKE_RUNNER", self.script_path())
+            .env("FLOW_FAKE_TTY", "1")
             .env_remove(supervisor::SUPERVISOR_ENV);
         cmd
     }
@@ -182,8 +184,16 @@ fn fresh_start() -> Vec<Value> {
 }
 
 fn stdout_of(cmd: &mut Command) -> String {
+    output_of(cmd).0
+}
+
+/// The stdout and stderr of `cmd`, which must succeed.
+fn output_of(cmd: &mut Command) -> (String, String) {
     let out = cmd.assert().success().get_output().clone();
-    String::from_utf8(out.stdout).unwrap()
+    (
+        String::from_utf8(out.stdout).unwrap(),
+        String::from_utf8(out.stderr).unwrap(),
+    )
 }
 
 /// The command lines typed into panes by `pane run` calls, in order.
@@ -213,7 +223,7 @@ fn has_subcommand(calls: &[(String, Vec<String>)], words: &[&str]) -> bool {
 fn up_creates_supervisor_when_no_lock() {
     let fx = Fixture::new();
 
-    let stdout = stdout_of(fx.flow(&fresh_start()).arg("up"));
+    let (stdout, stderr) = output_of(fx.flow(&fresh_start()).arg("up"));
 
     let calls = fx.calls();
     assert!(calls.iter().all(|(host, _)| host == "host-a"), "{calls:?}");
@@ -257,6 +267,10 @@ fn up_creates_supervisor_when_no_lock() {
         stdout,
         format!("attach: herdr --session flow agent attach {NEW_PANE}\n")
     );
+    assert_eq!(
+        stderr,
+        format!("started a fresh supervisor on host-a (pane {NEW_PANE})\n")
+    );
 }
 
 #[test]
@@ -287,7 +301,7 @@ fn up_resumes_known_session() {
     let mut script = vec![ok(NO_AGENTS), workspaces(WORKSPACE_LIST)];
     script.extend(fresh_start());
 
-    let stdout = stdout_of(fx.flow(&script).arg("up"));
+    let (stdout, stderr) = output_of(fx.flow(&script).arg("up"));
 
     let line = pane_run_line(&fx.calls());
     assert!(
@@ -295,6 +309,12 @@ fn up_resumes_known_session() {
             "claude --name flow-supervisor --resume s9 {START_PROMPT}"
         )),
         "{line}"
+    );
+    assert!(
+        stderr.ends_with(&format!(
+            "resumed supervisor session s9 on host-a (pane {NEW_PANE})\n"
+        )),
+        "{stderr}"
     );
     let lock = fx.lock().unwrap();
     assert_eq!(lock.claude_session.as_deref(), Some("s9"));
@@ -324,7 +344,10 @@ fn up_starts_fresh_here_when_the_lock_host_is_gone() {
 
     assert_eq!(
         String::from_utf8(out.stderr).unwrap(),
-        "supervisor host host-b is gone; starting a new supervisor here\n"
+        format!(
+            "supervisor host host-b is gone; starting a new supervisor here\n\
+             resumed supervisor session s9 on host-a (pane {NEW_PANE})\n"
+        )
     );
     let calls = fx.calls();
     assert!(calls.iter().all(|(host, _)| host == "host-a"), "{calls:?}");
@@ -362,7 +385,13 @@ fn up_clears_the_watch_lock_before_starting_a_supervisor() {
         stderr.contains("removed state/supervisor/watch.lock"),
         "{stderr}"
     );
-    assert_eq!(stderr.lines().count(), 2, "{stderr}");
+    assert!(
+        stderr.ends_with(&format!(
+            "started a fresh supervisor on host-a (pane {NEW_PANE})\n"
+        )),
+        "{stderr}"
+    );
+    assert_eq!(stderr.lines().count(), 3, "{stderr}");
 }
 
 #[test]
@@ -412,7 +441,7 @@ fn up_attaches_when_lock_live() {
     fx.write_watch_lock("env-0001");
     let before = fs::read_to_string(fx.state.join("supervisor/lock.json")).unwrap();
 
-    let stdout = stdout_of(fx.flow(&[ok(&supervisor_agents())]).arg("up"));
+    let (stdout, stderr) = output_of(fx.flow(&[ok(&supervisor_agents())]).arg("up"));
 
     let calls = fx.calls();
     assert_eq!(calls.len(), 1, "{calls:?}");
@@ -423,6 +452,10 @@ fn up_attaches_when_lock_live() {
     assert_eq!(
         stdout,
         format!("attach: herdr --session flow agent attach {LIVE_PANE}\n")
+    );
+    assert_eq!(
+        stderr,
+        format!("attaching to the supervisor on host-a (pane {LIVE_PANE})\n")
     );
     assert_eq!(
         fs::read_to_string(fx.state.join("supervisor/lock.json")).unwrap(),
@@ -507,6 +540,12 @@ fn up_starts_fresh_session_when_resume_fails() {
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert!(
         stderr.contains("resume of session s9 failed; starting a fresh supervisor session"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.ends_with(&format!(
+            "started a fresh supervisor on host-a (pane {NEW_PANE})\n"
+        )),
         "{stderr}"
     );
     let lock = fx.lock().unwrap();
@@ -671,6 +710,76 @@ fn attach_prints_argv_for_the_lock() {
         stdout,
         format!("attach: herdr --session flow agent attach {LIVE_PANE}\n")
     );
+    assert!(fx.calls().is_empty());
+}
+
+/// What `flow up` and `flow attach` print in place of attaching when stdout is not a terminal.
+const NO_TERMINAL: &str = "stdout is not a terminal, so flow did not attach; to attach, run: ";
+
+#[test]
+fn up_without_a_terminal_says_how_to_attach_instead() {
+    let fx = Fixture::new();
+    fx.write_lock("env-0001", "host-a", LIVE_PANE, None);
+
+    let (stdout, stderr) = output_of(
+        fx.flow(&[ok(&supervisor_agents())])
+            .env_remove("FLOW_FAKE_TTY")
+            .arg("up"),
+    );
+
+    assert_eq!(stdout, format!("{NO_TERMINAL}flow attach\n"));
+    assert_eq!(
+        stderr,
+        format!("attaching to the supervisor on host-a (pane {LIVE_PANE})\n")
+    );
+    assert_eq!(fx.calls().len(), 1, "only the liveness check runs");
+}
+
+#[test]
+fn up_without_a_terminal_still_starts_the_supervisor() {
+    let fx = Fixture::new();
+
+    let (stdout, stderr) = output_of(
+        fx.flow(&fresh_start())
+            .env_remove("FLOW_FAKE_TTY")
+            .arg("up"),
+    );
+
+    assert_eq!(stdout, format!("{NO_TERMINAL}flow attach\n"));
+    assert_eq!(
+        stderr,
+        format!("started a fresh supervisor on host-a (pane {NEW_PANE})\n")
+    );
+    assert_eq!(fx.lock().unwrap().herdr.pane_id, NEW_PANE);
+}
+
+#[test]
+fn attach_without_a_terminal_prints_the_command_to_run() {
+    let fx = Fixture::new();
+    fx.write_lock("env-0001", "host-a", LIVE_PANE, None);
+
+    let (stdout, stderr) = output_of(fx.flow(&[]).env_remove("FLOW_FAKE_TTY").arg("attach"));
+
+    assert_eq!(
+        stdout,
+        format!("{NO_TERMINAL}herdr --session flow agent attach {LIVE_PANE}\n")
+    );
+    assert_eq!(stderr, "");
+    assert!(fx.calls().is_empty());
+}
+
+#[test]
+fn attach_without_a_terminal_quotes_the_remote_command_as_one_word() {
+    let fx = Fixture::new();
+    fx.write_lock("env-0002", "host-b", LIVE_PANE, None);
+
+    let stdout = stdout_of(fx.flow(&[]).env_remove("FLOW_FAKE_TTY").arg("attach"));
+
+    assert!(
+        stdout.starts_with(&format!("{NO_TERMINAL}ssh -t ")),
+        "{stdout}"
+    );
+    assert!(stdout.contains(" host-b.example 'zsh -lc "), "{stdout}");
     assert!(fx.calls().is_empty());
 }
 
