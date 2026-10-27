@@ -264,7 +264,7 @@ fn start_worker(
         json!({"pane_id": pane_id, "workspace_id": workspace_id, "argv": argv}),
     )?;
     herdr.pane_run(host, &pane_id, &argv)?;
-    let start = handshake::await_start(herdr, host, &workspace_id, &pane_id)?;
+    let start = handshake::await_start(herdr, host, &workspace_id, &pane_id, None)?;
     if let AgentStart::BlockedAtStart { pane_text } = &start {
         append_event(
             store,

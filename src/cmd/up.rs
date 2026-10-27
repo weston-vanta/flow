@@ -6,7 +6,7 @@ use std::sync::Arc;
 use anyhow::{Context, anyhow, bail};
 
 use super::attach;
-use crate::harness::handshake::{self, AgentStart};
+use crate::harness::handshake::{self, AgentStart, StoppedEarly};
 use crate::herdr::{self, Herdr};
 use crate::host;
 use crate::inventory;
@@ -119,17 +119,10 @@ fn start(state: &StateDir, herdr: &Herdr, here: &Host, state_root: &Path) -> any
     let Some(session) = &lock.claude_session else {
         return Err(err);
     };
-    let pane_text = match herdr.pane_read(here, &lock.herdr.pane_id, handshake::PANE_LINES) {
-        Ok(text) => text,
-        Err(read_err) => {
-            eprintln!(
-                "could not read pane {} on {}: {read_err:#}",
-                lock.herdr.pane_id, here.name
-            );
-            String::new()
-        }
-    };
-    if !handshake::session_missing(&pane_text) {
+    // `launch` stops early only on `session_missing`.
+    if err.downcast_ref::<StoppedEarly>().is_none()
+        && !pane_shows_session_missing(herdr, here, &lock)
+    {
         return Err(err);
     }
     eprintln!("{err:#}");
@@ -143,6 +136,21 @@ fn start(state: &StateDir, herdr: &Herdr, here: &Host, state_root: &Path) -> any
     supervisor::set_session(state, None)?;
     let (lock, started) = launch(state, herdr, here, state_root)?;
     finish(lock, started?)
+}
+
+/// Whether the supervisor's pane in `lock` shows that Claude Code could not find the session to
+/// resume. A pane that cannot be read does not.
+fn pane_shows_session_missing(herdr: &Herdr, here: &Host, lock: &Lock) -> bool {
+    match herdr.pane_read(here, &lock.herdr.pane_id, handshake::PANE_LINES) {
+        Ok(text) => handshake::session_missing(&text),
+        Err(err) => {
+            eprintln!(
+                "could not read pane {} on {}: {err:#}",
+                lock.herdr.pane_id, here.name
+            );
+            false
+        }
+    }
 }
 
 /// Opens the supervisor's workspace on `here`, takes the lock for it, and launches Claude Code
@@ -173,7 +181,15 @@ fn launch(
         &pane_id,
         &launch_argv(state_root, lock.claude_session.as_deref())?,
     )?;
-    let started = handshake::await_start(herdr, here, &workspace_id, &pane_id);
+    // A resume Claude Code cannot find exits at once, which this stops on instead of waiting
+    // out the start timeout.
+    let started = handshake::await_start(
+        herdr,
+        here,
+        &workspace_id,
+        &pane_id,
+        Some(handshake::session_missing),
+    );
     Ok((lock, started))
 }
 

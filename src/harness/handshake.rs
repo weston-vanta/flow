@@ -33,14 +33,41 @@ pub enum AgentStart {
 /// the pane until Claude Code has started there, which can take many seconds, so until then
 /// this asks again. Claude shows a folder-trust dialog in a directory it has not seen, and
 /// herdr reports it `blocked`; keys sent before then are lost. When the blocked pane shows that
-/// dialog, this selects its `Yes` option and waits again.
+/// dialog, this selects its `Yes` option and waits again. While herdr sees no agent, a pane
+/// whose text `stop_early` matches ends the wait with a `StoppedEarly` error.
 pub fn await_start(
     herdr: &Herdr,
     host: &Host,
     workspace_id: &str,
     pane_id: &str,
+    stop_early: Option<StopEarly>,
 ) -> anyhow::Result<AgentStart> {
-    await_start_with(herdr, host, workspace_id, pane_id, &Timing::from_env()?)
+    await_start_with(
+        herdr,
+        host,
+        workspace_id,
+        pane_id,
+        stop_early,
+        &Timing::from_env()?,
+    )
+}
+
+/// Reads the pane's text while herdr sees no agent there and says whether the agent will not
+/// come up, so the start can stop before its timeout.
+pub type StopEarly = fn(&str) -> bool;
+
+/// The start stopped before its timeout because the pane showed `pane_text`, which the
+/// caller's `StopEarly` matched.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "agent in pane {pane_id} on {host} will not start, judging by its pane; workspace \
+     {workspace_id} is left open for inspection"
+)]
+pub struct StoppedEarly {
+    pub pane_id: String,
+    pub host: String,
+    pub workspace_id: String,
+    pub pane_text: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -70,13 +97,29 @@ fn await_start_with(
     host: &Host,
     workspace_id: &str,
     pane_id: &str,
+    stop_early: Option<StopEarly>,
     timing: &Timing,
 ) -> anyhow::Result<AgentStart> {
     let mut started = None;
     let mut wait = |until: &[AgentStatus]| -> anyhow::Result<AgentStatus> {
-        match wait_for_agent(herdr, host, pane_id, until, timing, &mut started)? {
-            Some(status) => Ok(status),
-            None => bail!(
+        match wait_for_agent(
+            herdr,
+            host,
+            pane_id,
+            until,
+            stop_early,
+            timing,
+            &mut started,
+        )? {
+            Polled::Reached(status) => Ok(status),
+            Polled::Stopped(pane_text) => Err(StoppedEarly {
+                pane_id: pane_id.to_owned(),
+                host: host.name.clone(),
+                workspace_id: workspace_id.to_owned(),
+                pane_text,
+            }
+            .into()),
+            Polled::TimedOut => bail!(
                 "agent in pane {pane_id} on {} did not start within {} s; workspace \
                  {workspace_id} is left open for inspection",
                 host.name,
@@ -101,30 +144,46 @@ fn await_start_with(
     Ok(AgentStart::Running)
 }
 
+/// How `wait_for_agent` ended.
+enum Polled {
+    Reached(AgentStatus),
+    /// `StopEarly` matched this pane text.
+    Stopped(String),
+    TimedOut,
+}
+
 /// The status the agent in `pane_id` reaches among `until` before `timing.timeout` has passed
-/// since the first wait, which sets `started`. While herdr sees no agent there this asks again
-/// every `timing.poll`. `None` once the time is up.
+/// since the first wait, which sets `started`. While herdr sees no agent there this checks the
+/// pane against `stop_early` and asks again every `timing.poll`.
 fn wait_for_agent(
     herdr: &Herdr,
     host: &Host,
     pane_id: &str,
     until: &[AgentStatus],
+    stop_early: Option<StopEarly>,
     timing: &Timing,
     started: &mut Option<Instant>,
-) -> anyhow::Result<Option<AgentStatus>> {
+) -> anyhow::Result<Polled> {
     let started = *started.get_or_insert_with(Instant::now);
     let mut left = timing.timeout.saturating_sub(started.elapsed());
     loop {
         if left.is_zero() {
-            return Ok(None);
+            return Ok(Polled::TimedOut);
         }
         // Rounded up, so the first wait passes the whole timeout; herdr's `--timeout 0` would
         // mean no timeout at all.
         let timeout_ms = u64::try_from(left.as_nanos().div_ceil(1_000_000)).unwrap_or(u64::MAX);
         match herdr.wait_for_agent(host, pane_id, until, Some(timeout_ms))? {
-            Waited::Reached(status) => return Ok(Some(status)),
-            Waited::TimedOut => return Ok(None),
+            Waited::Reached(status) => return Ok(Polled::Reached(status)),
+            Waited::TimedOut => return Ok(Polled::TimedOut),
             Waited::NoAgent => {}
+        }
+        // A pane that cannot be read is no reason to stop.
+        if let Some(stop_early) = stop_early
+            && let Ok(text) = herdr.pane_read(host, pane_id, PANE_LINES)
+            && stop_early(&text)
+        {
+            return Ok(Polled::Stopped(text));
         }
         thread::sleep(
             timing
@@ -264,7 +323,7 @@ mod tests {
         ]));
         let herdr = Herdr::new(fake.clone());
 
-        let start = await_start_with(&herdr, &host(), "w3", PANE, &fast()).unwrap();
+        let start = await_start_with(&herdr, &host(), "w3", PANE, None, &fast()).unwrap();
 
         assert!(matches!(start, AgentStart::Running), "{start:?}");
         let calls = fake.calls();
@@ -292,7 +351,7 @@ mod tests {
         let timing = fast();
 
         let started = std::time::Instant::now();
-        let err = await_start_with(&herdr, &host(), "w3", PANE, &timing).unwrap_err();
+        let err = await_start_with(&herdr, &host(), "w3", PANE, None, &timing).unwrap_err();
 
         let err = format!("{err:#}");
         assert!(err.contains("did not start within"), "{err}");
@@ -306,6 +365,41 @@ mod tests {
     }
 
     #[test]
+    fn await_start_stops_early_when_the_pane_shows_the_agent_will_not_start() {
+        let fake = Arc::new(FakeRunner::new(vec![
+            not_found(false),
+            ok("$ claude --resume s9\nNo conversation found with session ID: s9\n$ "),
+        ]));
+        let herdr = Herdr::new(fake.clone());
+        let timing = Timing {
+            timeout: Duration::from_secs(60),
+            poll: Duration::from_secs(60),
+        };
+
+        let started = std::time::Instant::now();
+        let err = await_start_with(&herdr, &host(), "w3", PANE, Some(session_missing), &timing)
+            .unwrap_err();
+
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        let stopped = err.downcast_ref::<StoppedEarly>().expect("stopped early");
+        assert!(
+            stopped.pane_text.contains("No conversation found"),
+            "{stopped:?}"
+        );
+        assert!(
+            format!("{err:#}").contains("workspace w3 is left open"),
+            "{err:#}"
+        );
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert_eq!(calls[1].argv[3..6], ["pane", "read", PANE]);
+    }
+
+    #[test]
     fn await_start_fails_on_other_wait_errors() {
         let fake = Arc::new(FakeRunner::new(vec![Scripted {
             status: 1,
@@ -316,7 +410,7 @@ mod tests {
         }]));
         let herdr = Herdr::new(fake.clone());
 
-        let err = await_start_with(&herdr, &host(), "w3", PANE, &fast()).unwrap_err();
+        let err = await_start_with(&herdr, &host(), "w3", PANE, None, &fast()).unwrap_err();
 
         assert!(format!("{err:#}").contains("invalid_target"), "{err:#}");
         assert_eq!(fake.calls().len(), 1);

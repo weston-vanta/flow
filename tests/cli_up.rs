@@ -445,6 +445,54 @@ fn up_starts_fresh_session_when_resume_fails() {
 }
 
 #[test]
+fn up_starts_fresh_within_one_poll_when_claude_cannot_find_the_session() {
+    let fx = Fixture::new();
+    fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
+    let not_found = r#"{"error":{"code":"agent_not_found","message":"agent target w3:p1 not found"},"id":"cli:agent:wait"}"#;
+    let mut script = vec![
+        ok(NO_AGENTS),
+        ok(SERVER_RUNNING),
+        ok(WORKSPACE_CREATE),
+        ok(PANE_RUN_OK),
+        failed(not_found),
+        ok("$ claude --resume s9\nNo conversation found with session ID: s9\n$ \n"),
+        ok(WORKSPACE_CLOSED),
+    ];
+    script.extend(fresh_start().into_iter().skip(1));
+
+    let started = std::time::Instant::now();
+    let out = fx
+        .flow(&script)
+        .env("FLOW_HANDSHAKE_POLL_MS", "60000")
+        .arg("up")
+        .timeout(std::time::Duration::from_secs(30))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "no poll interval passed: {:?}",
+        started.elapsed()
+    );
+    let calls = fx.calls();
+    let lines = pane_run_lines(&calls);
+    assert_eq!(lines.len(), 2, "{calls:?}");
+    assert!(!lines[1].contains("--resume"), "{}", lines[1]);
+    assert!(
+        has_subcommand(&calls, &["workspace", "close", "w3"]),
+        "{calls:?}"
+    );
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("resume of session s9 failed; starting a fresh supervisor session"),
+        "{stderr}"
+    );
+    assert_eq!(fx.lock().unwrap().claude_session, None);
+}
+
+#[test]
 fn up_keeps_the_session_when_a_resume_fails_for_another_reason() {
     let fx = Fixture::new();
     fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
