@@ -454,13 +454,21 @@ impl Herdr {
         Ok(())
     }
 
-    /// Submits `text` to the agent in `pane_id` and returns the first idle, done or blocked
-    /// status herdr observes after it.
-    pub fn prompt(&self, cde: &Cde, pane_id: &str, text: &str) -> anyhow::Result<AgentStatus> {
-        let result: AgentResult = self.call_json(
-            cde,
-            &self.argv(&["agent", "prompt", pane_id, text, "--wait"]),
-        )?;
+    /// Submits `text` to the agent in `pane_id` and returns the first status in `until` herdr
+    /// observes after it (idle, done or blocked when `until` is empty). herdr rejects the
+    /// prompt when the agent is blocked.
+    pub fn prompt(
+        &self,
+        cde: &Cde,
+        pane_id: &str,
+        text: &str,
+        until: &[AgentStatus],
+    ) -> anyhow::Result<AgentStatus> {
+        let mut argv = self.argv(&["agent", "prompt", pane_id, text, "--wait"]);
+        for status in until {
+            argv.extend(words(&["--until", status.as_str()]));
+        }
+        let result: AgentResult = self.call_json(cde, &argv)?;
         Ok(result.agent.agent_status)
     }
 
@@ -475,7 +483,7 @@ impl Herdr {
 
     /// The argv that attaches a terminal to the agent in `pane_id`, to run on the agent's CDE.
     pub fn attach_argv(&self, pane_id: &str) -> Vec<String> {
-        self.argv(&["agent", "attach", pane_id])
+        attach_argv(&self.session, pane_id)
     }
 
     /// `herdr --session <session> <args...>`.
@@ -527,6 +535,11 @@ impl Herdr {
     fn call_json<T: DeserializeOwned>(&self, cde: &Cde, argv: &[String]) -> anyhow::Result<T> {
         parse_result(cde, argv, &self.call(cde, argv)?)
     }
+}
+
+/// The argv that attaches a terminal to the agent in `pane_id` of herdr session `session`.
+pub fn attach_argv(session: &str, pane_id: &str) -> Vec<String> {
+    words(&["herdr", "--session", session, "agent", "attach", pane_id])
 }
 
 /// How a `spawn_wait` child ended.
@@ -1071,7 +1084,7 @@ mod tests {
     #[test]
     fn prompt_waits_and_returns_status() {
         let (herdr, fake) = herdr(vec![ok(AGENT_GET)]);
-        let status = herdr.prompt(&cde(), "w2:p1", "keep going").unwrap();
+        let status = herdr.prompt(&cde(), "w2:p1", "keep going", &[]).unwrap();
         assert_eq!(status, AgentStatus::Working);
         assert_eq!(
             argvs(&fake),
@@ -1085,6 +1098,23 @@ mod tests {
                 "keep going",
                 "--wait",
             ])]
+        );
+    }
+
+    #[test]
+    fn prompt_passes_until_states() {
+        let (herdr, fake) = herdr(vec![ok(AGENT_GET)]);
+        herdr
+            .prompt(
+                &cde(),
+                "w2:p1",
+                "keep going",
+                &[AgentStatus::Working, AgentStatus::Blocked],
+            )
+            .unwrap();
+        assert_eq!(
+            argvs(&fake)[0][7..],
+            words(&["--wait", "--until", "working", "--until", "blocked"])
         );
     }
 
@@ -1150,7 +1180,7 @@ mod tests {
         herdr
             .wait(&target, "w3:p1", &[AgentStatus::Done], None)
             .unwrap();
-        herdr.prompt(&target, "w3:p1", "hello").unwrap();
+        herdr.prompt(&target, "w3:p1", "hello", &[]).unwrap();
         herdr.read(&target, "w3:p1", 10).unwrap();
         herdr.close_workspace(&target, "w3").unwrap();
         herdr

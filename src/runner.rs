@@ -66,6 +66,22 @@ fn control_dir_for(xdg_runtime_dir: Option<&OsStr>, uid: Option<u32>) -> PathBuf
     }
 }
 
+/// Whether `$FLOW_FAKE_RUNNER` is set, so `from_env` returns a `FakeRunner`. Commands that
+/// would replace this process with an interactive one print what they would run instead.
+pub fn fake_runner_active() -> bool {
+    std::env::var_os(FAKE_RUNNER_VAR).is_some()
+}
+
+/// Creates `control_dir` if missing and sets it to mode 0700.
+pub fn ensure_control_dir(control_dir: &Path) -> anyhow::Result<()> {
+    DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(control_dir)
+        .and_then(|()| fs::set_permissions(control_dir, Permissions::from_mode(0o700)))
+        .with_context(|| format!("creating {}", control_dir.display()))
+}
+
 /// Runs argv directly on the CDE whose env id is `local_env_id`, and over ssh on the others.
 #[derive(Debug)]
 pub struct LocalSshRunner {
@@ -77,12 +93,7 @@ impl LocalSshRunner {
     /// `control_dir` holds the ssh multiplexing sockets; it is created if missing and set to
     /// mode 0700.
     pub fn new(local_env_id: Option<String>, control_dir: PathBuf) -> anyhow::Result<Self> {
-        DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&control_dir)
-            .and_then(|()| fs::set_permissions(&control_dir, Permissions::from_mode(0o700)))
-            .with_context(|| format!("creating {}", control_dir.display()))?;
+        ensure_control_dir(&control_dir)?;
         Ok(LocalSshRunner {
             local_env_id,
             control_dir,
@@ -155,11 +166,22 @@ pub fn build_argv(
     if cde::is_local(cde, local_env_id) {
         return argv.to_vec();
     }
-    let control_path = control_dir.join("ssh-%C");
-    vec![
+    let mut ssh = vec![
         "ssh".to_owned(),
         "-o".to_owned(),
         "BatchMode=yes".to_owned(),
+    ];
+    ssh.extend(ssh_connection_options(control_dir));
+    ssh.push(cde.ssh_alias.clone());
+    ssh.push(remote_command(argv));
+    ssh
+}
+
+/// The ssh options every connection to a CDE uses: a short connect timeout and multiplexing
+/// through a control socket in `control_dir`.
+pub fn ssh_connection_options(control_dir: &Path) -> Vec<String> {
+    let control_path = control_dir.join("ssh-%C");
+    vec![
         "-o".to_owned(),
         // A stopped CDE then fails within seconds instead of hanging on the TCP connect.
         "ConnectTimeout=10".to_owned(),
@@ -169,11 +191,14 @@ pub fn build_argv(
         format!("ControlPath={}", control_path.display()),
         "-o".to_owned(),
         "ControlPersist=600".to_owned(),
-        cde.ssh_alias.clone(),
-        // ssh joins its remote arguments into one string for the remote login shell to parse,
-        // so the command line zsh receives must be quoted a second time.
-        format!("zsh -lc {}", shell_quote(&quote_argv(argv))),
     ]
+}
+
+/// The remote command argument that makes ssh run `argv` under `zsh -lc` on the CDE.
+pub fn remote_command(argv: &[String]) -> String {
+    // ssh joins its remote arguments into one string for the remote login shell to parse, so
+    // the command line zsh receives must be quoted a second time.
+    format!("zsh -lc {}", shell_quote(&quote_argv(argv)))
 }
 
 /// `word` as one POSIX shell word: single-quoted, with each `'` written as `'\''`.

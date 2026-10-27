@@ -8,6 +8,7 @@ use flow::cmd::dispatch::{BriefSource, DispatchArgs, WorktreeSource};
 use flow::cmd::task_write::ReportedState;
 use flow::paths::StateDir;
 use flow::state::task::HoldOn;
+use flow::supervisor::SUPERVISOR_ENV;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -98,7 +99,14 @@ pub enum Command {
         #[command(subcommand)]
         command: HookCommand,
     },
-    /// Start or reattach the supervisor session
+    /// Send a message to a task's worker and log it
+    Steer {
+        id: String,
+        /// The message, as the worker should read it
+        #[arg(allow_hyphen_values = true)]
+        text: String,
+    },
+    /// Attach to the live supervisor session, or start one on this CDE and attach
     Up,
     /// Attach to the supervisor session
     Attach,
@@ -277,6 +285,8 @@ pub enum HookCommand {
         #[arg(long, value_name = "ID")]
         task: String,
     },
+    /// Record the supervisor's Claude Code session from its SessionStart hook on stdin
+    Supervisor,
 }
 
 #[derive(Debug, Subcommand)]
@@ -320,6 +330,13 @@ pub fn run(cli: Cli, state: &StateDir) -> anyhow::Result<ExitCode> {
         Command::Hook {
             command: HookCommand::Claude { task },
         } => cmd::hook::run_claude(state, &task, std::io::stdin().lock()),
+        Command::Hook {
+            command: HookCommand::Supervisor,
+        } => cmd::hook::run_supervisor(
+            state,
+            std::env::var_os(SUPERVISOR_ENV).is_some(),
+            std::io::stdin().lock(),
+        ),
         Command::Requests { command, json } => match command {
             None => cmd::requests::run_list(state, json),
             Some(RequestsCommand::Consume { req_id }) => cmd::requests::run_consume(state, &req_id),
@@ -335,9 +352,9 @@ pub fn run(cli: Cli, state: &StateDir) -> anyhow::Result<ExitCode> {
             WakeCommand::Ack { through } => cmd::wake::run_ack(state, through),
         },
         Command::Guard => return cmd::guard::run(state),
-        Command::Up | Command::Attach => {
-            anyhow::bail!("not implemented")
-        }
+        Command::Steer { id, text } => cmd::steer::run(state, &id, &text),
+        Command::Up => cmd::up::run(state),
+        Command::Attach => cmd::attach::run(state),
     };
     done.map(|()| ExitCode::SUCCESS)
 }

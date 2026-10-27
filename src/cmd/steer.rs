@@ -1,0 +1,48 @@
+//! `flow steer`: sends the supervisor's message to a task's worker and logs it.
+
+use std::sync::Arc;
+
+use anyhow::anyhow;
+use jiff::Timestamp;
+use serde_json::json;
+
+use crate::cde;
+use crate::herdr::{AgentStatus, Herdr};
+use crate::paths::StateDir;
+use crate::runner;
+use crate::state::Store;
+use crate::state::config::Config;
+use crate::state::events::Event;
+
+const EVENT_SOURCE: &str = "supervisor";
+/// The prompt counts as delivered once the worker starts on it, or blocks on it; waiting for
+/// the worker's turn to end could hold the supervisor for hours.
+const DELIVERED: [AgentStatus; 2] = [AgentStatus::Working, AgentStatus::Blocked];
+
+/// Prompts the worker in the task's herdr pane with `text`, appends a `steer` event, and
+/// prints `steered <id> (<pane>): <status>`.
+pub fn run(state: &StateDir, id: &str, text: &str) -> anyhow::Result<()> {
+    let store = Store::open(state);
+    let (_, status) = store.task(id)?;
+    let target = status
+        .herdr
+        .ok_or_else(|| anyhow!("task {id} has no herdr target"))?;
+    let config = Config::load(state)?;
+    let cde = cde::find(&config, &target.cde)?;
+    let herdr = Herdr::new(Arc::from(runner::from_env()?));
+    let reached = herdr.prompt(cde, &target.pane_id, text, &DELIVERED)?;
+    store.append_event(
+        id,
+        &Event {
+            ts: Timestamp::now(),
+            source: EVENT_SOURCE.to_owned(),
+            kind: "steer".to_owned(),
+            data: json!({ "text": text }),
+        },
+    )?;
+    super::print(&format!(
+        "steered {id} ({}): {}\n",
+        target.pane_id,
+        reached.as_str()
+    ))
+}

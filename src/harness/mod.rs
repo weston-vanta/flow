@@ -2,6 +2,7 @@
 
 pub mod brief;
 pub mod claude;
+pub mod handshake;
 
 use std::path::Path;
 

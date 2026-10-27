@@ -90,7 +90,7 @@ fn exercise(herdr: &Herdr, cde: &Cde, pane_id: &str) -> anyhow::Result<()> {
     println!("agents: {:?}", herdr.agents(cde)?);
 
     // Claude exits on /exit, so herdr reports the agent gone rather than a final status.
-    match herdr.prompt(cde, pane_id, "/exit") {
+    match herdr.prompt(cde, pane_id, "/exit", &[]) {
         Ok(status) => println!("prompt /exit: {status:?}"),
         Err(err) => println!("prompt /exit: {err:#}"),
     }
