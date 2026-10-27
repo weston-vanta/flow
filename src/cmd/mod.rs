@@ -13,6 +13,8 @@ pub mod task_events;
 pub mod task_list;
 pub mod task_show;
 pub mod task_write;
+pub mod wake;
+pub mod watch;
 
 use std::io::{self, Write};
 

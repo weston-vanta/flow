@@ -77,10 +77,20 @@ pub enum Command {
         /// herdr pane the session runs in
         pane_id: String,
     },
-    /// Watch tasks and exit when the supervisor should wake
-    Watch,
+    /// Watch tasks and exit 2 with a reason when the supervisor should wake
+    Watch {
+        /// Wake after this many seconds even when nothing happened [default: 3600]
+        #[arg(long, value_name = "SECS")]
+        heartbeat: Option<u64>,
+        /// Watch for one poll interval and exit 0 when nothing woke
+        #[arg(long)]
+        once: bool,
+    },
     /// Drain and acknowledge queued wakes
-    Wake,
+    Wake {
+        #[command(subcommand)]
+        command: WakeCommand,
+    },
     /// Stop hook that blocks ending a turn while work is unwatched
     Guard,
     /// Receive harness hook events
@@ -270,6 +280,17 @@ pub enum HookCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum WakeCommand {
+    /// Print the queued wakes not yet acknowledged
+    Drain,
+    /// Acknowledge every queued wake up to and including N
+    Ack {
+        #[arg(long, value_name = "N")]
+        through: u64,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub enum RequestsCommand {
     /// Mark a request dispatched so it stops listing
     Consume { req_id: String },
@@ -308,7 +329,12 @@ pub fn run(cli: Cli, state: &StateDir) -> anyhow::Result<ExitCode> {
         Command::Sessions { json } => cmd::sessions::run(state, json),
         Command::Follow { cde, pane_id } => cmd::sessions::run_follow(state, &cde, &pane_id),
         Command::Unfollow { cde, pane_id } => cmd::sessions::run_unfollow(state, &cde, &pane_id),
-        Command::Watch | Command::Wake | Command::Guard | Command::Up | Command::Attach => {
+        Command::Watch { heartbeat, once } => return cmd::watch::run(state, heartbeat, once),
+        Command::Wake { command } => match command {
+            WakeCommand::Drain => cmd::wake::run_drain(state),
+            WakeCommand::Ack { through } => cmd::wake::run_ack(state, through),
+        },
+        Command::Guard | Command::Up | Command::Attach => {
             anyhow::bail!("not implemented")
         }
     };

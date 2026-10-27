@@ -33,16 +33,19 @@ pub fn write_new_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// Appends `line` (one newline-terminated record) to `path` under the file's lock. A partial last
 /// line left by a crashed writer is dropped first, so it cannot corrupt the line appended after it.
 pub fn append_line(path: &Path, line: &[u8]) -> io::Result<()> {
-    with_lock(path, || {
-        let mut file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .append(true)
-            .open(path)?;
-        drop_partial_last_line(&mut file)?;
-        file.write_all(line)?;
-        file.sync_all()
-    })
+    with_lock(path, || append_line_holding_lock(path, line))
+}
+
+/// `append_line` for a caller already inside `with_lock(path, ...)`.
+pub fn append_line_holding_lock(path: &Path, line: &[u8]) -> io::Result<()> {
+    let mut file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .append(true)
+        .open(path)?;
+    drop_partial_last_line(&mut file)?;
+    file.write_all(line)?;
+    file.sync_all()
 }
 
 fn drop_partial_last_line(file: &mut File) -> io::Result<()> {

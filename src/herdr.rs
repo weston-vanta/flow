@@ -4,6 +4,7 @@
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
+use std::process::Child;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -27,6 +28,8 @@ pub const KEY_DOWN: &str = "down";
 
 /// The `error.code` herdr reports when a wait's `--timeout` expires.
 const TIMEOUT_CODE: &str = "timeout";
+/// The `error.code` herdr reports when a target pane does not exist.
+const AGENT_NOT_FOUND_CODE: &str = "agent_not_found";
 /// The `error.code` herdr reports when no server runs for the session.
 const SERVER_NOT_RUNNING_CODE: &str = "server_not_running";
 /// How every error from a call that ssh could not deliver starts.
@@ -360,6 +363,34 @@ impl Herdr {
         until: &[AgentStatus],
         timeout_ms: Option<u64>,
     ) -> anyhow::Result<Option<AgentStatus>> {
+        let argv = self.wait_argv(pane_id, until, timeout_ms);
+        let Some(output) = self.call_or_timeout(cde, &argv)? else {
+            return Ok(None);
+        };
+        let result: AgentResult = parse_result(cde, &argv, &output)?;
+        Ok(Some(result.agent.agent_status))
+    }
+
+    /// Starts the `wait` call without blocking on it. herdr's stderr is folded into the child's
+    /// stdout, which `wait_end` reads once the child exits.
+    pub fn spawn_wait(
+        &self,
+        cde: &Cde,
+        pane_id: &str,
+        until: &[AgentStatus],
+        timeout_ms: Option<u64>,
+    ) -> anyhow::Result<Child> {
+        let mut argv = words(&["sh", "-c", r#"exec "$@" 2>&1"#, "sh"]);
+        argv.extend(self.wait_argv(pane_id, until, timeout_ms));
+        self.runner.spawn(cde, &argv)
+    }
+
+    fn wait_argv(
+        &self,
+        pane_id: &str,
+        until: &[AgentStatus],
+        timeout_ms: Option<u64>,
+    ) -> Vec<String> {
         let mut argv = self.argv(&["agent", "wait", pane_id]);
         for status in until {
             argv.extend(words(&["--until", status.as_str()]));
@@ -367,11 +398,7 @@ impl Herdr {
         if let Some(timeout_ms) = timeout_ms {
             argv.extend(["--timeout".to_owned(), timeout_ms.to_string()]);
         }
-        let Some(output) = self.call_or_timeout(cde, &argv)? else {
-            return Ok(None);
-        };
-        let result: AgentResult = parse_result(cde, &argv, &output)?;
-        Ok(Some(result.agent.agent_status))
+        argv
     }
 
     /// Types `argv` as one command line into the shell in `pane_id`, followed by Enter. herdr
@@ -499,6 +526,42 @@ impl Herdr {
 
     fn call_json<T: DeserializeOwned>(&self, cde: &Cde, argv: &[String]) -> anyhow::Result<T> {
         parse_result(cde, argv, &self.call(cde, argv)?)
+    }
+}
+
+/// How a `spawn_wait` child ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WaitEnd {
+    /// The agent reached this status.
+    Reached(AgentStatus),
+    /// The wait's `--timeout` passed first.
+    TimedOut,
+    /// herdr does not know the pane, or no server runs for the session.
+    Gone,
+    /// ssh could not reach the CDE.
+    Unreachable,
+    /// Anything else, described.
+    Failed(String),
+}
+
+/// Reads a `spawn_wait` child's exit code (`None` when a signal killed it) and its stdout.
+pub fn wait_end(code: Option<i32>, stdout: &str) -> WaitEnd {
+    let stdout = stdout.trim();
+    if code == Some(SSH_FAILURE_STATUS) && stdout.is_empty() {
+        return WaitEnd::Unreachable;
+    }
+    if code == Some(0)
+        && let Ok(response) = serde_json::from_str::<Response<AgentResult>>(stdout)
+    {
+        return WaitEnd::Reached(response.result.agent.agent_status);
+    }
+    match error_code(stdout).as_deref() {
+        Some(TIMEOUT_CODE) => WaitEnd::TimedOut,
+        Some(AGENT_NOT_FOUND_CODE | SERVER_NOT_RUNNING_CODE) => WaitEnd::Gone,
+        _ => WaitEnd::Failed(match code {
+            Some(code) => format!("exited {code}: {stdout}"),
+            None => format!("killed by a signal: {stdout}"),
+        }),
     }
 }
 
@@ -715,6 +778,53 @@ mod tests {
                 "5000",
             ])]
         );
+    }
+
+    #[test]
+    fn spawn_wait_folds_stderr_into_stdout() {
+        let (herdr, fake) = herdr(vec![ok(AGENT_GET)]);
+        let out = herdr
+            .spawn_wait(&cde(), "w2:p1", &[AgentStatus::Done], Some(5000))
+            .unwrap()
+            .wait_with_output()
+            .unwrap();
+        assert_eq!(
+            wait_end(out.status.code(), &String::from_utf8(out.stdout).unwrap()),
+            WaitEnd::Reached(AgentStatus::Working)
+        );
+        assert_eq!(
+            argvs(&fake),
+            [words(&[
+                "sh",
+                "-c",
+                r#"exec "$@" 2>&1"#,
+                "sh",
+                "herdr",
+                "--session",
+                "flow",
+                "agent",
+                "wait",
+                "w2:p1",
+                "--until",
+                "done",
+                "--timeout",
+                "5000",
+            ])]
+        );
+    }
+
+    #[test]
+    fn wait_end_reads_failures() {
+        let not_found = r#"{"error":{"code":"agent_not_found","message":"agent target w9:p1 not found"},"id":"cli:agent:wait"}"#;
+        assert_eq!(wait_end(Some(1), not_found), WaitEnd::Gone);
+        assert_eq!(
+            wait_end(Some(1), AGENT_LIST_SERVER_NOT_RUNNING),
+            WaitEnd::Gone
+        );
+        assert_eq!(wait_end(Some(1), AGENT_WAIT_TIMEOUT), WaitEnd::TimedOut);
+        assert_eq!(wait_end(Some(255), ""), WaitEnd::Unreachable);
+        assert!(matches!(wait_end(Some(1), "boom"), WaitEnd::Failed(_)));
+        assert!(matches!(wait_end(None, ""), WaitEnd::Failed(_)));
     }
 
     #[test]

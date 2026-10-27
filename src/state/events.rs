@@ -6,7 +6,8 @@ use anyhow::Context;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-const EVENTS_FILE: &str = "events.jsonl";
+/// The file in a task directory holding its event log.
+pub const EVENTS_FILE: &str = "events.jsonl";
 
 /// One line of a task's `events.jsonl`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

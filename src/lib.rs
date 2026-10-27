@@ -8,4 +8,5 @@ pub mod paths;
 pub mod render;
 pub mod runner;
 pub mod state;
+pub mod watch;
 pub mod worktree;
