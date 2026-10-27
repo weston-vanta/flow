@@ -458,6 +458,34 @@ fn dispatch_answers_the_trust_dialog() {
     assert_eq!(status.state, State::Working);
 }
 
+#[test]
+fn dispatch_says_once_that_it_is_waiting_for_a_slow_worker() {
+    let fx = Fixture::new();
+    let not_found = r#"{"error":{"code":"agent_not_found","message":"agent target w3:p1 not found"},"id":"cli:agent:wait"}"#;
+    let mut script = vec![
+        ok(SERVER_RUNNING),
+        ok(NO_AGENTS),
+        ok(WORKSPACE_CREATE),
+        ok(PANE_RUN_OK),
+    ];
+    // About 4 s of polling at 400 ms, past the 3 s after which the wait is announced.
+    script.extend((0..10).map(|_| failed(not_found)));
+    script.push(wait_reports("working"));
+
+    let out = fx
+        .flow(&script)
+        .env("FLOW_HANDSHAKE_POLL_MS", "400")
+        .args(dispatch_args(&["--dir", WORKTREE]))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    let notice = format!("waiting for Claude Code in pane {PANE} on host-a…\n");
+    assert_eq!(stderr.matches(&notice).count(), 1, "{stderr}");
+}
+
 /// The `--timeout` an `agent wait` call passes, in milliseconds.
 fn wait_timeout(argv: &[String]) -> u64 {
     let at = argv.iter().position(|word| word == "--timeout").unwrap();
@@ -485,7 +513,8 @@ fn dispatch_waits_until_herdr_sees_the_worker() {
         .env("FLOW_HANDSHAKE_POLL_MS", "10")
         .args(dispatch_args(&["--dir", WORKTREE]))
         .assert()
-        .success();
+        .success()
+        .stderr("");
 
     let calls = fx.calls();
     let waits = herdr_calls(&calls, &["agent", "wait"]);

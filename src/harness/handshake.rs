@@ -15,6 +15,8 @@ const START_TIMEOUT_MS: u64 = 60_000;
 /// milliseconds.
 const POLL_VAR: &str = "FLOW_HANDSHAKE_POLL_MS";
 const DEFAULT_POLL: Duration = Duration::from_secs(1);
+/// How long herdr may see no agent before the start says what it is waiting for.
+const NOTICE_AFTER: Duration = Duration::from_secs(3);
 /// Enough of the pane to hold the whole trust dialog, or Claude's last words before exiting.
 pub const PANE_LINES: u32 = 40;
 /// The trust dialog lists two options, so reaching `Yes` never takes more moves than this.
@@ -100,17 +102,9 @@ fn await_start_with(
     stop_early: Option<StopEarly>,
     timing: &Timing,
 ) -> anyhow::Result<AgentStart> {
-    let mut started = None;
+    let mut clock = Clock::default();
     let mut wait = |until: &[AgentStatus]| -> anyhow::Result<AgentStatus> {
-        match wait_for_agent(
-            herdr,
-            host,
-            pane_id,
-            until,
-            stop_early,
-            timing,
-            &mut started,
-        )? {
+        match wait_for_agent(herdr, host, pane_id, until, stop_early, timing, &mut clock)? {
             Polled::Reached(status) => Ok(status),
             Polled::Stopped(pane_text) => Err(StoppedEarly {
                 pane_id: pane_id.to_owned(),
@@ -144,6 +138,14 @@ fn await_start_with(
     Ok(AgentStart::Running)
 }
 
+/// One start's progress across its waits: when the first began, and whether the wait for herdr
+/// to see the agent has been announced.
+#[derive(Default)]
+struct Clock {
+    started: Option<Instant>,
+    announced: bool,
+}
+
 /// How `wait_for_agent` ended.
 enum Polled {
     Reached(AgentStatus),
@@ -153,8 +155,9 @@ enum Polled {
 }
 
 /// The status the agent in `pane_id` reaches among `until` before `timing.timeout` has passed
-/// since the first wait, which sets `started`. While herdr sees no agent there this checks the
-/// pane against `stop_early` and asks again every `timing.poll`.
+/// since the first wait, which starts `clock`. While herdr sees no agent there this checks the
+/// pane against `stop_early` and asks again every `timing.poll`, saying once on stderr what it
+/// waits for when that takes a while.
 fn wait_for_agent(
     herdr: &Herdr,
     host: &Host,
@@ -162,9 +165,9 @@ fn wait_for_agent(
     until: &[AgentStatus],
     stop_early: Option<StopEarly>,
     timing: &Timing,
-    started: &mut Option<Instant>,
+    clock: &mut Clock,
 ) -> anyhow::Result<Polled> {
-    let started = *started.get_or_insert_with(Instant::now);
+    let started = *clock.started.get_or_insert_with(Instant::now);
     let mut left = timing.timeout.saturating_sub(started.elapsed());
     loop {
         if left.is_zero() {
@@ -177,6 +180,13 @@ fn wait_for_agent(
             Waited::Reached(status) => return Ok(Polled::Reached(status)),
             Waited::TimedOut => return Ok(Polled::TimedOut),
             Waited::NoAgent => {}
+        }
+        if !clock.announced && started.elapsed() >= NOTICE_AFTER {
+            eprintln!(
+                "waiting for Claude Code in pane {pane_id} on {}…",
+                host.name
+            );
+            clock.announced = true;
         }
         // A pane that cannot be read is no reason to stop.
         if let Some(stop_early) = stop_early
