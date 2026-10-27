@@ -293,9 +293,11 @@ Task ids are short, time-ordered, and never reused.
 ## Flows
 
 **Start or attach.** `flow up` on any CDE reads `state/supervisor/`. If a live supervisor
-exists, it attaches through ssh and herdr. If not, it starts a herdr session on this CDE
-running the harness from `/workspaces/flow` with `--resume` of the recorded supervisor
-session when one exists, takes the lock, and attaches.
+exists, it attaches through ssh and herdr. If not, it removes any watch lock the previous
+supervisor's watcher left, starts a herdr session on this CDE running the harness from
+`/workspaces/flow` with `--resume` of the recorded supervisor session when one exists and a
+first prompt to run the session start procedure (whose turn end arms `flow watch`), takes
+the lock, and attaches.
 
 **Dispatch.** User asks for work. Supervisor picks a CDE from inventory (or asks), writes
 the task directory and brief with completion criteria, ensures a worktree, ensures a herdr

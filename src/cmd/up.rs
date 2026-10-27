@@ -15,8 +15,12 @@ use crate::runner::{self, Runner};
 use crate::state::config::Host;
 use crate::state::task::HerdrTarget;
 use crate::supervisor::{self, Lock, SUPERVISOR_CWD, SUPERVISOR_ENV, SUPERVISOR_NAME};
+use crate::watch::lock as watch_lock;
 
 const AGENT_KIND: &str = "claude";
+/// The supervisor's first prompt, fresh or resumed: its first turn runs the start procedure,
+/// and that turn's end arms `flow watch`.
+const START_PROMPT: &str = "Run the session start procedure in CLAUDE.md.";
 
 pub fn run(state: &StateDir) -> anyhow::Result<()> {
     let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
@@ -29,6 +33,11 @@ pub fn run(state: &StateDir) -> anyhow::Result<()> {
         return attach::exec(&lock, host);
     }
     let here = local_host(&live)?;
+    // No supervisor is live, so whatever holds the watch lock is a watcher that outlived its
+    // supervisor, possibly on another host where it cannot be seen to be dead.
+    if watch_lock::clear(state)? {
+        eprintln!("removed state/supervisor/watch.lock left by the previous supervisor");
+    }
     let lock = start(state, &herdr, here)?;
     attach::exec(&lock, here)
 }
@@ -154,12 +163,13 @@ fn finish(lock: Lock, started: AgentStart) -> anyhow::Result<Lock> {
     Ok(lock)
 }
 
-/// `env FLOW_SUPERVISOR=1 claude --name flow-supervisor [--resume <session>]`.
+/// `env FLOW_SUPERVISOR=1 claude --name flow-supervisor [--resume <session>] "<START_PROMPT>"`.
 fn launch_argv(session: Option<&str>) -> Vec<String> {
     let marker = format!("{SUPERVISOR_ENV}=1");
     let mut argv = vec!["env", &marker, AGENT_KIND, "--name", SUPERVISOR_NAME];
     if let Some(session) = session {
         argv.extend(["--resume", session]);
     }
+    argv.push(START_PROMPT);
     argv.into_iter().map(str::to_owned).collect()
 }

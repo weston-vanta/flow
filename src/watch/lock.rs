@@ -1,6 +1,8 @@
 //! The single-flight lock for `flow watch`: the directory `state/supervisor/watch.lock`, made
 //! with mkdir, holding `owner.json`. The holder touches the directory every poll cycle, so a
-//! lock whose holder vanished on another host goes stale by age.
+//! lock whose holder vanished on another host goes stale by age. `flow up` clears it outright
+//! when it starts a supervisor because none was live, since only a live supervisor's watch
+//! holds it legitimately.
 
 use std::fs::{self, File};
 use std::io;
@@ -76,6 +78,18 @@ pub fn acquire(state: &StateDir, pid: u32) -> anyhow::Result<Option<Guard>> {
 pub fn held_live(state: &StateDir) -> anyhow::Result<bool> {
     let dir = state.root().join(LOCK_DIR);
     Ok(!is_stale(&dir, &this_host())?)
+}
+
+/// Removes the lock whoever holds it and returns whether there was one. For `flow up` only,
+/// when no supervisor is live: waiting for a vanished holder's lock to go stale would leave the
+/// new supervisor unwatched for up to `STALE_AFTER`.
+pub fn clear(state: &StateDir) -> anyhow::Result<bool> {
+    let dir = state.root().join(LOCK_DIR);
+    match fs::remove_dir_all(&dir) {
+        Ok(()) => Ok(true),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(err).with_context(|| format!("removing {}", dir.display())),
+    }
 }
 
 impl Guard {
@@ -205,6 +219,23 @@ mod tests {
         std::mem::forget(acquire(&state, dead_pid()).unwrap().unwrap());
         assert!(!held_live(&state).unwrap());
         assert!(state.root().join(LOCK_DIR).exists());
+    }
+
+    #[test]
+    fn clear_removes_a_live_foreign_lock() {
+        let (_dir, state) = state();
+        assert!(!clear(&state).unwrap());
+        let dir = state.root().join(LOCK_DIR);
+        fs::create_dir_all(&dir).unwrap();
+        let owner = Owner {
+            pid: 1,
+            host: "another-host".to_owned(),
+            started: Timestamp::now(),
+        };
+        fs::write(dir.join(OWNER_FILE), serde_json::to_vec(&owner).unwrap()).unwrap();
+        assert!(clear(&state).unwrap());
+        assert!(!dir.exists());
+        assert!(acquire(&state, std::process::id()).unwrap().is_some());
     }
 
     #[test]

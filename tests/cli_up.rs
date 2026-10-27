@@ -46,6 +46,8 @@ const SERVER_RUNNING: &str = "status: running\nversion: 0.9.5\nendpoint_compatib
      socket: /home/dev/.config/herdr/sessions/flow/herdr.sock\n";
 /// A pane `agent_list.json` lists.
 const LIVE_PANE: &str = "w1:p1";
+/// The first prompt every supervisor start passes Claude Code, quoted as `pane run` types it.
+const START_PROMPT: &str = "'Run the session start procedure in CLAUDE.md.'";
 /// The pane a scripted `workspace create` returns.
 const NEW_PANE: &str = "w3:p1";
 const TASK: &str = "aaaaaaab";
@@ -112,6 +114,14 @@ impl Fixture {
             "since": "2026-10-26T12:00:00Z",
         });
         fs::write(dir.join("lock.json"), lock.to_string()).unwrap();
+    }
+
+    /// A fresh `watch.lock` held by a watcher on the host `env_id`.
+    fn write_watch_lock(&self, env_id: &str) {
+        let dir = self.state.join("supervisor/watch.lock");
+        fs::create_dir_all(&dir).unwrap();
+        let owner = json!({"pid": 4242, "host": env_id, "started": "2026-10-26T12:00:00Z"});
+        fs::write(dir.join("owner.json"), owner.to_string()).unwrap();
     }
 
     fn lock(&self) -> Option<Lock> {
@@ -204,8 +214,9 @@ fn up_creates_supervisor_when_no_lock() {
     );
     let line = pane_run_line(&calls);
     assert_eq!(
-        line, "env 'FLOW_SUPERVISOR=1' claude --name flow-supervisor",
-        "the marker keeps the supervisor's hooks live"
+        line,
+        format!("env 'FLOW_SUPERVISOR=1' claude --name flow-supervisor {START_PROMPT}"),
+        "the marker keeps the supervisor's hooks live; the prompt runs a first turn"
     );
     assert!(!line.contains("--resume"), "{line}");
     assert!(!line.contains("--settings"), "{line}");
@@ -239,7 +250,9 @@ fn up_resumes_known_session() {
 
     let line = pane_run_line(&fx.calls());
     assert!(
-        line.contains("claude --name flow-supervisor --resume s9"),
+        line.ends_with(&format!(
+            "claude --name flow-supervisor --resume s9 {START_PROMPT}"
+        )),
         "{line}"
     );
     let lock = fx.lock().unwrap();
@@ -285,9 +298,37 @@ fn up_starts_fresh_here_when_the_lock_host_is_gone() {
 }
 
 #[test]
+fn up_clears_the_watch_lock_before_starting_a_supervisor() {
+    let fx = Fixture::new();
+    let gone_path = fx.state.join("hosts/env-0002.json");
+    let mut gone: Value = serde_json::from_str(&fs::read_to_string(&gone_path).unwrap()).unwrap();
+    gone["gone"] = json!(true);
+    fs::write(&gone_path, gone.to_string()).unwrap();
+    fx.write_lock("env-0002", "host-b", LIVE_PANE, None);
+    fx.write_watch_lock("env-0002");
+
+    let out = fx
+        .flow(&fresh_start())
+        .arg("up")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    assert!(!fx.state.join("supervisor/watch.lock").exists());
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("removed state/supervisor/watch.lock"),
+        "{stderr}"
+    );
+    assert_eq!(stderr.lines().count(), 2, "{stderr}");
+}
+
+#[test]
 fn up_attaches_when_lock_live() {
     let fx = Fixture::new();
     fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
+    fx.write_watch_lock("env-0001");
     let before = fs::read_to_string(fx.state.join("supervisor/lock.json")).unwrap();
 
     let stdout = stdout_of(fx.flow(&[ok(&supervisor_agents())]).arg("up"));
@@ -305,6 +346,10 @@ fn up_attaches_when_lock_live() {
     assert_eq!(
         fs::read_to_string(fx.state.join("supervisor/lock.json")).unwrap(),
         before
+    );
+    assert!(
+        fx.state.join("supervisor/watch.lock/owner.json").exists(),
+        "a live supervisor's watcher keeps its lock"
     );
 }
 
@@ -353,8 +398,13 @@ fn up_starts_fresh_session_when_resume_fails() {
     let calls = fx.calls();
     let lines = pane_run_lines(&calls);
     assert_eq!(lines.len(), 2, "{calls:?}");
-    assert!(lines[0].ends_with("--resume s9"), "{}", lines[0]);
+    assert!(
+        lines[0].ends_with(&format!("--resume s9 {START_PROMPT}")),
+        "{}",
+        lines[0]
+    );
     assert!(!lines[1].contains("--resume"), "{}", lines[1]);
+    assert!(lines[1].ends_with(START_PROMPT), "{}", lines[1]);
     assert!(
         has_subcommand(&calls, &["workspace", "close", "w3"]),
         "{calls:?}"
