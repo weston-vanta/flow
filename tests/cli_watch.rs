@@ -403,3 +403,22 @@ fn watch_failure_after_taking_the_lock_wakes() {
     assert_eq!(queue[0]["obs"]["type"], "watch-failed");
     assert!(!fx.supervisor("watch.lock").exists());
 }
+
+#[test]
+fn watch_keeps_running_when_a_task_cannot_be_read() {
+    let fx = Fixture::new();
+    fx.task(TASK, "host-a", None);
+    let status = fx.state.join("tasks").join(TASK).join("status.json");
+    fs::write(&status, "{not json").unwrap();
+
+    let mut watch = fx.spawn_watch(&[]);
+    thread::sleep(Duration::from_millis(1500));
+    let exited = watch.try_wait().unwrap();
+    watch.kill().unwrap();
+    let output = watch.wait_with_output().unwrap();
+    assert!(exited.is_none(), "flow watch exited: {output:?}");
+    assert!(fx.queue_lines().is_empty());
+    let log = fs::read_to_string(fx.supervisor("watch.log")).unwrap();
+    assert!(log.contains("reading tasks"), "{log}");
+    assert!(!log.contains("nothing to watch"), "{log}");
+}

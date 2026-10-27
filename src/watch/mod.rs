@@ -21,7 +21,8 @@
 //! the supervisor. A task whose worker herdr last reported `working` does not count as quiet.
 //!
 //! A run with nothing to watch, no open task and no followed session, ends after its first
-//! cycle rather than waiting for the heartbeat.
+//! cycle rather than waiting for the heartbeat. A cycle that could not read the tasks or the
+//! follow list counts as having something to watch.
 
 pub mod classify;
 mod files;
@@ -198,7 +199,8 @@ struct Watcher<'a> {
     /// Whether a task this run has no `seen` entry for is replayed from `pending`, because an
     /// earlier run saved state and so would have read it had it existed then.
     replay_unseen: bool,
-    /// Whether the last cycle found anything to watch: an open task or a followed session.
+    /// Whether the last cycle found anything to watch: an open task or a followed session, or
+    /// a task list or follow list it could not read.
     watching: bool,
     /// Whether `unreachable` entries no wait targets were dropped yet this run.
     pruned: bool,
@@ -244,19 +246,23 @@ impl<'a> Watcher<'a> {
 
     /// One poll cycle: the wake reason when something woke the supervisor.
     fn cycle(&mut self) -> anyhow::Result<Option<String>> {
+        let mut unread = false;
         let tasks = self.store.list_tasks().unwrap_or_else(|err| {
             self.log(&format!("reading tasks: {err:#}"));
+            unread = true;
             Vec::new()
         });
         let follow = FollowList::load(self.state).map_or_else(
             |err| {
                 self.log(&format!("{err:#}"));
+                unread = true;
                 Vec::new()
             },
             |list| list.follow,
         );
+        // What could not be read may well be open, so an error never ends the run as idle.
         self.watching =
-            !follow.is_empty() || tasks.iter().any(|(_, status)| status.state.is_open());
+            unread || !follow.is_empty() || tasks.iter().any(|(_, status)| status.state.is_open());
         let mut observed = self.read_task_files(&tasks);
         self.reconcile_waits(&tasks, &follow);
         if !self.pruned {
@@ -990,6 +996,29 @@ default_branch = "main"
         let mut watcher = fx.watcher(&runner, 0);
         assert_eq!(two_cycles(&mut watcher), None);
         assert_eq!(runner.calls().len(), 2);
+    }
+
+    #[test]
+    fn unreadable_task_or_follow_list_keeps_the_run_watching() {
+        let fx = Fixture::new();
+        fx.task(false);
+        let status = Store::open(&fx.state)
+            .task_dir(TASK)
+            .unwrap()
+            .join("status.json");
+        std::fs::write(&status, "{not json").unwrap();
+        let runner = fake(Vec::new());
+        let mut watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+        assert_eq!(watcher.cycle().unwrap(), None);
+        assert!(watcher.watching);
+
+        let fx = Fixture::new();
+        let supervisor = fx.state.root().join(SUPERVISOR_DIR);
+        std::fs::create_dir_all(&supervisor).unwrap();
+        std::fs::write(supervisor.join("follow.json"), "{not json").unwrap();
+        let mut watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+        assert_eq!(watcher.cycle().unwrap(), None);
+        assert!(watcher.watching);
     }
 
     #[test]
