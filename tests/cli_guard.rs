@@ -184,3 +184,31 @@ fn guard_outside_supervisor_needs_no_state_dir() {
         .stdout("")
         .stderr("");
 }
+
+#[test]
+fn guard_hands_the_turn_to_a_wake_queued_during_its_grace() {
+    let fixture = Fixture::new();
+    fixture.task("aaaaaaab", State::Working);
+    fixture.task("aaaaaaac", State::Blocked);
+    let state = fixture.state_dir();
+    // The async watcher takes the lock, queues a wake and exits within the guard's grace.
+    let watcher = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(100));
+        queue::push(&state, "blocked: aaaaaaac", &Observation::Heartbeat).unwrap();
+    });
+    let message = "flow: 1 unhandled wakes; run flow wake drain\n";
+
+    let mut cmd = fixture.guard_command();
+    cmd.env(SUPERVISOR_ENV, "1")
+        .env("FLOW_GUARD_GRACE_MS", "3000")
+        .write_stdin(STOP_INPUT);
+    let started = std::time::Instant::now();
+    cmd.assert().code(2).stdout(message).stderr(message);
+
+    watcher.join().unwrap();
+    assert!(
+        started.elapsed() < Duration::from_millis(2500),
+        "the guard stopped waiting once the wake was queued: {:?}",
+        started.elapsed()
+    );
+}

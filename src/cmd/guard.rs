@@ -33,9 +33,7 @@ pub fn run(state: &StateDir) -> anyhow::Result<ExitCode> {
     let input = read_input();
     let wakes = queue::pending(state)?.len();
     if wakes > 0 {
-        return block(&format!(
-            "flow: {wakes} unhandled wakes; run flow wake drain"
-        ));
+        return block_on_wakes(wakes);
     }
     let open = Store::open(state)
         .list_tasks()?
@@ -45,12 +43,13 @@ pub fn run(state: &StateDir) -> anyhow::Result<ExitCode> {
     if open == 0 || input.stop_hook_active {
         return Ok(ExitCode::SUCCESS);
     }
-    if watcher_appears(state, grace()?)? {
-        return Ok(ExitCode::SUCCESS);
+    match await_watcher(state, grace()?)? {
+        Grace::Watcher => Ok(ExitCode::SUCCESS),
+        Grace::Wakes(wakes) => block_on_wakes(wakes),
+        Grace::Neither => block(&format!(
+            "flow: work under way ({open} tasks) and no watcher is live; run `flow watch` in the background before ending the turn"
+        )),
     }
-    block(&format!(
-        "flow: work under way ({open} tasks) and no watcher is live; run `flow watch` in the background before ending the turn"
-    ))
 }
 
 /// The hook input on stdin. A terminal, an unreadable stream or input that does not parse
@@ -67,16 +66,30 @@ fn read_input() -> StopInput {
     serde_json::from_slice(&bytes).unwrap_or_default()
 }
 
-/// Whether the watch lock is held live now or becomes so within `grace`.
-fn watcher_appears(state: &StateDir, grace: Duration) -> anyhow::Result<bool> {
+/// What the guard saw within its grace.
+enum Grace {
+    /// The watch lock is held live.
+    Watcher,
+    /// This many wakes are queued: a watcher took the lock, queued them and exited.
+    Wakes(usize),
+    /// Neither, once the grace ran out.
+    Neither,
+}
+
+/// Waits up to `grace` for the watch lock to be held live or for a wake to be queued.
+fn await_watcher(state: &StateDir, grace: Duration) -> anyhow::Result<Grace> {
     let deadline = Instant::now() + grace;
     loop {
         if lock::held_live(state)? {
-            return Ok(true);
+            return Ok(Grace::Watcher);
+        }
+        let wakes = queue::pending(state)?.len();
+        if wakes > 0 {
+            return Ok(Grace::Wakes(wakes));
         }
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            return Ok(false);
+            return Ok(Grace::Neither);
         }
         thread::sleep(left.min(POLL));
     }
@@ -92,6 +105,13 @@ fn grace() -> anyhow::Result<Duration> {
         }
         Err(_) => Ok(DEFAULT_GRACE),
     }
+}
+
+/// Blocks so the queued wakes carry the next turn.
+fn block_on_wakes(wakes: usize) -> anyhow::Result<ExitCode> {
+    block(&format!(
+        "flow: {wakes} unhandled wakes; run flow wake drain"
+    ))
 }
 
 fn block(reason: &str) -> anyhow::Result<ExitCode> {
