@@ -1,9 +1,10 @@
 //! Runs commands on a CDE: directly when the CDE is this machine, over ssh otherwise. Every
 //! remote operation goes through a `Runner`.
 
-use std::ffi::OsString;
-use std::fs::{self, OpenOptions};
+use std::ffi::{OsStr, OsString};
+use std::fs::{self, DirBuilder, OpenOptions, Permissions};
 use std::io::Write;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -13,7 +14,6 @@ use anyhow::{Context, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::cde;
-use crate::paths::StateDir;
 use crate::state::config::Cde;
 
 /// Names a JSON script file; when set, `from_env` returns a `FakeRunner` reading it.
@@ -33,20 +33,37 @@ pub trait Runner: Send + Sync {
     /// Runs `argv` on `cde` to completion, feeding it `stdin` when given.
     fn run(&self, cde: &Cde, argv: &[String], stdin: Option<&[u8]>) -> anyhow::Result<Output>;
 
-    /// Starts `argv` on `cde` with stdin closed and stdout and stderr piped.
+    /// Starts `argv` on `cde` with stdout piped and stdin and stderr closed, so a long-lived
+    /// child never blocks on a pipe nobody drains.
     fn spawn(&self, cde: &Cde, argv: &[String]) -> anyhow::Result<Child>;
 }
 
 /// The runner for this process: a `FakeRunner` when `$FLOW_FAKE_RUNNER` names a script,
-/// else a `LocalSshRunner` keeping its ssh control sockets under `state/supervisor/`.
-pub fn from_env(state: &StateDir) -> anyhow::Result<Box<dyn Runner>> {
+/// else a `LocalSshRunner` keeping its ssh control sockets in `default_control_dir()`.
+pub fn from_env() -> anyhow::Result<Box<dyn Runner>> {
     if let Some(script) = std::env::var_os(FAKE_RUNNER_VAR) {
         return Ok(Box::new(FakeRunner::from_file(Path::new(&script))?));
     }
     Ok(Box::new(LocalSshRunner::new(
         cde::local_env_id(),
-        state.root().join("supervisor"),
+        default_control_dir(),
     )?))
+}
+
+/// Where ssh control sockets live: `$XDG_RUNTIME_DIR/flow`, else `/tmp/flow-<uid>`.
+pub fn default_control_dir() -> PathBuf {
+    let uid = fs::metadata("/proc/self").map(|meta| meta.uid()).ok();
+    control_dir_for(std::env::var_os("XDG_RUNTIME_DIR").as_deref(), uid)
+}
+
+/// The control dir rule. It stays on local disk because Unix sockets cannot be bound on NFS
+/// and their paths are capped at 108 bytes.
+fn control_dir_for(xdg_runtime_dir: Option<&OsStr>, uid: Option<u32>) -> PathBuf {
+    match (xdg_runtime_dir.filter(|dir| !dir.is_empty()), uid) {
+        (Some(dir), _) => Path::new(dir).join("flow"),
+        (None, Some(uid)) => PathBuf::from(format!("/tmp/flow-{uid}")),
+        (None, None) => PathBuf::from("/tmp/flow"),
+    }
 }
 
 /// Runs argv directly on the CDE whose env id is `local_env_id`, and over ssh on the others.
@@ -57,9 +74,14 @@ pub struct LocalSshRunner {
 }
 
 impl LocalSshRunner {
-    /// `control_dir` holds the ssh multiplexing sockets; it is created if missing.
+    /// `control_dir` holds the ssh multiplexing sockets; it is created if missing and set to
+    /// mode 0700.
     pub fn new(local_env_id: Option<String>, control_dir: PathBuf) -> anyhow::Result<Self> {
-        fs::create_dir_all(&control_dir)
+        DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&control_dir)
+            .and_then(|()| fs::set_permissions(&control_dir, Permissions::from_mode(0o700)))
             .with_context(|| format!("creating {}", control_dir.display()))?;
         Ok(LocalSshRunner {
             local_env_id,
@@ -115,7 +137,7 @@ impl Runner for LocalSshRunner {
         self.command(cde, argv)?
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::null())
             .spawn()
             .with_context(|| format!("starting {argv:?} on {}", cde.name))
     }
@@ -273,17 +295,12 @@ impl Runner for FakeRunner {
     fn spawn(&self, cde: &Cde, argv: &[String]) -> anyhow::Result<Child> {
         let entry = self.answer(cde, argv)?;
         Command::new("sh")
-            .args([
-                "-c",
-                r#"printf %s "$1"; printf %s "$2" >&2; exit "$3""#,
-                "sh",
-            ])
+            .args(["-c", r#"printf %s "$1"; exit "$2""#, "sh"])
             .arg(&entry.stdout)
-            .arg(&entry.stderr)
             .arg(entry.status.to_string())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::null())
             .spawn()
             .context("starting the fake runner's child")
     }
@@ -331,7 +348,7 @@ mod tests {
         let built = build_argv(
             &cde("cde-a", "env-0001"),
             Some("env-0001"),
-            Path::new("/state/supervisor"),
+            Path::new("/run/user/1000/flow"),
             &argv,
         );
         assert_eq!(built, argv);
@@ -342,7 +359,7 @@ mod tests {
         let built = build_argv(
             &cde("cde-b", "env-0002"),
             Some("env-0001"),
-            Path::new("/state/supervisor"),
+            Path::new("/run/user/1000/flow"),
             &words(&["echo", "a b"]),
         );
         assert_eq!(
@@ -354,7 +371,7 @@ mod tests {
                 "-o",
                 "ControlMaster=auto",
                 "-o",
-                "ControlPath=/state/supervisor/ssh-%C",
+                "ControlPath=/run/user/1000/flow/ssh-%C",
                 "-o",
                 "ControlPersist=600",
                 "cde-b.example",
@@ -365,11 +382,37 @@ mod tests {
     }
 
     #[test]
+    fn default_control_dir_prefers_xdg_runtime_dir() {
+        let xdg = Some(OsStr::new("/run/user/1000"));
+        assert_eq!(
+            control_dir_for(xdg, Some(1000)),
+            Path::new("/run/user/1000/flow")
+        );
+        assert_eq!(
+            control_dir_for(None, Some(1000)),
+            Path::new("/tmp/flow-1000")
+        );
+        assert_eq!(
+            control_dir_for(Some(OsStr::new("")), Some(1000)),
+            Path::new("/tmp/flow-1000")
+        );
+    }
+
+    #[test]
+    fn local_ssh_runner_creates_private_control_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("flow");
+        LocalSshRunner::new(None, dir.clone()).unwrap();
+        let mode = fs::metadata(&dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+    }
+
+    #[test]
     fn unknown_local_env_id_treats_every_cde_as_remote() {
         let built = build_argv(
             &cde("cde-a", "env-0001"),
             None,
-            Path::new("/state/supervisor"),
+            Path::new("/run/user/1000/flow"),
             &words(&["true"]),
         );
         assert_eq!(built[0], "ssh");
@@ -436,7 +479,6 @@ mod tests {
         let fake = FakeRunner::new(vec![Scripted {
             status: 3,
             stdout: "it's out".to_owned(),
-            stderr: "err".to_owned(),
             ..Scripted::default()
         }]);
         let argv = words(&["herdr", "wait"]);
@@ -447,7 +489,6 @@ mod tests {
             .unwrap();
         assert_eq!(out.status.code(), Some(3));
         assert_eq!(out.stdout, b"it's out");
-        assert_eq!(out.stderr, b"err");
         assert_eq!(
             fake.calls(),
             [Call {

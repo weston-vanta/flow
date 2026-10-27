@@ -52,7 +52,7 @@ pub fn run_list(state: &StateDir, json: bool) -> anyhow::Result<()> {
 pub fn run_command(state: &StateDir, name: &str, argv: &[String]) -> anyhow::Result<i32> {
     let config = Config::load(state)?;
     let target = cde::find(&config, name)?;
-    let output = runner::from_env(state)?.run(target, argv, None)?;
+    let output = runner::from_env()?.run(target, argv, None)?;
     super::print(&output.stdout)?;
     let mut stderr = io::stderr().lock();
     stderr.write_all(output.stderr.as_bytes())?;
