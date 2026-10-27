@@ -53,6 +53,8 @@ pub enum Observation {
     },
     /// `--heartbeat` seconds passed.
     Heartbeat,
+    /// The watch run hit `error` and stopped; the supervisor's next turn end starts another.
+    WatchFailed { error: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,6 +128,7 @@ pub fn classify(obs: &Observation, thresholds: &Thresholds) -> Verdict {
             format!("adopted-{}: {host}/{pane_id}", status.as_str())
         }
         Observation::Heartbeat => "heartbeat".to_owned(),
+        Observation::WatchFailed { error } => format!("watch-failed: {error}"),
     };
     Verdict::Wake(reason)
 }
@@ -432,6 +435,17 @@ mod tests {
         assert_eq!(
             verdict(adopted("w1:p1", AgentStatus::Idle)),
             Verdict::Absorb
+        );
+    }
+
+    #[test]
+    fn classify_watch_failed_wakes() {
+        let obs = Observation::WatchFailed {
+            error: "writing watch-state.json: disk full".to_owned(),
+        };
+        assert_eq!(
+            verdict(obs),
+            wake("watch-failed: writing watch-state.json: disk full")
         );
     }
 

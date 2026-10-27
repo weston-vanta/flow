@@ -1,8 +1,10 @@
 //! `flow watch [--heartbeat SECS] [--once]`: the supervisor's Stop hook. Blocks until something
 //! is actionable, then prints the reason on stdout and stderr and exits 2, which Claude Code
 //! delivers to the supervisor as hook feedback. Exits 0 silently when another watch holds the
-//! lock, and under `--once` when nothing woke. Outside the supervisor session the binary exits 0
-//! before this runs.
+//! lock, under `--once` when nothing woke, and when there is nothing to watch. Once the lock is
+//! held, an error wakes the supervisor as `watch-failed: <error>` rather than failing the hook,
+//! which would leave no watcher and nobody told. Outside the supervisor session the binary exits
+//! 0 before this runs.
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -25,6 +27,22 @@ pub fn run(state: &StateDir, heartbeat: Option<u64>, once: bool) -> anyhow::Resu
     let Some(lock) = lock::acquire(state, std::process::id())? else {
         return Ok(ExitCode::SUCCESS);
     };
+    let reason = match watch_holding(state, heartbeat, once, &lock) {
+        Ok(None) => return Ok(ExitCode::SUCCESS),
+        Ok(Some(reason)) => reason,
+        Err(err) => watch::failure_wake(state, &err),
+    };
+    super::print(&format!("{reason}\n"))?;
+    eprintln!("{reason}");
+    Ok(ExitCode::from(WAKE_EXIT))
+}
+
+fn watch_holding(
+    state: &StateDir,
+    heartbeat: Option<u64>,
+    once: bool,
+    lock: &lock::Guard,
+) -> anyhow::Result<Option<String>> {
     let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
     let settings = Settings {
         poll: poll_interval()?,
@@ -32,12 +50,7 @@ pub fn run(state: &StateDir, heartbeat: Option<u64>, once: bool) -> anyhow::Resu
         once,
         quiet_secs: DEFAULT_QUIET_SECS,
     };
-    let Some(reason) = watch::run(state, runner, &settings, &lock)? else {
-        return Ok(ExitCode::SUCCESS);
-    };
-    super::print(&format!("{reason}\n"))?;
-    eprintln!("{reason}");
-    Ok(ExitCode::from(WAKE_EXIT))
+    watch::run(state, runner, &settings, lock)
 }
 
 fn poll_interval() -> anyhow::Result<Duration> {

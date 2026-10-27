@@ -346,3 +346,60 @@ fn watch_outside_supervisor_needs_no_state_dir() {
         .stdout("")
         .stderr("");
 }
+
+#[test]
+fn watch_wakes_for_a_task_done_before_first_sight() {
+    let fx = Fixture::new();
+    fs::create_dir_all(fx.state.join("supervisor")).unwrap();
+    fs::write(fx.supervisor("watch-state.json"), "{}").unwrap();
+    fx.task(TASK, "host-a", None);
+    let report = fx.dir.path().join("report.md");
+    fs::write(&report, "# Done\n").unwrap();
+    fx.flow()
+        .args(["task", "done", TASK, "--report"])
+        .arg(&report)
+        .assert()
+        .success();
+
+    let output = finish(fx.spawn_watch(&["--once"]));
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert_eq!(stdout(&output), format!("done: {TASK}\n"));
+}
+
+#[test]
+fn watch_exits_0_with_nothing_to_watch() {
+    let fx = Fixture::new();
+    fx.task(TASK, "host-a", None);
+    fx.flow()
+        .args(["task", "orphan", TASK, "--reason", "superseded"])
+        .assert()
+        .success();
+
+    let output = finish(fx.spawn_watch(&[]));
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(stdout(&output), "");
+    assert!(fx.queue_lines().is_empty());
+    assert!(!fx.supervisor("watch.lock").exists());
+    let log = fs::read_to_string(fx.supervisor("watch.log")).unwrap();
+    assert!(log.contains("nothing to watch"), "{log}");
+}
+
+#[test]
+fn watch_failure_after_taking_the_lock_wakes() {
+    let fx = Fixture::new();
+    fx.task(TASK, "host-a", None);
+    fs::create_dir_all(fx.supervisor("watch-state.json")).unwrap();
+
+    let output = finish(fx.spawn_watch(&[]));
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let out = stdout(&output);
+    assert!(out.starts_with("watch-failed: "), "{out}");
+    assert!(out.contains("watch-state.json"), "{out}");
+    assert_eq!(out.lines().count(), 1, "{out}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("watch-failed: "));
+    let queue = fx.queue_lines();
+    assert_eq!(queue.len(), 1, "{queue:?}");
+    assert_eq!(queue[0]["reason"], out.trim_end());
+    assert_eq!(queue[0]["obs"]["type"], "watch-failed");
+    assert!(!fx.supervisor("watch.lock").exists());
+}
