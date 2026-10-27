@@ -214,14 +214,18 @@ pub fn latest_summary(transcript: &Path) -> anyhow::Result<Option<String>> {
         .with_context(context)?
         .len()
         .saturating_sub(SUMMARY_WINDOW);
-    file.seek(SeekFrom::Start(start)).with_context(context)?;
+    // Inside the file, read one byte before the window too: everything up to the first newline
+    // is then the tail of a line that starts before the window, or nothing when the window starts
+    // on a line boundary.
+    let read_from = start.saturating_sub(1);
+    file.seek(SeekFrom::Start(read_from))
+        .with_context(context)?;
     let mut window = Vec::new();
-    file.take(SUMMARY_WINDOW)
+    file.take(SUMMARY_WINDOW + (start - read_from))
         .read_to_end(&mut window)
         .with_context(context)?;
     let mut lines = window.split(|&byte| byte == b'\n');
     if start > 0 {
-        // The window most likely starts inside a line.
         lines.next();
     }
     Ok(lines.rev().find_map(away_summary))
@@ -377,6 +381,25 @@ mod tests {
         assert!(text.len() as u64 > SUMMARY_WINDOW);
         assert!(text.len() as u64 - SUMMARY_WINDOW < recent.len() as u64);
         assert_eq!(latest_summary(&path).unwrap(), None);
+    }
+
+    #[test]
+    fn latest_summary_keeps_a_line_starting_the_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("boundary.jsonl");
+        let first = r#"{"type":"system","subtype":"away_summary","content":"at the start"}"#;
+        let filler = format!("{{\"type\":\"user\",\"text\":\"{}\"}}\n", "x".repeat(1000));
+        let mut window = format!("{first}\n");
+        window.push_str(&filler.repeat((SUMMARY_WINDOW as usize - window.len()) / filler.len()));
+        let pad = SUMMARY_WINDOW as usize - window.len() - r#"{"text":""}"#.len() - 1;
+        window.push_str(&format!("{{\"text\":\"{}\"}}\n", "y".repeat(pad)));
+        assert_eq!(window.len() as u64, SUMMARY_WINDOW);
+        fs::write(&path, format!("{{\"type\":\"user\"}}\n{window}")).unwrap();
+
+        assert_eq!(
+            latest_summary(&path).unwrap().as_deref(),
+            Some("at the start")
+        );
     }
 
     #[test]

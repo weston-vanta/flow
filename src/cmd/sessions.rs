@@ -22,7 +22,7 @@ const ADOPTED: &str = "adopted";
 const SUMMARY_WIDTH: usize = 80;
 
 /// Lists every herdr agent on every configured CDE, asking herdr now. A CDE that answers gets
-/// its cached agents replaced; one that does not shows its cached agents.
+/// its cached agents and herdr error replaced; one that does not shows its cached agents.
 pub fn run(state: &StateDir, json: bool) -> anyhow::Result<()> {
     let config = Config::load(state)?;
     let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
@@ -118,8 +118,8 @@ fn live_inventories(
     })
 }
 
-/// `cde`'s cached inventory with the agents herdr reports now, saved; or, when the CDE does not
-/// answer, its cached inventory as is.
+/// `cde`'s cached inventory with the agents and herdr error herdr reports now, saved; or, when
+/// the CDE does not answer, its cached inventory as is. Any herdr error is printed on stderr.
 fn live_inventory(
     state: &StateDir,
     runner: &Arc<dyn Runner>,
@@ -129,8 +129,10 @@ fn live_inventory(
 ) -> anyhow::Result<CdeInventory> {
     let cached = inventory::load(state, &cde.env_id)?;
     let found = inventory::herdr_agents(runner, cde, &config.herdr_sessions);
+    if let Some(error) = &found.error {
+        eprintln!("{error}");
+    }
     if found.unreachable {
-        eprintln!("{}", found.error.as_deref().unwrap_or_default());
         return Ok(cached.unwrap_or_else(|| inventory::unreachable(cde, None, now)));
     }
     let updated = inventory::with_agents(cde, cached, found, now);

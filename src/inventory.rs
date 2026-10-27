@@ -230,8 +230,8 @@ pub fn herdr_agents(runner: &Arc<dyn Runner>, cde: &Cde, sessions: &[String]) ->
     }
 }
 
-/// `cached` with its agents replaced by `found` as of `now`, or, with nothing cached, an
-/// inventory of only those agents. Nothing else in a cached inventory changes.
+/// `cached` with its agents and herdr error replaced by `found` as of `now`, or, with nothing
+/// cached, an inventory of only those agents. Nothing else in a cached inventory changes.
 pub fn with_agents(
     cde: &Cde,
     cached: Option<CdeInventory>,
@@ -242,6 +242,7 @@ pub fn with_agents(
         Some(cached) => CdeInventory {
             seen: now,
             agents: found.agents,
+            herdr_error: found.error,
             ..cached
         },
         None => CdeInventory {

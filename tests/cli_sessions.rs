@@ -291,6 +291,49 @@ fn sessions_update_only_agents_in_an_existing_cache() {
 }
 
 #[test]
+fn sessions_record_a_flow_session_failure() {
+    let fx = Fixture::new();
+    fx.single_cde();
+    let mut earlier = cde_b_cache();
+    earlier["name"] = json!("cde-a");
+    earlier["env_id"] = json!("env-0001");
+    earlier["herdr_error"] = json!("an older herdr failure");
+    fx.write_cache("env-0001", &earlier);
+    let script = [
+        json!({"cde": "cde-a", "status": 1, "stdout": "", "stderr": "internal error\n"}),
+        on("cde-a", DEFAULT_AGENTS),
+    ];
+
+    let out = fx
+        .flow(&script)
+        .arg("sessions")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert_eq!(stderr.lines().count(), 1, "{stderr}");
+    assert!(
+        stderr.contains("herdr --session flow status server") && stderr.contains("internal error"),
+        "{stderr}"
+    );
+    assert_eq!(stdout.lines().count(), 1, "{stdout}");
+    assert!(
+        stdout.starts_with("cde-a  w1:p1  idle  adopted  Tidy docs  Moved the guides"),
+        "{stdout}"
+    );
+    let cached = fx.cached("env-0001");
+    assert_eq!(cached["herdr_error"], stderr.trim_end());
+    assert_eq!(cached["agents"].as_array().unwrap().len(), 1);
+    assert_eq!(cached["agents"][0]["session"], "default");
+
+    stdout_of(fx.flow(&cde_a_agents()).arg("sessions"));
+    assert_eq!(fx.cached("env-0001")["herdr_error"], Value::Null);
+}
+
+#[test]
 fn sessions_fall_back_to_cache_for_unreachable_cde() {
     let fx = Fixture::new();
     fx.write_cache("env-0002", &cde_b_cache());
