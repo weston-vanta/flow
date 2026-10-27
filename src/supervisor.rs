@@ -72,9 +72,9 @@ pub fn take(state: &StateDir, host_env_id: &str, herdr: HerdrTarget) -> anyhow::
     .with_context(|| format!("writing {}", path.display()))
 }
 
-/// Records `session_id` as the supervisor's Claude Code session. Returns `false`, changing
-/// nothing, when there is no lock.
-pub fn record_session(state: &StateDir, session_id: &str) -> anyhow::Result<bool> {
+/// Sets the supervisor's Claude Code session to resume, or clears it with `None`. Returns
+/// `false`, changing nothing, when there is no lock.
+pub fn set_session(state: &StateDir, session_id: Option<&str>) -> anyhow::Result<bool> {
     let path = lock_path(state);
     if !path.exists() {
         return Ok(false);
@@ -83,7 +83,7 @@ pub fn record_session(state: &StateDir, session_id: &str) -> anyhow::Result<bool
         let Some(mut lock) = read(&path).map_err(io::Error::other)? else {
             return Ok(false);
         };
-        lock.claude_session = Some(session_id.to_owned());
+        lock.claude_session = session_id.map(str::to_owned);
         write(&path, &lock)?;
         Ok(true)
     })

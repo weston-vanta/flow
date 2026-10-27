@@ -6,6 +6,7 @@ use std::process::ExitCode;
 use clap::Parser;
 use flow::cmd::Refused;
 use flow::paths::{PathError, StateDir};
+use flow::supervisor;
 
 use crate::cli::Cli;
 
@@ -30,6 +31,11 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> anyhow::Result<ExitCode> {
+    // The repo's hooks run in every Claude Code session started in it; outside the supervisor
+    // they do nothing, even where no state directory exists yet.
+    if cli.command.is_supervisor_hook() && !supervisor::is_supervisor_session() {
+        return Ok(ExitCode::SUCCESS);
+    }
     // The binary always runs from this repo's own build, so the build-time manifest dir is the repo root.
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let state = StateDir::resolve(repo_root)?;

@@ -1,7 +1,8 @@
 //! `flow watch [--heartbeat SECS] [--once]`: the supervisor's Stop hook. Blocks until something
 //! is actionable, then prints the reason on stdout and stderr and exits 2, which Claude Code
 //! delivers to the supervisor as hook feedback. Exits 0 silently when another watch holds the
-//! lock, in a session that is not the supervisor, and under `--once` when nothing woke.
+//! lock, and under `--once` when nothing woke. Outside the supervisor session the binary exits 0
+//! before this runs.
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -11,7 +12,6 @@ use anyhow::Context;
 
 use crate::paths::StateDir;
 use crate::runner::{self, Runner};
-use crate::supervisor;
 use crate::watch::classify::DEFAULT_QUIET_SECS;
 use crate::watch::{self, Settings, lock};
 
@@ -22,10 +22,6 @@ const DEFAULT_HEARTBEAT_SECS: u64 = 3600;
 const WAKE_EXIT: u8 = 2;
 
 pub fn run(state: &StateDir, heartbeat: Option<u64>, once: bool) -> anyhow::Result<ExitCode> {
-    // Another session in this repo must not take the lock and swallow the supervisor's wakes.
-    if !supervisor::is_supervisor_session() {
-        return Ok(ExitCode::SUCCESS);
-    }
     let Some(lock) = lock::acquire(state, std::process::id())? else {
         return Ok(ExitCode::SUCCESS);
     };

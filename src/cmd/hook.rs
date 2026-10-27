@@ -61,20 +61,17 @@ struct SupervisorHookInput {
 }
 
 /// On the supervisor's `SessionStart`, records its session id in the supervisor lock so the
-/// next `flow up` resumes it. Other events, sessions that are not the supervisor (`is_supervisor`
-/// false: another session started in the repo), and a missing lock change nothing. Prints
-/// nothing, since `SessionStart` output would become session context.
-pub fn run_supervisor(
-    state: &StateDir,
-    is_supervisor: bool,
-    input: impl Read,
-) -> anyhow::Result<()> {
-    let hook: SupervisorHookInput = read_input(input)?;
-    if !is_supervisor || hook.hook_event_name != "SessionStart" {
-        return Ok(());
+/// next `flow up` resumes it. Never fails and prints nothing: a SessionStart hook must not
+/// disturb the session, and its output would become session context. Other events, input that
+/// does not parse, and a missing or unreadable lock change nothing. The caller has already
+/// checked that this session is the supervisor.
+pub fn run_supervisor(state: &StateDir, input: impl Read) {
+    let Ok(hook) = read_input::<SupervisorHookInput>(input) else {
+        return;
+    };
+    if hook.hook_event_name == "SessionStart" {
+        let _ = supervisor::set_session(state, Some(&hook.session_id));
     }
-    supervisor::record_session(state, &hook.session_id)?;
-    Ok(())
 }
 
 fn read_input<T: serde::de::DeserializeOwned>(mut input: impl Read) -> anyhow::Result<T> {

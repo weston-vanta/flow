@@ -323,3 +323,18 @@ fn watch_ignores_non_supervisor_sessions() {
     assert!(!fx.supervisor("watch.lock").exists());
     assert!(!fx.supervisor("watch.log").exists());
 }
+
+#[test]
+fn watch_outside_supervisor_needs_no_state_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    Command::cargo_bin("flow")
+        .expect("flow binary is built")
+        .args(["watch", "--once"])
+        .env("FLOW_STATE", dir.path().join("missing"))
+        .env_remove(SUPERVISOR_ENV)
+        .timeout(WATCH_BUDGET)
+        .assert()
+        .code(0)
+        .stdout("")
+        .stderr("");
+}

@@ -54,10 +54,11 @@ fn live_host<'a>(
         ),
         Err(err) => return Err(err),
     };
+    // herdr reuses pane ids after a server restart, so the pane alone could name a worker.
     let live = agents.is_some_and(|agents| {
-        agents
-            .iter()
-            .any(|agent| agent.pane_id == lock.herdr.pane_id)
+        agents.iter().any(|agent| {
+            agent.pane_id == lock.herdr.pane_id && agent.cwd == Path::new(SUPERVISOR_CWD)
+        })
     });
     Ok(live.then_some(host))
 }
@@ -77,10 +78,41 @@ fn local_cde(config: &Config) -> anyhow::Result<&Cde> {
         })
 }
 
-/// Opens the supervisor's workspace on `here`, takes the lock for it, and launches Claude
-/// Code there, resuming the recorded session when there is one.
+/// Starts the supervisor on `here`, resuming the recorded session when there is one. A resume
+/// that does not come up is dropped from the lock and the start retried once without it, since
+/// a session `claude --resume` cannot find would otherwise fail every later `flow up` the same
+/// way.
 fn start(state: &StateDir, herdr: &Herdr, here: &Cde) -> anyhow::Result<Lock> {
     herdr.ensure_server(here)?;
+    let (lock, started) = launch(state, herdr, here)?;
+    let err = match started {
+        Ok(started) => return finish(lock, started),
+        Err(err) => err,
+    };
+    let Some(session) = &lock.claude_session else {
+        return Err(err);
+    };
+    eprintln!("{err:#}");
+    eprintln!("resume of session {session} failed; starting a fresh supervisor session");
+    if let Err(err) = herdr.close_workspace(here, &lock.herdr.workspace_id) {
+        eprintln!(
+            "could not close workspace {} on {}: {err:#}",
+            lock.herdr.workspace_id, here.name
+        );
+    }
+    supervisor::set_session(state, None)?;
+    let (lock, started) = launch(state, herdr, here)?;
+    finish(lock, started?)
+}
+
+/// Opens the supervisor's workspace on `here`, takes the lock for it, and launches Claude Code
+/// there with the lock's session. The handshake's outcome comes back separately so a failed
+/// resume can be retried.
+fn launch(
+    state: &StateDir,
+    herdr: &Herdr,
+    here: &Cde,
+) -> anyhow::Result<(Lock, anyhow::Result<AgentStart>)> {
     let (workspace_id, pane_id) =
         herdr.create_workspace(here, Path::new(SUPERVISOR_CWD), SUPERVISOR_NAME)?;
     // Taken before Claude Code starts, so its SessionStart hook finds the lock to record the
@@ -96,12 +128,15 @@ fn start(state: &StateDir, herdr: &Herdr, here: &Cde) -> anyhow::Result<Lock> {
         },
     )?;
     herdr.pane_run(here, &pane_id, &launch_argv(lock.claude_session.as_deref()))?;
-    if let AgentStart::BlockedAtStart { .. } =
-        handshake::await_start(herdr, here, &workspace_id, &pane_id)?
-    {
+    let started = handshake::await_start(herdr, here, &workspace_id, &pane_id);
+    Ok((lock, started))
+}
+
+fn finish(lock: Lock, started: AgentStart) -> anyhow::Result<Lock> {
+    if let AgentStart::BlockedAtStart { .. } = started {
         eprintln!(
-            "supervisor in pane {pane_id} is blocked on a prompt other than the trust dialog; \
-             answer it once attached"
+            "supervisor in pane {} is blocked on a prompt other than the trust dialog; answer              it once attached",
+            lock.herdr.pane_id
         );
     }
     Ok(lock)

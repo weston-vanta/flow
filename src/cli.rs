@@ -8,7 +8,6 @@ use flow::cmd::dispatch::{BriefSource, DispatchArgs, WorktreeSource};
 use flow::cmd::task_write::ReportedState;
 use flow::paths::StateDir;
 use flow::state::task::HoldOn;
-use flow::supervisor;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -110,6 +109,20 @@ pub enum Command {
     Up,
     /// Attach to the supervisor session
     Attach,
+}
+
+impl Command {
+    /// Whether this is one of the supervisor's hooks in `.claude/settings.json`.
+    pub fn is_supervisor_hook(&self) -> bool {
+        matches!(
+            self,
+            Command::Guard
+                | Command::Watch { .. }
+                | Command::Hook {
+                    command: HookCommand::Supervisor
+                }
+        )
+    }
 }
 
 #[derive(Debug, Args)]
@@ -332,11 +345,10 @@ pub fn run(cli: Cli, state: &StateDir) -> anyhow::Result<ExitCode> {
         } => cmd::hook::run_claude(state, &task, std::io::stdin().lock()),
         Command::Hook {
             command: HookCommand::Supervisor,
-        } => cmd::hook::run_supervisor(
-            state,
-            supervisor::is_supervisor_session(),
-            std::io::stdin().lock(),
-        ),
+        } => {
+            cmd::hook::run_supervisor(state, std::io::stdin().lock());
+            Ok(())
+        }
         Command::Requests { command, json } => match command {
             None => cmd::requests::run_list(state, json),
             Some(RequestsCommand::Consume { req_id }) => cmd::requests::run_consume(state, &req_id),

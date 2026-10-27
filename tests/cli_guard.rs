@@ -172,3 +172,19 @@ fn guard_ignores_non_supervisor_sessions() {
         .stdout("")
         .stderr("");
 }
+
+#[test]
+fn guard_outside_supervisor_needs_no_state_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    Command::cargo_bin("flow")
+        .expect("flow binary is built")
+        .arg("guard")
+        .env("FLOW_STATE", dir.path().join("missing"))
+        .env_remove(SUPERVISOR_ENV)
+        .write_stdin(STOP_INPUT)
+        .timeout(GUARD_BUDGET)
+        .assert()
+        .code(0)
+        .stdout("")
+        .stderr("");
+}

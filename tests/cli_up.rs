@@ -30,6 +30,8 @@ ssh_alias = "cde-b.example"
 
 const AGENT_LIST: &str = include_str!("fixtures/herdr/agent_list.json");
 const AGENT_GET: &str = include_str!("fixtures/herdr/agent_get.json");
+const AGENT_WAIT_TIMEOUT: &str = include_str!("fixtures/herdr/agent_wait_timeout.json");
+const WORKSPACE_CLOSED: &str = r#"{"id":"cli:workspace:close","result":{"type":"ok"}}"#;
 const WORKSPACE_CREATE: &str = include_str!("fixtures/herdr/workspace_create.json");
 const NO_AGENTS: &str = r#"{"id":"cli:agent:list","result":{"agents":[],"type":"agent_list"}}"#;
 const PANE_RUN_OK: &str = r#"{"id":"cli:pane:run","result":{"type":"ok"}}"#;
@@ -114,6 +116,21 @@ fn ok(stdout: &str) -> Value {
     json!({"status": 0, "stdout": stdout, "stderr": ""})
 }
 
+fn failed(stderr: &str) -> Value {
+    json!({"status": 1, "stdout": "", "stderr": stderr})
+}
+
+/// `agent_list.json` with its `LIVE_PANE` agent running in the supervisor's cwd.
+fn supervisor_agents() -> String {
+    let list = AGENT_LIST.replacen(
+        r#""cwd":"/workspaces/acme-worktrees/login-form""#,
+        r#""cwd":"/workspaces/flow""#,
+        1,
+    );
+    assert_ne!(list, AGENT_LIST);
+    list
+}
+
 fn wait_reports(status: &str) -> Value {
     ok(&AGENT_GET.replace(
         r#""agent_status":"working""#,
@@ -136,14 +153,20 @@ fn stdout_of(cmd: &mut Command) -> String {
     String::from_utf8(out.stdout).unwrap()
 }
 
-/// The command line typed into the pane by the only `pane run` call.
-fn pane_run_line(calls: &[(String, Vec<String>)]) -> String {
-    let runs: Vec<_> = calls
+/// The command lines typed into panes by `pane run` calls, in order.
+fn pane_run_lines(calls: &[(String, Vec<String>)]) -> Vec<String> {
+    calls
         .iter()
         .filter(|(_, argv)| argv.get(3..5) == Some(&["pane".to_owned(), "run".to_owned()]))
-        .collect();
-    assert_eq!(runs.len(), 1, "{calls:?}");
-    runs[0].1.last().unwrap().clone()
+        .map(|(_, argv)| argv.last().unwrap().clone())
+        .collect()
+}
+
+/// The command line typed into the pane by the only `pane run` call.
+fn pane_run_line(calls: &[(String, Vec<String>)]) -> String {
+    let lines = pane_run_lines(calls);
+    assert_eq!(lines.len(), 1, "{calls:?}");
+    lines[0].clone()
 }
 
 fn has_subcommand(calls: &[(String, Vec<String>)], words: &[&str]) -> bool {
@@ -173,7 +196,10 @@ fn up_creates_supervisor_when_no_lock() {
         "{calls:?}"
     );
     let line = pane_run_line(&calls);
-    assert!(line.contains("claude --name flow-supervisor"), "{line}");
+    assert_eq!(
+        line, "env 'FLOW_SUPERVISOR=1' claude --name flow-supervisor",
+        "the marker keeps the supervisor's hooks live"
+    );
     assert!(!line.contains("--resume"), "{line}");
     assert!(!line.contains("--settings"), "{line}");
 
@@ -224,7 +250,7 @@ fn up_attaches_when_lock_live() {
     fx.write_lock("env-0001", "cde-a", LIVE_PANE, Some("s9"));
     let before = fs::read_to_string(fx.state.join("supervisor/lock.json")).unwrap();
 
-    let stdout = stdout_of(fx.flow(&[ok(AGENT_LIST)]).arg("up"));
+    let stdout = stdout_of(fx.flow(&[ok(&supervisor_agents())]).arg("up"));
 
     let calls = fx.calls();
     assert_eq!(calls.len(), 1, "{calls:?}");
@@ -243,11 +269,77 @@ fn up_attaches_when_lock_live() {
 }
 
 #[test]
+fn up_starts_fresh_when_the_lock_pane_runs_another_agent() {
+    let fx = Fixture::new();
+    fx.write_lock("env-0001", "cde-a", LIVE_PANE, None);
+    let mut script = vec![ok(AGENT_LIST)];
+    script.extend(fresh_start());
+
+    let stdout = stdout_of(fx.flow(&script).arg("up"));
+
+    assert!(
+        has_subcommand(&fx.calls(), &["workspace", "create"]),
+        "a worker reusing the lock's pane id is not the supervisor"
+    );
+    assert_eq!(fx.lock().unwrap().herdr.pane_id, NEW_PANE);
+    assert!(
+        stdout.ends_with(&format!("agent attach {NEW_PANE}\n")),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn up_starts_fresh_session_when_resume_fails() {
+    let fx = Fixture::new();
+    fx.write_lock("env-0001", "cde-a", LIVE_PANE, Some("s9"));
+    let mut script = vec![
+        ok(NO_AGENTS),
+        ok(SERVER_RUNNING),
+        ok(WORKSPACE_CREATE),
+        ok(PANE_RUN_OK),
+        failed(AGENT_WAIT_TIMEOUT),
+        ok(WORKSPACE_CLOSED),
+    ];
+    script.extend(fresh_start().into_iter().skip(1));
+
+    let out = fx
+        .flow(&script)
+        .arg("up")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let calls = fx.calls();
+    let lines = pane_run_lines(&calls);
+    assert_eq!(lines.len(), 2, "{calls:?}");
+    assert!(lines[0].ends_with("--resume s9"), "{}", lines[0]);
+    assert!(!lines[1].contains("--resume"), "{}", lines[1]);
+    assert!(
+        has_subcommand(&calls, &["workspace", "close", "w3"]),
+        "{calls:?}"
+    );
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("resume of session s9 failed; starting a fresh supervisor session"),
+        "{stderr}"
+    );
+    let lock = fx.lock().unwrap();
+    assert_eq!(lock.claude_session, None);
+    assert_eq!(lock.herdr.pane_id, NEW_PANE);
+    assert!(
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .ends_with(&format!("agent attach {NEW_PANE}\n"))
+    );
+}
+
+#[test]
 fn up_attaches_over_ssh_to_a_live_remote_supervisor() {
     let fx = Fixture::new();
     fx.write_lock("env-0002", "cde-b", LIVE_PANE, None);
 
-    let stdout = stdout_of(fx.flow(&[ok(AGENT_LIST)]).arg("up"));
+    let stdout = stdout_of(fx.flow(&[ok(&supervisor_agents())]).arg("up"));
 
     let calls = fx.calls();
     assert_eq!(calls.len(), 1, "{calls:?}");
@@ -432,4 +524,42 @@ fn hook_supervisor_without_lock_is_silent() {
 
     assert!(fx.lock().is_none());
     assert!(!Path::new(&fx.state.join("supervisor/lock.json")).exists());
+}
+
+#[test]
+fn hook_supervisor_ignores_bad_input_and_corrupt_lock() {
+    let fx = Fixture::new();
+
+    for stdin in ["", "not json", r#"{"hook_event_name":"SessionStart"}"#] {
+        hook_supervisor(&fx, stdin, true)
+            .code(0)
+            .stdout("")
+            .stderr("");
+    }
+
+    fs::create_dir_all(fx.state.join("supervisor")).unwrap();
+    fs::write(fx.state.join("supervisor/lock.json"), "{corrupt").unwrap();
+    hook_supervisor(&fx, SESSION_START, true)
+        .code(0)
+        .stdout("")
+        .stderr("");
+    assert_eq!(
+        fs::read_to_string(fx.state.join("supervisor/lock.json")).unwrap(),
+        "{corrupt"
+    );
+}
+
+#[test]
+fn hook_supervisor_outside_supervisor_needs_no_state_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    Command::cargo_bin("flow")
+        .expect("flow binary is built")
+        .env("FLOW_STATE", dir.path().join("missing"))
+        .env_remove(supervisor::SUPERVISOR_ENV)
+        .args(["hook", "supervisor"])
+        .write_stdin(SESSION_START)
+        .assert()
+        .code(0)
+        .stdout("")
+        .stderr("");
 }
