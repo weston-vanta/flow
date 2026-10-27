@@ -17,11 +17,11 @@
 - The supervisor always runs with cwd `/workspaces/flow`.
 - Agents read and write state only through the CLI. Every read command renders a compact view; raw JSON only behind `--json`.
 - No undocumented harness internals. Allowed: Claude Code CLI flags, hooks (via `--settings` files or the repo's `.claude/settings.json`), read-only reads of `~/.claude/sessions/*.json` and `~/.claude/projects/<slug>/<id>.jsonl`. Never write into `~/.claude`.
-- Everything that runs on another CDE goes through the runner as `ssh <alias> zsh -lc '<command>'`. Nothing polls over ssh in the steady state except `herdr agent wait`, which blocks.
+- Everything that runs on another host goes through the runner as `ssh <alias> zsh -lc '<command>'`. Nothing polls over ssh in the steady state except `herdr agent wait`, which blocks.
 - Files on EFS are written atomically (temp file in the same directory, then rename) under a mkdir lock directory `<path>.lock`. Readers reopen files on every poll; inotify is not used (NFS does not deliver remote events).
 - Status vocabulary, exactly: `pending`, `working`, `blocked`, `needs-decision`, `done`, `orphaned`.
 - Task ids: 8 lowercase base32 characters using the ASCII-sorted alphabet `234567abcdefghijklmnopqrstuvwxyz`, so string order equals time order: 6 encoding seconds since 2026-01-01T00:00:00Z, big-endian, then 2 random. Never reused.
-- herdr: named session `flow` on every CDE; minimum protocol 22; one workspace per task labeled with the task id. Every herdr call passes `--session flow`.
+- herdr: named session `flow` on every host; minimum protocol 22; one workspace per task labeled with the task id. Every herdr call passes `--session flow`.
 - Supervisor Stop hooks: `flow guard` (blocking) and `flow watch` (`asyncRewake: true`, `timeout: 7200`). Watch heartbeat default 3600 s, always less than the hook timeout.
 - No `flow doctor`. Login failures surface as plain error text from the command that hit them.
 
@@ -262,29 +262,104 @@
 - [ ] **Step 5: Verify hook registration manually:** from `/workspaces/flow`, start `claude`, run `/hooks`, confirm both Stop hooks and the SessionStart hook are listed. Note the result in the commit message.
 - [ ] **Step 6: Commit** `feat: flow up/attach/steer, supervisor hooks and instructions`.
 
-### Task 14: CDE bootstrap (dotfiles)
+### Task 14: Rename CDE to host
+
+The vocabulary `CDE` is Ona-specific. Everything user-facing and code-facing says `host`
+from here on. No state directory exists yet, so serialized field names change without a
+migration.
+
+**Files:**
+- Rename: `src/cde.rs` → `src/host.rs`, `src/cmd/cde.rs` → `src/cmd/host.rs`
+- Modify: every file that names `Cde`, `cde`, `cdes`, `CdeInventory`, `--cde`, `flow cde`, `cde-unreachable`, `cde unreachable:`, `state/cdes/`; `templates/brief.md`, `CLAUDE.md`, `.claude/skills/*/SKILL.md`, `README.md`; tests and fixtures (`cde-a` → `host-a`, `cde-b` → `host-b`)
+
+**Interfaces:**
+- Produces: `config::Host { name, env_id, ssh_alias, local_marker_env }`, `Config.hosts`, `host::local_env_id()`, `inventory::HostInventory`, cache dir `state/hosts/<env_id>.json`, `TaskRecord.host`, `HerdrTarget.host`, `Observation::HostUnreachable { host }` with reason `host-unreachable: <host>`, herdr error prefix `host unreachable:`, `flow host list`, `flow host run <name> -- <argv>`, `--host` on `flow dispatch`, `flow follow <host> <pane>`, `flow unfollow <host> <pane>`. The design doc keeps "CDE" where it explains Ona; code, CLI, instructions and the README say "host".
+
+- [ ] **Step 1: Rename** with the compiler as the guide; keep behaviour identical.
+- [ ] **Step 2: Run** `cargo test` and `cargo clippy --all-targets`; expected: PASS, clean. Then `grep -rniw cde src tests templates CLAUDE.md .claude README.md`; expected: no matches.
+- [ ] **Step 3: Commit** `refactor: rename CDE to host throughout`.
+
+### Task 15: Repos, working directories, optional host
+
+**Files:**
+- Modify: `src/state/config.rs`, `src/state/task.rs`, `src/worktree.rs`, `src/cmd/dispatch.rs`, `src/cli.rs`, `src/harness/brief.rs`, `templates/brief.md`, `src/inventory.rs`, `src/cmd/inventory.rs`, `src/watch/mod.rs`, `src/cmd/status.rs`, `src/cmd/task_show.rs`, `.claude/skills/flow-dispatch/SKILL.md`
+- Test: `tests/cli_dispatch.rs`, `tests/cli_inventory.rs`, unit tests in `config.rs` and `worktree.rs`
+
+**Interfaces:**
+- Consumes: Task 14 names.
+- Produces:
+  - Config: `[[repos]]` entries `Repo { name, path, default_branch, worktrees_dir: Option<PathBuf>, worktree_tool: Option<WorktreeTool> }`; `monorepo` and the top-level `worktree_tool` are removed. `Config.repo(name: Option<&str>) -> Result<&Repo>`: the only repo when `name` is `None` and exactly one exists; error `several repos configured (a, b); pass --repo` otherwise; error `no repo named <x>` for an unknown name. `WorktreeTool.list` stays optional.
+  - `worktree::create(runner, host, repo, branch) -> Result<PathBuf>`: with a tool, as today (run inside `repo.path`); without one, `git -C <repo.path> worktree add <dir>/<branch> -b <branch>` where `<dir>` is `repo.worktrees_dir` or the sibling `<repo.path>-worktrees`, returning that path. `worktree::list` without a tool parses `git worktree list --porcelain` only; `busy` and `dirty_files` are `None`.
+  - `TaskRecord { …, host, cwd: PathBuf, repo: Option<String> }` replaces `worktree`.
+  - `flow dispatch --title … (--brief-file|--brief) --criteria … [--host NAME] [--dir PATH | --branch NAME [--repo NAME]] [--parent ID] [--allow-shared-dir]`. `--host` defaults to the local machine (`host::local_env_id()` matched against `Config.hosts`); error `this machine (<env_id>) is not a configured host` otherwise. `--dir` is an existing absolute directory on the host. `--branch` creates a worktree in the chosen repo. Neither: `cwd = <task_dir>/work/` on the shared volume, created by dispatch. The shared-directory refusal applies to every mode.
+  - Brief template: section `## Working directory` with the path; the sentence about never touching the main checkout appears only when `repo` is set (`brief::render` takes the record; the template gains `{{worktree_note}}` rendered as that sentence or empty).
+  - Inventory: `Worktree { repo: String, path, branch, busy, dirty_files }`; worktrees and PRs are gathered per repo (`gh pr list` runs inside each `repo.path`); `flow inventory` groups worktrees under a `repo` line when more than one repo is configured.
+  - Watch's quiet check uses `rec.cwd`.
+  - `flow-dispatch` skill: when nothing ties a task to a host, use the local one or the least loaded from `flow inventory`; `--dir` for existing directories; `--repo` when several repos exist; tasks with no repo need neither flag.
+
+- [ ] **Step 1: Write failing tests**: `config_single_repo_is_the_default`, `config_requires_repo_when_several`, `worktree_create_falls_back_to_git` (asserts the recorded argv and returned path), `dispatch_defaults_to_the_local_host`, `dispatch_without_dir_creates_the_task_work_dir` (asserts `<task_dir>/work` exists and the brief names it with no checkout sentence), `dispatch_branch_uses_the_named_repo`, `dispatch_refuses_unknown_local_host`, `inventory_lists_worktrees_per_repo`.
+- [ ] **Step 2: Run**; expected: FAIL. **Step 3: Implement.** **Step 4: Run**; expected: PASS.
+- [ ] **Step 5: Commit** `feat: repos, working directories, optional host`.
+
+### Task 16: Host discovery from Ona
+
+**Files:**
+- Create: `src/ona.rs`, `tests/fixtures/ona/environment_list.json` (invented ids and names)
+- Modify: `src/state/config.rs`, `src/inventory.rs`, `src/cmd/inventory.rs`, `src/cmd/host.rs`, every reader of `Config.hosts` (dispatch, sessions, up, watch, follow)
+- Test: `src/ona.rs` (unit), `tests/cli_inventory.rs`, `tests/cli_host.rs`
+
+**Interfaces:**
+- Produces:
+  - `ona::list_environments() -> Result<Vec<OnaEnvironment { id, name, phase, content_location: Option<PathBuf> }>>` running `gitpod environment list -o json` as a local process (fields `id`, `metadata.name`, `status.phase`, `status.content.contentLocationInMachine`; unknown fields ignored). `ona::slug(name) -> String`: lowercase, every run of non-alphanumerics → `-`, trimmed.
+  - Config `[hosts]`: `source = "ona" | "static"` (default `ona`), `exclude: Vec<String>` of env ids, `names: BTreeMap<env_id, slug>` overrides, `static: Vec<Host>` used when `source = "static"`. The old `hosts` array is gone.
+  - `inventory::hosts(state) -> Result<Vec<Host>>`: the known hosts from `state/hosts/*.json` (name, env_id, ssh alias `<env_id>.ona.environment`, `gone`). Every former reader of `Config.hosts` uses this.
+  - `HostInventory` gains `gone: bool` (serde default) and `ona_name: Option<String>`.
+  - `flow inventory --refresh`: with `source = "ona"`, list environments first; add records for new ones (name from `names` or `slug`, with `-2`, `-3` suffixes on collision), mark records absent from the listing `gone: true`, clear `gone` when one returns; when the listing fails or shows only the local environment, print one stderr line (`ona: <error>; using <N> cached hosts` or `ona: only the current environment is visible; run gitpod login`) and continue with the cached set. With `source = "static"`, the static list is the host set. Probing is unchanged. `flow host list` reads the cache and shows `gone` hosts last.
+
+- [ ] **Step 1: Write failing tests**: `ona_listing_parses_fixture`, `slug_normalizes_names`, `refresh_adds_new_hosts_and_marks_gone` (FakeRunner answers probes; the Ona listing is injected through `FLOW_FAKE_ONA=<fixture path>` read by `ona::list_environments`), `refresh_without_ona_keeps_cached_hosts`, `static_hosts_bypass_discovery`, `name_overrides_apply`, `host_list_shows_gone_last`.
+- [ ] **Step 2: Run**; expected: FAIL. **Step 3: Implement.** **Step 4: Run**; expected: PASS.
+- [ ] **Step 5: Commit** `feat: discover hosts from Ona during inventory refresh`.
+
+### Task 17: init, install script, install docs, CLI reference
+
+**Files:**
+- Create: `src/cmd/init.rs`, `scripts/install.sh`, `tests/cli_init.rs`, `tests/install_sh.rs`
+- Modify: `src/cli.rs`, `README.md`, `docs/superpowers/specs/2026-10-26-flow-design.md` (new `## CLI` section)
+
+**Interfaces:**
+- Produces:
+  - `flow init [--force]`: refuses (exit 2) when `state/config.toml` exists unless `--force`. Writes `[[repos]]` from the local machine: path from the Ona listing's `content_location` for `$ONA_ID` when available, else the single git repository directly under `/workspaces` other than `/workspaces/flow`, else none with a commented placeholder; `default_branch` from `git symbolic-ref refs/remotes/origin/HEAD`; `worktree_tool = { create = ["wt", "create", "{branch}"], list = ["wt", "--json", "list"] }` when `wt` is on PATH, otherwise omitted (git fallback) with a comment saying so; `[hosts] source = "ona"`. Prints each decision as `init: <field> = <value> (<how it was found>)`, then runs the equivalent of `flow inventory --refresh`, then prints the items the user still provides (herdr with its Claude integration, Claude Code login, `gitpod environment ssh-config`, `gh auth login`).
+  - `scripts/install.sh`: idempotent and safe on every machine start; `FLOW_DIR` (default `/workspaces/flow`), `FLOW_STATE_DIR` (default `/efs-home/flow/state`), `FLOW_SKIP_BUILD=1` for tests. Steps, each printing `install: <step>: done|already`: `git pull --ff-only` in `FLOW_DIR` (the caller clones; the script lives in the clone), `mkdir -p "$FLOW_STATE_DIR"`, `ln -sfn "$FLOW_STATE_DIR" "$FLOW_DIR/state"` (replaces a wrong link, refuses a real directory), `cargo build --release` when `target/release/flow` is missing or older than `git rev-parse HEAD`'s commit time, and a final hint when `target/release` is not on PATH.
+  - README `## Install`: prerequisites the user provides (Rust, herdr and `herdr integration install claude`, Claude Code logged in, the shared `~/.claude` assumption and what degrades without it, `gitpod login` and `gitpod environment ssh-config`, `gh auth login` optional); then the two commands (`git clone … /workspaces/flow && bash /workspaces/flow/scripts/install.sh`, `flow init`), then `flow up`.
+  - `## CLI` in README and the design doc: every subcommand with one line, grouped: operator (`init`, `up`, `attach`, `status`, `inventory`, `host`, `sessions`, `follow`/`unfollow`, `wake`), supervisor (`dispatch`, `steer`, `task show/brief/events/list/decide/hold/orphan`, `requests`), worker (`task status/done/request-dispatch`), hooks (`guard`, `watch`, `hook claude`, `hook supervisor`). Generated by reading `flow --help` and each `--help`; must match `src/cli.rs`.
+
+- [ ] **Step 1: Write failing tests**: `init_writes_config_from_the_local_machine` (FakeRunner + `FLOW_FAKE_ONA`; asserts the file, the `init:` lines, the trailing checklist), `init_refuses_to_overwrite`, `init_force_overwrites`, `init_omits_worktree_tool_without_wt` (PATH without `wt`), `install_sh_is_idempotent` (temp clone of this repo, `FLOW_SKIP_BUILD=1`, temp state dir; second run prints only `already`), `install_sh_replaces_a_wrong_symlink_and_refuses_a_directory`.
+- [ ] **Step 2: Run**; expected: FAIL. **Step 3: Implement**, then write the README sections and the design doc `## CLI` section. **Step 4: Run**; expected: PASS. Check the CLI section against `flow --help` output.
+- [ ] **Step 5: Commit** `feat: flow init, install script, install docs and CLI reference`.
+
+### Task 18: Machine bootstrap (dotfiles)
 
 **Files (in `~/dotfiles`, separate repo):**
 - Modify: `post-start-install.sh`
 - Modify: `agents/claude/settings.json` (herdr hook path)
 
 **Interfaces:**
-- Produces: on CDE start: clone `weston-vanta/flow` to `/workspaces/flow` if absent (else `git pull --ff-only`); `ln -sfn /efs-home/flow/state /workspaces/flow/state`; `mkdir -p /efs-home/flow/state`; add `/workspaces/flow/target/release` to PATH in the shell rc; install `herdr` if `command -v herdr` fails (follow herdr.dev's documented install command); run `cargo build --release` in `/workspaces/flow` when the binary is missing or older than `HEAD`. Herdr hook path becomes `"$HOME/.claude/hooks/herdr-agent-state.sh"` instead of the macOS absolute path.
+- Produces: on machine start: clone `weston-vanta/flow` to `/workspaces/flow` if absent, then `bash /workspaces/flow/scripts/install.sh`; add `/workspaces/flow/target/release` to PATH in the shell rc if missing; install `herdr` when `command -v herdr` fails (herdr.dev's documented install command) and run `herdr integration install claude` when `herdr integration status` does not say `claude: current`. The herdr hook command becomes `bash "$HOME/.claude/hooks/herdr-agent-state.sh" session` instead of the macOS absolute path.
 
-- [ ] **Step 1: Make the edits** with idempotency (every step safe to rerun).
-- [ ] **Step 2: Verify** by running `post-start-install.sh` on this CDE twice; second run prints only "already" lines. Run `herdr integration status` and confirm `claude: current`.
-- [ ] **Step 3: Verify on a second CDE** over ssh: `ssh <alias> zsh -lc 'bash ~/dotfiles/post-start-install.sh && flow --version && readlink /workspaces/flow/state'`; expected: version printed, symlink target `/efs-home/flow/state`.
-- [ ] **Step 4: Commit** in dotfiles: `feat: bootstrap flow clone, state symlink, herdr, and platform-aware herdr hook path`.
+- [ ] **Step 1: Make the edits** idempotently.
+- [ ] **Step 2: Verify** by running `post-start-install.sh` on this machine twice; second run prints only `already` lines. `herdr integration status` says `claude: current`; a new Claude session's debug log shows the herdr SessionStart hook exiting 0.
+- [ ] **Step 3: Verify on a second machine** over ssh: `ssh <alias> zsh -lc 'bash ~/dotfiles/post-start-install.sh && flow --version && readlink /workspaces/flow/state'`; expected: version printed, symlink target `/efs-home/flow/state`.
+- [ ] **Step 4: Commit** in dotfiles: `feat: bootstrap flow via install.sh, herdr, and platform-aware herdr hook path`.
 
-### Task 15: End-to-end verification against a second CDE
+### Task 19: End-to-end verification against a second machine
 
 **Files:**
 - Create: `docs/verification/2026-10-e2e.md` (checklist with recorded results, invented names only)
 
-- [ ] **Step 1: Write `state/config.toml`** on EFS with the real CDEs (never committed).
-- [ ] **Step 2: Start the supervisor:** `flow up` on this CDE; confirm `flow status` prints no tasks and `flow sessions` lists this session as adopted.
-- [ ] **Step 3: Dispatch** a trivial task to another CDE with criteria "create a file named hello.txt in the worktree containing the task id, then report done"; confirm `dispatched <id>`; `flow sessions` shows the worker `working`; end the supervisor turn; confirm `flow watch` is running (`pgrep -f 'flow watch'`).
+- [ ] **Step 1: Initialize:** on a fresh state directory run `flow init`; confirm `state/config.toml` names the monorepo and `flow host list` shows every running machine.
+- [ ] **Step 2: Start the supervisor:** `flow up` on this machine; confirm `flow status` prints no tasks and `flow sessions` lists this session as adopted.
+- [ ] **Step 3: Dispatch** a trivial task to another host with `--branch` and criteria "create a file named hello.txt in the working directory containing the task id, then report done"; confirm `dispatched <id>`; `flow sessions` shows the worker `working`; end the supervisor turn; confirm `flow watch` is running (`pgrep -f 'flow watch'`). Dispatch a second task with no `--host`, `--dir` or `--branch` and confirm its working directory is `state/tasks/<id>/work/` on the local machine.
 - [ ] **Step 4: Wake:** wait for the worker's `done`; confirm the supervisor received `Stop hook feedback` containing `done: <id>` and drained it.
 - [ ] **Step 5: Escalate:** dispatch a task whose brief forces a `needs-decision`; confirm the wake, answer with `flow task decide` and `flow steer`; confirm the worker continues and finishes.
-- [ ] **Step 6: Recycle drill:** stop the supervisor's herdr workspace; from a different CDE run `flow up`; confirm it resumes the same Claude session (`--resume`) and `flow wake drain` shows anything that happened in between.
+- [ ] **Step 6: Recycle drill:** stop the supervisor's herdr workspace; from a different machine run `flow up`; confirm it resumes the same Claude session (`--resume`) and `flow wake drain` shows anything that happened in between.
 - [ ] **Step 7: Record** results in the checklist and commit `docs: end-to-end verification record`.

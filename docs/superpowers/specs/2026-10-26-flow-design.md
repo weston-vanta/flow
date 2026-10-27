@@ -156,10 +156,12 @@ designer's call.
 9. **Code per CDE, state on EFS.** The repo is cloned to `/workspaces/flow` on each CDE
    (local disk: fast git and fast `cargo build`). Durable state lives at `/efs-home/flow/`
    and is reached from the clone through a symlink `/workspaces/flow/state ->
-   /efs-home/flow/state`. The dotfiles `post-start-install.sh` creates the clone, the
-   symlink, the PATH entry, installs herdr, and fixes the herdr hook path to be
-   platform-aware, so a recycled CDE is ready without manual steps. (Layout is the user's;
-   the symlink direction and the dotfiles hook are the designer's reading of it.)
+   /efs-home/flow/state`. A flow-owned, idempotent `scripts/install.sh` pulls the clone,
+   creates the state directory and symlink, and builds the binary; the user's own
+   machine-start script clones the repo once, calls that script, installs herdr, and
+   keeps its herdr hook path platform-aware. `flow init` writes the operator config from
+   what the local machine can tell it. (Layout is the user's; the symlink direction and
+   the split between the install script and the user's script are the designer's reading.)
 10. **The supervisor always runs from `/workspaces/flow`.** The harness keys transcripts by
     cwd, and transcripts are on EFS, so `claude --resume` from `/workspaces/flow` on any
     CDE resumes the same supervisor conversation after a recycle. Session start reads the
@@ -331,6 +333,34 @@ it was away.
 - The brief template given to workers, including how they state completion criteria and
   write status lines and reports.
 - Inventory refresh strategy (on demand over ssh vs. a per-CDE hook that publishes to EFS).
-- The dotfiles changes that bootstrap a CDE, including the platform-aware herdr hook path.
+- The user's machine-start script that clones the repo, calls `scripts/install.sh`, installs herdr, and keeps the herdr hook path platform-aware.
 - Test strategy: the state layer and watcher classification should be testable without
   ssh or herdr; adapters get integration tests against a real second CDE.
+
+## Amendments (2026-10-27)
+
+Agreed with the user after Task 13 landed; they refine decisions 9, 12, 22 and the layout
+above and are binding for Tasks 14–19.
+
+- **Hosts, not CDEs.** Code, CLI, instructions and the README say `host`. This document
+  keeps "CDE" where it explains Ona. Config, task records and wake reasons use `host`.
+- **Several repos.** Config holds `[[repos]]` (name, path, default branch, optional
+  worktree tool and worktrees directory) instead of one monorepo. `--branch` takes
+  `--repo` when more than one is configured. Without a worktree tool, plain
+  `git worktree add` into a sibling `<repo>-worktrees/` directory is used.
+- **Working directory, not worktree.** A task has a `cwd` on its host. A repo worktree is
+  one way to get one (`--branch`); an existing directory is another (`--dir`); with
+  neither, the worker runs in `state/tasks/<id>/work/` on the shared volume, so
+  non-repo work (research, preparation, investigations) has a durable home readable from
+  every machine. The brief's checkout warning appears only for worktrees. The
+  shared-directory refusal applies to every mode.
+- **Host is optional.** `flow dispatch` defaults to the machine it runs on.
+- **Hosts are discovered, not listed.** Ona is the source of truth: `flow inventory
+  --refresh` lists environments through the Ona CLI, derives name, ssh alias and repo
+  location, adds new hosts, and marks missing ones gone. Config keeps only overrides
+  (name slugs, exclusions) and a static list for machines not managed by Ona. When the Ona
+  token has expired, refresh says so in one line and uses the cached set.
+- **`flow init` and `scripts/install.sh`** are flow's; the user's machine-start script
+  shrinks to cloning once, calling the install script, installing herdr, and fixing the
+  herdr hook path. The README lists what the user still provides.
+- **CLI reference.** The README and this document carry the list of subcommands (Task 17).
