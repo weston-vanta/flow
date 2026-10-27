@@ -4,6 +4,7 @@
 pub mod cde;
 pub mod dispatch;
 pub mod hook;
+pub mod inventory;
 pub mod requests;
 pub mod status;
 pub mod task_brief;

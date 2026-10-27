@@ -34,6 +34,14 @@ pub struct Monorepo {
 pub struct WorktreeTool {
     /// Argv template; `{branch}` is replaced with the branch name.
     pub create: Vec<String>,
+    /// Argv that prints the tool's worktrees as JSON: `{"worktrees": [{"path", "busy",
+    /// "dirty_files"}, ...]}`.
+    #[serde(default = "default_list")]
+    pub list: Vec<String>,
+}
+
+fn default_list() -> Vec<String> {
+    ["wt", "--json", "list"].map(str::to_owned).to_vec()
 }
 
 impl Config {

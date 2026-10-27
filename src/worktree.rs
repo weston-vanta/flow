@@ -91,6 +91,7 @@ mod tests {
     fn tool() -> WorktreeTool {
         WorktreeTool {
             create: vec!["wt".to_owned(), "create".to_owned(), "{branch}".to_owned()],
+            list: Vec::new(),
         }
     }
 

@@ -49,7 +49,14 @@ pub enum Command {
         command: CdeCommand,
     },
     /// Show worktrees, agents, and PRs per CDE
-    Inventory,
+    Inventory {
+        /// Probe every configured CDE and list open PRs before showing them
+        #[arg(long)]
+        refresh: bool,
+        /// Print raw JSON instead of the compact view
+        #[arg(long)]
+        json: bool,
+    },
     /// List agent sessions across CDEs
     Sessions,
     /// Watch tasks and exit when the supervisor should wake
@@ -279,8 +286,8 @@ pub fn run(cli: Cli, state: &StateDir) -> anyhow::Result<ExitCode> {
             Some(RequestsCommand::Consume { req_id }) => cmd::requests::run_consume(state, &req_id),
         },
         Command::Dispatch(args) => cmd::dispatch::run(state, &args.try_into()?),
-        Command::Inventory
-        | Command::Sessions
+        Command::Inventory { refresh, json } => cmd::inventory::run(state, refresh, json),
+        Command::Sessions
         | Command::Watch
         | Command::Wake
         | Command::Guard
