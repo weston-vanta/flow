@@ -108,7 +108,7 @@ fn create_with_tool(
         );
     }
     let (printed, path) = printed_path(&output.stdout)
-        .ok_or_else(|| anyhow!("`{command}` on {} printed no worktree path", host.name))?;
+        .map_err(|what| anyhow!("`{command}` on {} printed {what}", host.name))?;
     if !path.is_absolute() {
         bail!(
             "`{command}` on {} printed {printed:?}, not an absolute worktree path",
@@ -148,20 +148,28 @@ fn failure_text(stdout: &str, stderr: &str) -> String {
 
 /// The worktree path in a create command's `stdout`, with the text it came from: the `path`
 /// field when `stdout` is a JSON object, else the first word of the last non-empty line, since
-/// tools follow the path with notes such as `(new branch x, 1.2s)`.
-fn printed_path(stdout: &str) -> Option<(String, PathBuf)> {
+/// tools follow the path with notes such as `(new branch x, 1.2s)`. Fails with what was printed
+/// instead.
+fn printed_path(stdout: &str) -> Result<(String, PathBuf), String> {
     let text = stdout.trim();
     if text.starts_with('{') {
         let path = serde_json::from_str::<serde_json::Value>(text)
-            .ok()?
-            .get("path")?
-            .as_str()?
-            .to_owned();
-        return Some((text.to_owned(), PathBuf::from(path)));
+            .ok()
+            .and_then(|value| value.get("path")?.as_str().map(PathBuf::from));
+        return match path {
+            Some(path) => Ok((text.to_owned(), path)),
+            None => Err(format!("{text:?}, which has no \"path\" string")),
+        };
     }
-    let line = text.lines().map(str::trim).rfind(|line| !line.is_empty())?;
-    let word = line.split_whitespace().next()?;
-    Some((line.to_owned(), PathBuf::from(word)))
+    let word = text
+        .lines()
+        .map(str::trim)
+        .rfind(|line| !line.is_empty())
+        .and_then(|line| Some((line, line.split_whitespace().next()?)));
+    match word {
+        Some((line, word)) => Ok((line.to_owned(), PathBuf::from(word))),
+        None => Err("no worktree path".to_owned()),
+    }
 }
 
 /// `tool` run with `dir` as its working directory. Worktree tools and `gh` act on the repository
@@ -320,6 +328,20 @@ mod tests {
         let path = create(&fake, &host(), &with_tool(), "feature-x").unwrap();
 
         assert_eq!(path, Path::new("/workspaces/acme.wt/feature x"));
+    }
+
+    #[test]
+    fn create_quotes_json_without_a_path() {
+        let json = r#"{"branch": "feature-x"}"#;
+        let fake = FakeRunner::new(vec![printed(json)]);
+
+        let err = format!(
+            "{:#}",
+            create(&fake, &host(), &with_tool(), "feature-x").unwrap_err()
+        );
+
+        assert!(err.contains(&format!("printed {json:?}")), "{err}");
+        assert!(err.contains(r#"no "path""#), "{err}");
     }
 
     #[test]

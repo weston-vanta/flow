@@ -70,7 +70,8 @@ fn summary_line(inventory: &HostInventory, config: &Config) -> String {
         match &inventory.ona_phase {
             Some(phase) => phase
                 .strip_prefix(ONA_PHASE_PREFIX)
-                .map_or_else(|| phase.clone(), str::to_lowercase),
+                .unwrap_or(phase)
+                .to_lowercase(),
             None => "no Ona phase".to_owned(),
         }
     };
@@ -363,4 +364,48 @@ fn agent_cell(agent: &Agent) -> String {
         &agent.title
     };
     format!("agent: {name} {}", agent.status.as_str())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config() -> Config {
+        toml::from_str(
+            r#"
+[[repos]]
+name = "example-repo"
+path = "/work/repo"
+default_branch = "main"
+"#,
+        )
+        .unwrap()
+    }
+
+    fn running(phase: &str) -> HostInventory {
+        let host = Host {
+            name: "host-a".to_owned(),
+            env_id: "env-0001".to_owned(),
+            ssh_alias: "host-a.example".to_owned(),
+            local_marker_env: None,
+        };
+        HostInventory {
+            ona_phase: Some(phase.to_owned()),
+            reachable: true,
+            ..HostInventory::new(&host, Timestamp::now())
+        }
+    }
+
+    #[test]
+    fn summary_line_lowercases_the_phase_with_or_without_ona_prefix() {
+        let config = config();
+        assert_eq!(
+            summary_line(&running("ENVIRONMENT_PHASE_RUNNING"), &config),
+            "init: host host-a (env-0001): running, repos: example-repo\n"
+        );
+        assert_eq!(
+            summary_line(&running("PHASE_UNKNOWN"), &config),
+            "init: host host-a (env-0001): phase_unknown, repos: unknown (not probed)\n"
+        );
+    }
 }
