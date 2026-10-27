@@ -47,6 +47,8 @@ pub enum AgentStatus {
     Working,
     Blocked,
     Done,
+    /// herdr's `unknown`, and any status a newer herdr reports that this build does not know.
+    #[serde(other)]
     Unknown,
 }
 
@@ -557,16 +559,23 @@ pub enum WaitEnd {
     Failed(String),
 }
 
-/// Reads a `spawn_wait` child's exit code (`None` when a signal killed it) and its stdout.
+/// Reads a `spawn_wait` child's exit code (`None` when a signal killed it) and its output,
+/// stdout and stderr merged. The result is the first line that parses as one, so a stray
+/// stderr line cannot hide it.
 pub fn wait_end(code: Option<i32>, stdout: &str) -> WaitEnd {
     let stdout = stdout.trim();
     if code == Some(SSH_FAILURE_STATUS) && stdout.is_empty() {
         return WaitEnd::Unreachable;
     }
+    let reached = stdout.lines().find_map(|line| {
+        serde_json::from_str::<Response<AgentResult>>(line)
+            .ok()
+            .map(|response| response.result.agent.agent_status)
+    });
     if code == Some(0)
-        && let Ok(response) = serde_json::from_str::<Response<AgentResult>>(stdout)
+        && let Some(status) = reached
     {
-        return WaitEnd::Reached(response.result.agent.agent_status);
+        return WaitEnd::Reached(status);
     }
     match error_code(stdout).as_deref() {
         Some(TIMEOUT_CODE) => WaitEnd::TimedOut,
@@ -838,6 +847,30 @@ mod tests {
         assert_eq!(wait_end(Some(255), ""), WaitEnd::Unreachable);
         assert!(matches!(wait_end(Some(1), "boom"), WaitEnd::Failed(_)));
         assert!(matches!(wait_end(None, ""), WaitEnd::Failed(_)));
+    }
+
+    #[test]
+    fn wait_end_skips_noise_before_the_result() {
+        let stdout = format!("warning: config file has an unknown key\n{AGENT_GET}");
+        assert_eq!(
+            wait_end(Some(0), &stdout),
+            WaitEnd::Reached(AgentStatus::Working)
+        );
+    }
+
+    #[test]
+    fn unknown_agent_status_reads_as_unknown() {
+        let status: AgentStatus = serde_json::from_str(r#""paused""#).unwrap();
+        assert_eq!(status, AgentStatus::Unknown);
+        let list = AGENT_LIST.replacen(r#""agent_status":"idle""#, r#""agent_status":"paused""#, 1);
+        assert_ne!(list, AGENT_LIST);
+        let (herdr, _) = herdr(vec![ok(&list)]);
+        let agents = herdr.agents(&host()).unwrap();
+        assert_eq!(agents[0].status, AgentStatus::Unknown);
+        assert_eq!(
+            serde_json::to_string(&AgentStatus::Unknown).unwrap(),
+            r#""unknown""#
+        );
     }
 
     #[test]

@@ -200,7 +200,7 @@ mod tests {
             [
                 OnaEnvironment {
                     id: "00000000-0000-4000-8000-000000000001".to_owned(),
-                    name: "Primary".to_owned(),
+                    name: "Lab".to_owned(),
                     phase: "ENVIRONMENT_PHASE_RUNNING".to_owned(),
                     content_location: Some(PathBuf::from("/workspaces/example-repo")),
                 },
@@ -226,7 +226,7 @@ mod tests {
 
     #[test]
     fn slug_normalizes_names() {
-        assert_eq!(slug("Primary"), "primary");
+        assert_eq!(slug("Lab"), "lab");
         assert_eq!(slug("Side Project"), "side-project");
         assert_eq!(slug("  Scratch   Box!! "), "scratch-box");
         assert_eq!(slug("Feature: login/form"), "feature-login-form");

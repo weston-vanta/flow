@@ -785,7 +785,7 @@ fn inventory_fails_a_host_whose_repo_git_cannot_read() {
     assert!(stderr.contains("could not refresh host-a"), "{stderr}");
 }
 
-const PRIMARY: &str = "00000000-0000-4000-8000-000000000001";
+const LAB: &str = "00000000-0000-4000-8000-000000000001";
 const SIDE_PROJECT: &str = "00000000-0000-4000-8000-000000000002";
 const SCRATCH_BOX: &str = "00000000-0000-4000-8000-000000000003";
 
@@ -829,30 +829,27 @@ fn refresh_adds_new_hosts_and_marks_gone() {
     let fx = Fixture::new();
     fs::write(fx.state.join("config.toml"), ONA_CONFIG).unwrap();
     fx.use_ona_fixture();
-    fx.write_cache(PRIMARY, &bare_record("primary", PRIMARY, ""));
+    fx.write_cache(LAB, &bare_record("lab", LAB, ""));
     fx.write_cache("env-retired", &bare_record("retired", "env-retired", ""));
-    let mut script = probes("primary");
+    let mut script = probes("lab");
     script.extend(probes("side-project"));
-    script.push(on("primary", PR_LIST));
+    script.push(on("lab", PR_LIST));
 
     let stdout = stdout_of(
         fx.flow(&script)
-            .env("ONA_ID", PRIMARY)
+            .env("ONA_ID", LAB)
             .args(["inventory", "--refresh"]),
     );
 
-    let primary = fx.cached(PRIMARY);
-    assert_eq!(primary["name"], "primary");
-    assert_eq!(primary["ona_name"], "Primary");
-    assert_eq!(
-        primary["ssh_alias"],
-        format!("{PRIMARY}.ona.environment").as_str()
-    );
-    assert_eq!(primary["ona_phase"], "ENVIRONMENT_PHASE_RUNNING");
-    assert_eq!(primary["gone"], false);
-    assert_eq!(primary["reachable"], true);
-    assert_eq!(primary["worktrees"].as_array().unwrap().len(), 3);
-    assert_eq!(primary["prs"][0]["number"], 12);
+    let lab = fx.cached(LAB);
+    assert_eq!(lab["name"], "lab");
+    assert_eq!(lab["ona_name"], "Lab");
+    assert_eq!(lab["ssh_alias"], format!("{LAB}.ona.environment").as_str());
+    assert_eq!(lab["ona_phase"], "ENVIRONMENT_PHASE_RUNNING");
+    assert_eq!(lab["gone"], false);
+    assert_eq!(lab["reachable"], true);
+    assert_eq!(lab["worktrees"].as_array().unwrap().len(), 3);
+    assert_eq!(lab["prs"][0]["number"], 12);
 
     let added = fx.cached(SIDE_PROJECT);
     assert_eq!(added["name"], "side-project");
@@ -873,7 +870,7 @@ fn refresh_adds_new_hosts_and_marks_gone() {
 
     assert_eq!(
         called_hosts(&fx),
-        ["primary", "side-project"],
+        ["lab", "side-project"],
         "stopped and gone hosts are not probed"
     );
     let headers: Vec<&str> = stdout
@@ -881,7 +878,7 @@ fn refresh_adds_new_hosts_and_marks_gone() {
         .filter(|line| !line.is_empty() && !line.starts_with(' '))
         .collect();
     assert_eq!(headers.len(), 4, "{stdout}");
-    assert!(headers[0].starts_with("primary  reachable  "), "{stdout}");
+    assert!(headers[0].starts_with("lab  reachable  "), "{stdout}");
     assert!(
         headers[1].starts_with("scratch-box  unreachable  "),
         "{stdout}"
@@ -899,7 +896,7 @@ fn refresh_adds_new_hosts_and_marks_gone() {
         .collect();
     assert_eq!(
         names,
-        ["primary", "scratch-box", "side-project", "retired"],
+        ["lab", "scratch-box", "side-project", "retired"],
         "{listed}"
     );
 }
@@ -986,7 +983,7 @@ fn name_overrides_apply() {
 exclude = ["{SCRATCH_BOX}"]
 
 [hosts.names]
-"{PRIMARY}" = "side-project"
+"{LAB}" = "side-project"
 "#
     );
     fs::write(fx.state.join("config.toml"), config).unwrap();
@@ -997,13 +994,13 @@ exclude = ["{SCRATCH_BOX}"]
 
     stdout_of(
         fx.flow(&script)
-            .env("ONA_ID", PRIMARY)
+            .env("ONA_ID", LAB)
             .args(["inventory", "--refresh"]),
     );
 
-    let primary = fx.cached(PRIMARY);
-    assert_eq!(primary["name"], "side-project");
-    assert_eq!(primary["ona_name"], "Primary");
+    let lab = fx.cached(LAB);
+    assert_eq!(lab["name"], "side-project");
+    assert_eq!(lab["ona_name"], "Lab");
     let second = fx.cached(SIDE_PROJECT);
     assert_eq!(
         second["name"], "side-project-2",

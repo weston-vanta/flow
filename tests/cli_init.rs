@@ -92,7 +92,7 @@ impl Fixture {
         );
         let listing = json!([{
             "id": ENV_ID,
-            "metadata": {"name": "Primary"},
+            "metadata": {"name": "Lab"},
             "status": {"phase": phase, "content": content},
         }]);
         fs::write(self.path("ona.json"), listing.to_string()).unwrap();
@@ -149,13 +149,13 @@ fn init_writes_config_from_the_local_machine() {
     );
     let wt_list = json!({"repo": repo_path, "worktrees": []}).to_string();
     let script = [
-        on("primary", &porcelain),
-        on("primary", &wt_list),
-        on("primary", LOADAVG),
-        on("primary", SERVER_RUNNING),
-        on("primary", NO_AGENTS),
-        on("primary", NO_AGENTS),
-        on("primary", "[]"),
+        on("lab", &porcelain),
+        on("lab", &wt_list),
+        on("lab", LOADAVG),
+        on("lab", SERVER_RUNNING),
+        on("lab", NO_AGENTS),
+        on("lab", NO_AGENTS),
+        on("lab", "[]"),
     ];
 
     let out = fx
@@ -196,13 +196,13 @@ fn init_writes_config_from_the_local_machine() {
         )
     );
     assert!(
-        stdout.contains("\nprimary  reachable  load 0.26  1 worktrees  0 agents  (seen "),
+        stdout.contains("\nlab  reachable  load 0.26  1 worktrees  0 agents  (seen "),
         "the inventory refresh ran and printed: {stdout}"
     );
     let cached: Value =
         serde_json::from_str(&fs::read_to_string(fx.state.join("hosts/env-0001.json")).unwrap())
             .unwrap();
-    assert_eq!(cached["name"], "primary");
+    assert_eq!(cached["name"], "lab");
     assert_eq!(cached["reachable"], true);
     assert_ends_with_checklist(&stdout);
 }
@@ -272,7 +272,7 @@ fn init_force_overwrites() {
     let cached: Value =
         serde_json::from_str(&fs::read_to_string(fx.state.join("hosts/env-0001.json")).unwrap())
             .unwrap();
-    assert_eq!(cached["name"], "primary");
+    assert_eq!(cached["name"], "lab");
     assert_eq!(cached["reachable"], false);
     assert_ends_with_checklist(&stdout);
 }

@@ -303,21 +303,21 @@ mod tests {
     #[test]
     fn an_override_wins_over_an_earlier_slug() {
         let mut config = HostsConfig::default();
-        config.names.insert(env(2, "").id, "primary".to_owned());
-        let listed = || vec![env(1, "Primary"), env(2, "Side Project")];
+        config.names.insert(env(2, "").id, "lab".to_owned());
+        let listed = || vec![env(1, "Lab"), env(2, "Side Project")];
 
         let fresh = refresh(Vec::new(), listed(), &config);
         assert_eq!(
             names(&fresh.records),
-            [row(1, "primary-2", false), row(2, "primary", false)]
+            [row(1, "lab-2", false), row(2, "lab", false)]
         );
 
         let before = refresh(Vec::new(), listed(), &HostsConfig::default());
-        assert_eq!(names(&before.records)[0], row(1, "primary", false));
+        assert_eq!(names(&before.records)[0], row(1, "lab", false));
         let after = refresh(before.records, listed(), &config);
         assert_eq!(
             names(&after.records),
-            [row(1, "primary-2", false), row(2, "primary", false)],
+            [row(1, "lab-2", false), row(2, "lab", false)],
             "an override takes its name even from a host that held it"
         );
     }
@@ -327,23 +327,23 @@ mod tests {
         let config = HostsConfig::default();
         let cached = refresh(
             Vec::new(),
-            vec![env(1, "Primary"), env(2, "Side Project")],
+            vec![env(1, "Lab"), env(2, "Side Project")],
             &config,
         )
         .records;
 
-        let stuck = refresh(cached.clone(), vec![env(1, "Primary")], &config);
+        let stuck = refresh(cached.clone(), vec![env(1, "Lab")], &config);
         assert_eq!(stuck.warning.as_deref(), Some(ONLY_LOCAL_VISIBLE));
 
         let excluded = HostsConfig {
             exclude: vec![env(2, "").id],
             ..HostsConfig::default()
         };
-        let freed = refresh(cached, vec![env(1, "Primary")], &excluded);
+        let freed = refresh(cached, vec![env(1, "Lab")], &excluded);
         assert_eq!(freed.warning, None);
         assert_eq!(
             names(&freed.records),
-            [row(1, "primary", false), row(2, "side-project", true)]
+            [row(1, "lab", false), row(2, "side-project", true)]
         );
     }
 }
