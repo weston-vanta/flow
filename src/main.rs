@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use flow::cmd::Refused;
-use flow::paths::{PathError, StateDir};
+use flow::paths::{PathError, STATE_ENV, StateDir};
 use flow::supervisor;
 
 use crate::cli::Cli;
@@ -38,6 +38,31 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     }
     // The binary always runs from this repo's own build, so the build-time manifest dir is the repo root.
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let state = StateDir::resolve(repo_root)?;
+    let state = match StateDir::resolve(repo_root) {
+        Ok(state) => state,
+        Err(err) => {
+            if let Some(name) = cli.command.supervisor_hook_name() {
+                eprintln!("flow {name}: {}", hook_state_error(&err));
+                return Ok(ExitCode::from(PATH_ERROR_EXIT));
+            }
+            return Err(err.into());
+        }
+    };
     cli::run(cli, &state, repo_root)
+}
+
+/// Why a supervisor hook found no state directory, naming where the path came from: a
+/// `FLOW_STATE` left in herdr's environment otherwise breaks every hook unnoticed.
+fn hook_state_error(err: &PathError) -> String {
+    let PathError::Missing(path) = err;
+    let source = if std::env::var_os(STATE_ENV).is_some() {
+        format!("from ${STATE_ENV}")
+    } else {
+        format!("the repo's state link; ${STATE_ENV} is unset")
+    };
+    format!(
+        "state directory not found: {} ({source}); the supervisor's hooks do nothing until \
+         {STATE_ENV} names the state directory",
+        path.display()
+    )
 }

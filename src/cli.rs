@@ -122,14 +122,19 @@ pub enum Command {
 impl Command {
     /// Whether this is one of the supervisor's hooks in `.claude/settings.json`.
     pub fn is_supervisor_hook(&self) -> bool {
-        matches!(
-            self,
-            Command::Guard
-                | Command::Watch { .. }
-                | Command::Hook {
-                    command: HookCommand::Supervisor
-                }
-        )
+        self.supervisor_hook_name().is_some()
+    }
+
+    /// The subcommand words of this command when it is one of the supervisor's hooks.
+    pub fn supervisor_hook_name(&self) -> Option<&'static str> {
+        match self {
+            Command::Guard => Some("guard"),
+            Command::Watch { .. } => Some("watch"),
+            Command::Hook {
+                command: HookCommand::Supervisor,
+            } => Some("hook supervisor"),
+            _ => None,
+        }
     }
 }
 

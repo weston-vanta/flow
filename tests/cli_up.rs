@@ -213,10 +213,14 @@ fn up_creates_supervisor_when_no_lock() {
         "{calls:?}"
     );
     let line = pane_run_line(&calls);
+    let state = fs::canonicalize(&fx.state).unwrap();
     assert_eq!(
         line,
-        format!("env 'FLOW_SUPERVISOR=1' claude --name flow-supervisor {START_PROMPT}"),
-        "the marker keeps the supervisor's hooks live; the prompt runs a first turn"
+        format!(
+            "env 'FLOW_STATE={}' 'FLOW_SUPERVISOR=1' claude --name flow-supervisor {START_PROMPT}",
+            state.display()
+        ),
+        "the state path and marker keep the supervisor's hooks live; the prompt runs a first turn"
     );
     assert!(!line.contains("--resume"), "{line}");
     assert!(!line.contains("--settings"), "{line}");

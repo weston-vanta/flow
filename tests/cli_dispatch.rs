@@ -289,9 +289,13 @@ fn dispatch_creates_task_and_starts_agent() {
     let runs = herdr_calls(&calls, &["pane", "run"]);
     assert_eq!(runs.len(), 1, "{calls:?}");
     assert_eq!(runs[0][5], PANE);
+    let state = fs::canonicalize(&fx.state).unwrap();
     assert!(
-        runs[0][6].starts_with("claude --settings "),
-        "{:?}",
+        runs[0][6].starts_with(&format!(
+            "env 'FLOW_STATE={}' claude --settings ",
+            state.display()
+        )),
+        "the worker's hooks get the state path whatever herdr's environment holds: {:?}",
         runs[0][6]
     );
     assert!(
@@ -354,8 +358,13 @@ fn dispatch_creates_task_and_starts_agent() {
         .expect("worker.started event");
     assert_eq!(started.data["pane_id"], PANE);
     assert_eq!(started.data["workspace_id"], WORKSPACE);
-    assert_eq!(started.data["argv"][0], "claude");
-    assert_eq!(started.data["argv"][1], "--settings");
+    assert_eq!(started.data["argv"][0], "env");
+    assert_eq!(
+        started.data["argv"][1],
+        format!("FLOW_STATE={}", state.display())
+    );
+    assert_eq!(started.data["argv"][2], "claude");
+    assert_eq!(started.data["argv"][3], "--settings");
     assert!(!events.iter().any(|ev| ev.kind == "dispatch.failed"));
 
     let status_out = fx

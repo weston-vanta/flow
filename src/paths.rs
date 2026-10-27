@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::{env, fs, io};
 
-const STATE_ENV: &str = "FLOW_STATE";
+/// Names the state directory, in place of `<repo_root>/state`.
+pub const STATE_ENV: &str = "FLOW_STATE";
 
 #[derive(Debug, thiserror::Error)]
 pub enum PathError {

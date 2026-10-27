@@ -3,14 +3,14 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::{anyhow, bail};
+use anyhow::{Context, anyhow, bail};
 
 use super::attach;
 use crate::harness::handshake::{self, AgentStart};
 use crate::herdr::{self, Herdr};
 use crate::host;
 use crate::inventory;
-use crate::paths::StateDir;
+use crate::paths::{STATE_ENV, StateDir};
 use crate::runner::{self, Runner};
 use crate::state::config::Host;
 use crate::state::task::HerdrTarget;
@@ -38,7 +38,12 @@ pub fn run(state: &StateDir) -> anyhow::Result<()> {
     if watch_lock::clear(state)? {
         eprintln!("removed state/supervisor/watch.lock left by the previous supervisor");
     }
-    let lock = start(state, &herdr, here)?;
+    // The launch line names the state path, since herdr hands panes the environment of
+    // whoever started its server, which may hold another FLOW_STATE.
+    let state_root = state
+        .canonical()
+        .with_context(|| format!("resolving {}", state.root().display()))?;
+    let lock = start(state, &herdr, here, state_root.root())?;
     attach::exec(&lock, here)
 }
 
@@ -103,9 +108,9 @@ fn local_host(live: &[Host]) -> anyhow::Result<&Host> {
 /// from the lock and the start retried once without it, since it would otherwise fail every
 /// later `flow up` the same way. Any other failed resume keeps the session and leaves its
 /// workspace open for inspection.
-fn start(state: &StateDir, herdr: &Herdr, here: &Host) -> anyhow::Result<Lock> {
+fn start(state: &StateDir, herdr: &Herdr, here: &Host, state_root: &Path) -> anyhow::Result<Lock> {
     herdr.ensure_server(here)?;
-    let (lock, started) = launch(state, herdr, here)?;
+    let (lock, started) = launch(state, herdr, here, state_root)?;
     let err = match started {
         Ok(started) => return finish(lock, started),
         Err(err) => err,
@@ -135,17 +140,18 @@ fn start(state: &StateDir, herdr: &Herdr, here: &Host) -> anyhow::Result<Lock> {
         );
     }
     supervisor::set_session(state, None)?;
-    let (lock, started) = launch(state, herdr, here)?;
+    let (lock, started) = launch(state, herdr, here, state_root)?;
     finish(lock, started?)
 }
 
 /// Opens the supervisor's workspace on `here`, takes the lock for it, and launches Claude Code
-/// there with the lock's session. The handshake's outcome comes back separately so a failed
-/// resume can be retried.
+/// there with the lock's session and `state_root` as its state directory. The handshake's
+/// outcome comes back separately so a failed resume can be retried.
 fn launch(
     state: &StateDir,
     herdr: &Herdr,
     here: &Host,
+    state_root: &Path,
 ) -> anyhow::Result<(Lock, anyhow::Result<AgentStart>)> {
     let (workspace_id, pane_id) =
         herdr.create_workspace(here, Path::new(SUPERVISOR_CWD), SUPERVISOR_NAME)?;
@@ -161,7 +167,11 @@ fn launch(
             agent: AGENT_KIND.to_owned(),
         },
     )?;
-    herdr.pane_run(here, &pane_id, &launch_argv(lock.claude_session.as_deref()))?;
+    herdr.pane_run(
+        here,
+        &pane_id,
+        &launch_argv(state_root, lock.claude_session.as_deref())?,
+    )?;
     let started = handshake::await_start(herdr, here, &workspace_id, &pane_id);
     Ok((lock, started))
 }
@@ -177,13 +187,25 @@ fn finish(lock: Lock, started: AgentStart) -> anyhow::Result<Lock> {
     Ok(lock)
 }
 
-/// `env FLOW_SUPERVISOR=1 claude --name flow-supervisor [--resume <session>] "<START_PROMPT>"`.
-fn launch_argv(session: Option<&str>) -> Vec<String> {
+/// `env FLOW_STATE=<state_root> FLOW_SUPERVISOR=1 claude --name flow-supervisor
+/// [--resume <session>] "<START_PROMPT>"`.
+fn launch_argv(state_root: &Path, session: Option<&str>) -> anyhow::Result<Vec<String>> {
+    let state_root = state_root
+        .to_str()
+        .with_context(|| format!("state path is not UTF-8: {}", state_root.display()))?;
+    let state = format!("{STATE_ENV}={state_root}");
     let marker = format!("{SUPERVISOR_ENV}=1");
-    let mut argv = vec!["env", &marker, AGENT_KIND, "--name", SUPERVISOR_NAME];
+    let mut argv = vec![
+        "env",
+        &state,
+        &marker,
+        AGENT_KIND,
+        "--name",
+        SUPERVISOR_NAME,
+    ];
     if let Some(session) = session {
         argv.extend(["--resume", session]);
     }
     argv.push(START_PROMPT);
-    argv.into_iter().map(str::to_owned).collect()
+    Ok(argv.into_iter().map(str::to_owned).collect())
 }

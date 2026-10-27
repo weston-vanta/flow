@@ -52,3 +52,25 @@ fn status_on_empty_state_has_no_open_tasks() {
         .success()
         .stdout("no open tasks\nadopted: 0 sessions\n");
 }
+
+#[test]
+fn supervisor_hooks_name_flow_state_when_it_is_missing() {
+    for (args, name) in [
+        (&["guard"][..], "guard"),
+        (&["watch"][..], "watch"),
+        (&["hook", "supervisor"][..], "hook supervisor"),
+    ] {
+        flow()
+            .env("FLOW_STATE", "/nonexistent/path")
+            .env("FLOW_SUPERVISOR", "1")
+            .args(args)
+            .write_stdin("{}")
+            .assert()
+            .code(3)
+            .stdout("")
+            .stderr(format!(
+                "flow {name}: state directory not found: /nonexistent/path (from $FLOW_STATE); \
+                 the supervisor's hooks do nothing until FLOW_STATE names the state directory\n"
+            ));
+    }
+}

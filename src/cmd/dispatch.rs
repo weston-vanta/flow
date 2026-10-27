@@ -15,7 +15,7 @@ use crate::harness::{ClaudeAdapter, HarnessAdapter, brief};
 use crate::herdr::{Agent, Herdr};
 use crate::host;
 use crate::inventory;
-use crate::paths::StateDir;
+use crate::paths::{STATE_ENV, StateDir};
 use crate::runner::{self, Runner};
 use crate::state::config::{Config, Host, Repo};
 use crate::state::events::Event;
@@ -125,7 +125,7 @@ pub fn run(state: &StateDir, args: &DispatchArgs) -> anyhow::Result<()> {
         &brief::render(&rec, &body, &args.criteria, &flow_bin),
     )?;
     let started = create_work_dir(&dir, &rec.cwd)
-        .and_then(|()| start_worker(&store, &herdr, host, &rec, &flow_bin));
+        .and_then(|()| start_worker(&store, state.root(), &herdr, host, &rec, &flow_bin));
     match started {
         Ok((pane_id, start)) => {
             if let AgentStart::BlockedAtStart { .. } = start {
@@ -212,9 +212,12 @@ fn refuse_shared_dir(agents: &[Agent], host: &Host, dir: &Path) -> anyhow::Resul
 }
 
 /// Opens a workspace for the task, records it as the task's herdr target, and launches the
-/// worker there. Returns the worker's pane and how it started.
+/// worker there as `env FLOW_STATE=<state_root> [<harness env>] <harness argv>`: herdr hands
+/// panes the environment of whoever started its server, which may hold another FLOW_STATE.
+/// Returns the worker's pane and how it started.
 fn start_worker(
     store: &Store,
+    state_root: &Path,
     herdr: &Herdr,
     host: &Host,
     rec: &TaskRecord,
@@ -222,16 +225,16 @@ fn start_worker(
 ) -> anyhow::Result<(String, AgentStart)> {
     let adapter = ClaudeAdapter;
     let launch = adapter.prepare(rec, &store.task_dir(&rec.id)?, flow_bin)?;
-    let mut argv = Vec::new();
-    if !launch.env.is_empty() {
-        argv.push("env".to_owned());
-        argv.extend(
-            launch
-                .env
-                .iter()
-                .map(|(name, value)| format!("{name}={value}")),
-        );
-    }
+    let state_root = state_root
+        .to_str()
+        .with_context(|| format!("state path is not UTF-8: {}", state_root.display()))?;
+    let mut argv = vec!["env".to_owned(), format!("{STATE_ENV}={state_root}")];
+    argv.extend(
+        launch
+            .env
+            .iter()
+            .map(|(name, value)| format!("{name}={value}")),
+    );
     argv.extend(launch.argv);
 
     let (workspace_id, pane_id) = herdr.create_workspace(host, &rec.cwd, &rec.id)?;
