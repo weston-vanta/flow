@@ -359,7 +359,8 @@ fn orphan_transitions_with_reason_event() {
     flow(&state)
         .args(["task", "orphan", TASK, "--reason", "host was deleted"])
         .assert()
-        .success();
+        .success()
+        .stdout(format!("orphaned {TASK}\n"));
 
     let (_, status) = store.task(TASK).unwrap();
     assert_eq!(status.state, State::Orphaned);

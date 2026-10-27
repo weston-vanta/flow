@@ -199,8 +199,12 @@ fn init_writes_config_from_the_local_machine() {
         )
     );
     assert!(
-        stdout.contains("\nlab  reachable  load 0.26  1 worktrees  0 agents  (seen "),
-        "the inventory refresh ran and printed: {stdout}"
+        stdout.contains("\ninit: host lab (env-0001): running, repos: example-repo\n"),
+        "the inventory refresh ran and printed its summary: {stdout}"
+    );
+    assert!(
+        !stdout.contains("reachable  load"),
+        "the full inventory stays in `flow inventory`: {stdout}"
     );
     let cached: Value =
         serde_json::from_str(&fs::read_to_string(fx.state.join("hosts/env-0001.json")).unwrap())
@@ -272,6 +276,10 @@ fn init_force_overwrites() {
              # worktree_tool = {{ create = [\"wt\", \"--json\", \"create\", \"{{branch}}\"], list = [\"wt\", \"--json\", \"list\"] }}\n\
              {HOSTS_BLOCK}"
         )
+    );
+    assert!(
+        stdout.contains("\ninit: host lab (env-0001): stopped, repos: unknown (not probed)\n"),
+        "{stdout}"
     );
     let cached: Value =
         serde_json::from_str(&fs::read_to_string(fx.state.join("hosts/env-0001.json")).unwrap())

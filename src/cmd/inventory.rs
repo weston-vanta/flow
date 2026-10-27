@@ -17,6 +17,8 @@ use crate::state::config::{Config, Host};
 const DETACHED: &str = "(detached)";
 const NO_LOAD: &str = "-";
 const ERROR_WIDTH: usize = 160;
+/// What every Ona phase name starts with, as in `ENVIRONMENT_PHASE_RUNNING`.
+const ONA_PHASE_PREFIX: &str = "ENVIRONMENT_PHASE_";
 
 /// Prints the cached inventory of every host, first discovering the host set and refreshing
 /// every probed host when `refresh` is set. A host that cannot be refreshed keeps its cache and
@@ -42,6 +44,62 @@ pub fn run(state: &StateDir, refresh: bool, json: bool) -> anyhow::Result<()> {
         bail!("could not refresh {}", failed.join(", "));
     }
     Ok(())
+}
+
+/// Refreshes every host as `run --refresh` does and prints one summary line per host: its
+/// name, environment id, Ona phase, and which configured repos it has a checkout of.
+pub fn run_summary(state: &StateDir) -> anyhow::Result<()> {
+    let config = Config::load(state)?;
+    let failed = refresh_all(state, &config)?;
+    let summary: String = inventory::load_all(state)?
+        .iter()
+        .map(|inventory| summary_line(inventory, &config))
+        .collect();
+    super::print(&summary)?;
+    if !failed.is_empty() {
+        bail!("could not refresh {}", failed.join(", "));
+    }
+    Ok(())
+}
+
+/// `init: host <name> (<env id>): <phase>, repos: <repos found>`.
+fn summary_line(inventory: &HostInventory, config: &Config) -> String {
+    let phase = if inventory.gone {
+        "gone".to_owned()
+    } else {
+        match &inventory.ona_phase {
+            Some(phase) => phase
+                .strip_prefix(ONA_PHASE_PREFIX)
+                .map_or_else(|| phase.clone(), str::to_lowercase),
+            None => "no Ona phase".to_owned(),
+        }
+    };
+    let repos = if !inventory.should_probe() {
+        "unknown (not probed)".to_owned()
+    } else if !inventory.reachable {
+        "unknown (unreachable)".to_owned()
+    } else {
+        let found: Vec<&str> = config
+            .repos
+            .iter()
+            .map(|repo| repo.name.as_str())
+            .filter(|name| {
+                !inventory
+                    .missing_repos
+                    .iter()
+                    .any(|missing| missing == name)
+            })
+            .collect();
+        if found.is_empty() {
+            "none".to_owned()
+        } else {
+            found.join(", ")
+        }
+    };
+    format!(
+        "init: host {} ({}): {phase}, repos: {repos}\n",
+        inventory.name, inventory.env_id
+    )
 }
 
 /// Brings the host records in step with Ona or the static list, then refreshes every probed host

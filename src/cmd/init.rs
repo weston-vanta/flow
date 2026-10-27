@@ -1,5 +1,5 @@
 //! `flow init`: writes `state/config.toml` from what this machine can tell, refreshes the
-//! inventory, and lists what the user still provides.
+//! inventory and summarizes each host, and lists what the user still provides.
 
 use std::ffi::OsString;
 use std::fs;
@@ -67,7 +67,8 @@ struct DetectedRepo {
 }
 
 /// Writes `state/config.toml`, refusing to replace an existing one unless `force`; then runs the
-/// inventory refresh and prints the checklist. `flow_checkout` is never taken for the repo.
+/// inventory refresh, prints a line per host, and prints the checklist. `flow_checkout` is never
+/// taken for the repo.
 pub fn run(state: &StateDir, flow_checkout: &Path, force: bool) -> anyhow::Result<()> {
     let config_path = state.root().join(CONFIG_FILE);
     if fs::symlink_metadata(&config_path).is_ok() && !force {
@@ -85,7 +86,7 @@ pub fn run(state: &StateDir, flow_checkout: &Path, force: bool) -> anyhow::Resul
         report(repo.as_ref()),
         config_path.display()
     ))?;
-    let refreshed = super::inventory::run(state, true, false);
+    let refreshed = super::inventory::run_summary(state);
     super::print(CHECKLIST)?;
     refreshed
 }

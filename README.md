@@ -48,8 +48,8 @@ flow init
 `flow init` writes `state/config.toml` from what this machine can tell: the repository (where
 Ona checked out this environment, else the only git repository under `/workspaces`), its
 default branch, the `wt` worktree tool when it is on `PATH`, and hosts discovered from Ona.
-It prints each choice and how it was found, refreshes the inventory, and lists what you still
-provide. Edit `state/config.toml` to add repositories or override host names; `flow init
+It prints each choice and how it was found, refreshes the inventory with a line per host
+(`flow inventory` shows it in full), and lists what you still provide. Edit `state/config.toml` to add repositories or override host names; `flow init
 --force` writes it afresh.
 
 Then start the supervisor and attach to it:

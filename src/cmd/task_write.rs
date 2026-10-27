@@ -170,7 +170,8 @@ pub fn run_orphan(state: &StateDir, id: &str, reason: &str) -> anyhow::Result<()
         status.state = State::Orphaned;
         status.hold = None;
     })?;
-    append_event(&store, id, "orphaned", json!({ "reason": reason }))
+    append_event(&store, id, "orphaned", json!({ "reason": reason }))?;
+    super::print(&format!("orphaned {id}\n"))
 }
 
 fn append_event(store: &Store, id: &str, kind: &str, data: impl Serialize) -> anyhow::Result<()> {
