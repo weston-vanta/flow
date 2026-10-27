@@ -356,7 +356,19 @@ fn dispatch_with_branch_runs_worktree_tool() {
         .success();
 
     let calls = fx.calls();
-    assert_eq!(calls[0], ["wt", "create", "feature-x"]);
+    assert_eq!(
+        calls[0],
+        [
+            "sh",
+            "-c",
+            r#"cd "$1" && shift && exec "$@""#,
+            "sh",
+            "/workspaces/acme",
+            "wt",
+            "create",
+            "feature-x"
+        ]
+    );
     let (rec, _) = fx.store().task(&fx.only_task()).unwrap();
     assert_eq!(rec.worktree, Path::new(created));
     let create = herdr_calls(&calls, &["workspace", "create"]);

@@ -83,9 +83,13 @@ pub fn run(state: &StateDir, args: &DispatchArgs) -> anyhow::Result<()> {
     let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
     let worktree = match &args.worktree {
         WorktreeSource::Path(path) => path.clone(),
-        WorktreeSource::Branch(branch) => {
-            worktree::create(runner.as_ref(), cde, &config.worktree_tool, branch)?
-        }
+        WorktreeSource::Branch(branch) => worktree::create(
+            runner.as_ref(),
+            cde,
+            &config.monorepo.path,
+            &config.worktree_tool,
+            branch,
+        )?,
     };
     let herdr = Herdr::new(runner);
     herdr.ensure_server(cde)?;
