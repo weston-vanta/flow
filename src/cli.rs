@@ -1,9 +1,10 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 
 use flow::cmd;
+use flow::cmd::dispatch::{BriefSource, DispatchArgs, WorktreeSource};
 use flow::cmd::task_write::ReportedState;
 use flow::paths::StateDir;
 use flow::state::task::HoldOn;
@@ -41,7 +42,7 @@ pub enum Command {
         json: bool,
     },
     /// Start a worker session for a new task
-    Dispatch,
+    Dispatch(DispatchCli),
     /// List CDEs and run commands on them
     Cde {
         #[command(subcommand)]
@@ -66,6 +67,69 @@ pub enum Command {
     Up,
     /// Attach to the supervisor session
     Attach,
+}
+
+#[derive(Debug, Args)]
+#[command(group(ArgGroup::new("brief_source").required(true)))]
+#[command(group(ArgGroup::new("worktree_source").required(true)))]
+pub struct DispatchCli {
+    /// CDE to run the worker on
+    #[arg(long, value_name = "NAME")]
+    cde: String,
+    #[arg(long)]
+    title: String,
+    /// File holding the ask, read on this machine
+    #[arg(long, value_name = "FILE", group = "brief_source")]
+    brief_file: Option<PathBuf>,
+    /// The ask itself
+    #[arg(
+        long,
+        value_name = "TEXT",
+        group = "brief_source",
+        allow_hyphen_values = true
+    )]
+    brief: Option<String>,
+    /// What must be true for the task to be done, often a `- ` list
+    #[arg(long, value_name = "TEXT", allow_hyphen_values = true)]
+    criteria: String,
+    /// Existing worktree on the CDE to work in
+    #[arg(long, value_name = "PATH", group = "worktree_source")]
+    worktree: Option<PathBuf>,
+    /// Branch to create a worktree for with the configured worktree tool
+    #[arg(long, value_name = "NAME", group = "worktree_source")]
+    branch: Option<String>,
+    /// Task this one was split from
+    #[arg(long, value_name = "ID")]
+    parent: Option<String>,
+    /// Dispatch even when another agent already works in the worktree
+    #[arg(long)]
+    allow_shared_worktree: bool,
+}
+
+impl TryFrom<DispatchCli> for DispatchArgs {
+    type Error = anyhow::Error;
+
+    fn try_from(cli: DispatchCli) -> anyhow::Result<DispatchArgs> {
+        let brief = match (cli.brief_file, cli.brief) {
+            (Some(path), None) => BriefSource::File(path),
+            (None, Some(text)) => BriefSource::Text(text),
+            _ => anyhow::bail!("pass exactly one of --brief-file and --brief"),
+        };
+        let worktree = match (cli.worktree, cli.branch) {
+            (Some(path), None) => WorktreeSource::Path(path),
+            (None, Some(branch)) => WorktreeSource::Branch(branch),
+            _ => anyhow::bail!("pass exactly one of --worktree and --branch"),
+        };
+        Ok(DispatchArgs {
+            cde: cli.cde,
+            title: cli.title,
+            brief,
+            criteria: cli.criteria,
+            worktree,
+            parent: cli.parent,
+            allow_shared_worktree: cli.allow_shared_worktree,
+        })
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -214,8 +278,8 @@ pub fn run(cli: Cli, state: &StateDir) -> anyhow::Result<ExitCode> {
             None => cmd::requests::run_list(state, json),
             Some(RequestsCommand::Consume { req_id }) => cmd::requests::run_consume(state, &req_id),
         },
-        Command::Dispatch
-        | Command::Inventory
+        Command::Dispatch(args) => cmd::dispatch::run(state, &args.try_into()?),
+        Command::Inventory
         | Command::Sessions
         | Command::Watch
         | Command::Wake

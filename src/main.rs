@@ -4,10 +4,12 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use clap::Parser;
+use flow::cmd::Refused;
 use flow::paths::{PathError, StateDir};
 
 use crate::cli::Cli;
 
+const REFUSED_EXIT: u8 = 2;
 const PATH_ERROR_EXIT: u8 = 3;
 
 fn main() -> ExitCode {
@@ -16,7 +18,9 @@ fn main() -> ExitCode {
         Ok(code) => code,
         Err(err) => {
             eprintln!("{err:#}");
-            if err.downcast_ref::<PathError>().is_some() {
+            if err.downcast_ref::<Refused>().is_some() {
+                ExitCode::from(REFUSED_EXIT)
+            } else if err.downcast_ref::<PathError>().is_some() {
                 ExitCode::from(PATH_ERROR_EXIT)
             } else {
                 ExitCode::FAILURE

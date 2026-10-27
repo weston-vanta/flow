@@ -2,6 +2,7 @@
 //! data when asked.
 
 pub mod cde;
+pub mod dispatch;
 pub mod hook;
 pub mod requests;
 pub mod status;
@@ -19,6 +20,14 @@ use serde::Serialize;
 use crate::render;
 use crate::state::task::{Status, TaskRecord};
 
+const NO_PANE: &str = "-";
+
+/// A request flow turns down as given, such as an unknown CDE or a worktree another agent is
+/// using. The binary exits 2 for it, as for a usage error.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct Refused(pub String);
+
 /// One task as `--json` output shows it.
 #[derive(Debug, Serialize)]
 struct TaskView<'a> {
@@ -33,7 +42,8 @@ fn task_views(tasks: &[(TaskRecord, Status)]) -> Vec<TaskView<'_>> {
         .collect()
 }
 
-/// `id  state  cde  age  title`, aged by creation time.
+/// `id  state  cde  pane  age  title`, aged by creation time; `pane` is the herdr pane running
+/// the task's worker, or `-` when it has none.
 fn task_rows(tasks: &[(TaskRecord, Status)], now: Timestamp) -> Vec<Vec<String>> {
     tasks
         .iter()
@@ -42,6 +52,10 @@ fn task_rows(tasks: &[(TaskRecord, Status)], now: Timestamp) -> Vec<Vec<String>>
                 rec.id.clone(),
                 status.state.to_string(),
                 rec.cde.clone(),
+                status
+                    .herdr
+                    .as_ref()
+                    .map_or_else(|| NO_PANE.to_owned(), |target| target.pane_id.clone()),
                 render::relative(rec.created, now),
                 rec.title.clone(),
             ]
