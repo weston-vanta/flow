@@ -53,7 +53,7 @@ pub enum Observation {
     },
     /// `--heartbeat` seconds passed.
     Heartbeat,
-    /// The watch run hit `error` and stopped; the supervisor's next turn end starts another.
+    /// The watch run hit `error`; it retries in the background until the error clears.
     WatchFailed { error: String },
 }
 

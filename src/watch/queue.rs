@@ -60,6 +60,11 @@ pub fn pending(state: &StateDir) -> anyhow::Result<Vec<Wake>> {
     Ok(wakes)
 }
 
+/// The newest queued wake, handled or not.
+pub fn latest(state: &StateDir) -> anyhow::Result<Option<Wake>> {
+    Ok(read_queue(&queue_path(state))?.pop())
+}
+
 /// Records every wake up to and including `seq` as handled, under the queue's lock. Refuses a
 /// `seq` past the newest wake, which would hide wakes not yet queued, and one below the
 /// current ack, which would bring handled wakes back.

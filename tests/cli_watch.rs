@@ -43,6 +43,8 @@ const OTHER_TASK: &str = "aaaaaaac";
 /// How long any `flow watch` in these tests may run before it is killed and the test fails.
 const WATCH_BUDGET: Duration = Duration::from_secs(5);
 const POLL_MS: &str = "200";
+/// The first delay before a failed watch retries, so a retry or two fits in these tests.
+const RETRY_MS: &str = "100";
 
 struct Fixture {
     dir: tempfile::TempDir,
@@ -111,6 +113,7 @@ impl Fixture {
             ("ONA_ID", PathBuf::from("env-0001")),
             ("FLOW_FAKE_RUNNER", self.script_path()),
             ("FLOW_WATCH_POLL_MS", PathBuf::from(POLL_MS)),
+            ("FLOW_WATCH_RETRY_MS", PathBuf::from(RETRY_MS)),
             ("HOME", self.dir.path().to_owned()),
             (SUPERVISOR_ENV, PathBuf::from("1")),
         ]
@@ -421,4 +424,79 @@ fn watch_keeps_running_when_a_task_cannot_be_read() {
     let log = fs::read_to_string(fx.supervisor("watch.log")).unwrap();
     assert!(log.contains("reading tasks"), "{log}");
     assert!(!log.contains("nothing to watch"), "{log}");
+}
+
+/// A task whose watcher state cannot be read, and a first `flow watch` that woke for it.
+fn failed_watch() -> (Fixture, String) {
+    let fx = Fixture::new();
+    fx.task(TASK, "host-a", None);
+    fs::create_dir_all(fx.supervisor("watch-state.json")).unwrap();
+    let output = finish(fx.spawn_watch(&[]));
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let reason = stdout(&output).trim_end().to_owned();
+    assert!(reason.starts_with("watch-failed: "), "{reason}");
+    fx.flow()
+        .args(["wake", "ack", "--through", "1"])
+        .assert()
+        .success();
+    (fx, reason)
+}
+
+/// Waits long enough for a watch that started failing to retry several times.
+fn retries() {
+    thread::sleep(Duration::from_millis(1500));
+}
+
+#[test]
+fn repeated_watch_failure_wakes_once_and_holds_the_lock() {
+    let (fx, _) = failed_watch();
+    let mut watch = fx.spawn_watch(&[]);
+    retries();
+    let exited = watch.try_wait().unwrap();
+    let locked = fx.supervisor("watch.lock").join("owner.json").exists();
+    watch.kill().unwrap();
+    let output = watch.wait_with_output().unwrap();
+    assert!(exited.is_none(), "flow watch exited: {output:?}");
+    assert!(locked);
+    assert_eq!(fx.queue_lines().len(), 1, "{:?}", fx.queue_lines());
+}
+
+#[test]
+fn watch_resumes_once_its_failure_clears() {
+    let (fx, _) = failed_watch();
+    let watch = fx.spawn_watch(&[]);
+    retries();
+    fs::remove_dir(fx.supervisor("watch-state.json")).unwrap();
+    fx.await_seen_working(TASK);
+    let report = fx.dir.path().join("report.md");
+    fs::write(&report, "# Done\n").unwrap();
+    fx.flow()
+        .args(["task", "done", TASK, "--report"])
+        .arg(&report)
+        .assert()
+        .success();
+
+    let output = finish(watch);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert_eq!(stdout(&output), format!("done: {TASK}\n"));
+    assert_eq!(fx.queue_lines().len(), 2, "{:?}", fx.queue_lines());
+}
+
+#[test]
+fn changed_watch_failure_wakes_again() {
+    let (fx, first) = failed_watch();
+    let watch = fx.spawn_watch(&[]);
+    retries();
+    let path = fx.supervisor("watch-state.json");
+    fs::remove_dir(&path).unwrap();
+    std::os::unix::fs::symlink(&path, &path).unwrap();
+
+    let output = finish(watch);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let second = stdout(&output).trim_end().to_owned();
+    assert!(second.starts_with("watch-failed: "), "{second}");
+    assert_ne!(second, first);
+    let queue = fx.queue_lines();
+    assert_eq!(queue.len(), 2, "{queue:?}");
+    assert_eq!(queue[1]["reason"], second);
 }

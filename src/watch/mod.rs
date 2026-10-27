@@ -23,6 +23,9 @@
 //! A run with nothing to watch, no open task and no followed session, ends after its first
 //! cycle rather than waiting for the heartbeat. A cycle that could not read the tasks or the
 //! follow list counts as having something to watch.
+//!
+//! An error after the lock is taken wakes the supervisor as `watch-failed` once per distinct
+//! error; `run_retrying` keeps retrying a repeat of it in the background, holding the lock.
 
 pub mod classify;
 mod files;
@@ -100,10 +103,96 @@ pub fn run(
     }
 }
 
+/// How a watch that fails after taking the lock retries.
+#[derive(Debug, Clone)]
+pub struct Retry {
+    /// The delay before the first retry; each later one doubles, up to `heartbeat`.
+    pub first: Duration,
+    /// The longest delay, and how long a reported error stays reported: the same error wakes
+    /// again once this long has passed since its wake.
+    pub heartbeat: Duration,
+}
+
+/// Runs `attempt`, a watch holding `lock`, until it returns, and returns what it returned.
+/// When it fails with an error that is news, the error's wake is queued (see `failure_wake`)
+/// and returned. An error is news unless the newest queued wake reported the same error less
+/// than `retry.heartbeat` ago. Otherwise the run keeps the lock, which keeps `flow guard`
+/// satisfied, logs the error, and retries silently after a delay that starts at `retry.first`
+/// and doubles up to the heartbeat, touching the lock meanwhile.
+pub fn run_retrying(
+    state: &StateDir,
+    lock: &Guard,
+    retry: &Retry,
+    mut attempt: impl FnMut() -> anyhow::Result<Option<String>>,
+) -> Option<String> {
+    let mut delay = retry.first;
+    loop {
+        let err = match attempt() {
+            Ok(watched) => return watched,
+            Err(err) => err,
+        };
+        let error = one_line(&err);
+        // An unreadable queue counts as no earlier wake: waking too often beats never waking.
+        let latest = queue::latest(state).ok().flatten();
+        if failure_is_news(latest.as_ref(), &error, Timestamp::now(), retry.heartbeat) {
+            return Some(failure_wake_for(state, error));
+        }
+        append_log(
+            state,
+            &format!(
+                "watch failed again, retrying in {}s: {error}",
+                delay.as_secs_f64()
+            ),
+        );
+        sleep_holding(lock, delay);
+        delay = (delay * 2).min(retry.heartbeat);
+    }
+}
+
+/// Whether the watch error `error` should wake the supervisor at `now`, given the newest
+/// queued wake.
+fn failure_is_news(
+    latest: Option<&queue::Wake>,
+    error: &str,
+    now: Timestamp,
+    heartbeat: Duration,
+) -> bool {
+    let Some(wake) = latest else {
+        return true;
+    };
+    let Observation::WatchFailed { error: reported } = &wake.obs else {
+        return true;
+    };
+    let age_ms = now.as_millisecond() - wake.ts.as_millisecond();
+    reported != error || age_ms >= i64::try_from(heartbeat.as_millis()).unwrap_or(i64::MAX)
+}
+
+/// Sleeps for `delay`, touching `lock` at least once a minute so it does not go stale. A
+/// failed touch is left for the next attempt's own touch to report.
+fn sleep_holding(lock: &Guard, delay: Duration) {
+    const TOUCH_EVERY: Duration = Duration::from_secs(60);
+    let end = Instant::now() + delay;
+    loop {
+        let _ = lock.touch();
+        let left = end.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return;
+        }
+        thread::sleep(left.min(TOUCH_EVERY));
+    }
+}
+
+fn one_line(err: &anyhow::Error) -> String {
+    format!("{err:#}").replace('\n', " ")
+}
+
 /// The wake for an error that ended a run holding the lock: queued when the queue can be
 /// written, and returned as the reason line either way.
 pub fn failure_wake(state: &StateDir, err: &anyhow::Error) -> String {
-    let error = format!("{err:#}").replace('\n', " ");
+    failure_wake_for(state, one_line(err))
+}
+
+fn failure_wake_for(state: &StateDir, error: String) -> String {
     let obs = Observation::WatchFailed { error };
     let Verdict::Wake(reason) = classify(&obs, &Thresholds::default()) else {
         unreachable!("a watch failure always wakes");
@@ -642,11 +731,16 @@ impl<'a> Watcher<'a> {
         if !repeatable && !self.logged.insert(message.to_owned()) {
             return;
         }
-        let path = self.state.root().join(WATCH_LOG_FILE);
-        let line = format!("{} {message}\n", Timestamp::now());
-        // The log is for diagnosis; failing to write it must not stop the watch.
-        let _ = append_line(&path, line.as_bytes());
+        append_log(self.state, message);
     }
+}
+
+/// Appends `message` to the watch log, ignoring a failure to write it: the log is for
+/// diagnosis and must not stop the watch.
+fn append_log(state: &StateDir, message: &str) {
+    let path = state.root().join(WATCH_LOG_FILE);
+    let line = format!("{} {message}\n", Timestamp::now());
+    let _ = append_line(&path, line.as_bytes());
 }
 
 fn write_watch_state(state: &StateDir, memory: &WatchState) -> anyhow::Result<()> {
@@ -1056,6 +1150,49 @@ default_branch = "main"
         let mut watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
         assert_eq!(watcher.cycle().unwrap(), None);
         assert!(watcher.watching);
+    }
+
+    #[test]
+    fn a_watch_error_is_news_unless_the_newest_wake_just_reported_it() {
+        let heartbeat = Duration::from_secs(3600);
+        let at = Timestamp::now();
+        let wake = |obs: Observation| queue::Wake {
+            seq: 1,
+            ts: at,
+            reason: String::new(),
+            obs,
+        };
+        let failed = wake(Observation::WatchFailed {
+            error: "disk full".to_owned(),
+        });
+        let soon = at + jiff::SignedDuration::from_secs(60);
+        let later = at + jiff::SignedDuration::from_secs(3600);
+        assert!(failure_is_news(None, "disk full", soon, heartbeat));
+        assert!(!failure_is_news(
+            Some(&failed),
+            "disk full",
+            soon,
+            heartbeat
+        ));
+        assert!(failure_is_news(
+            Some(&failed),
+            "no such file",
+            soon,
+            heartbeat
+        ));
+        assert!(failure_is_news(
+            Some(&failed),
+            "disk full",
+            later,
+            heartbeat
+        ));
+        let heartbeat_wake = wake(Observation::Heartbeat);
+        assert!(failure_is_news(
+            Some(&heartbeat_wake),
+            "disk full",
+            soon,
+            heartbeat
+        ));
     }
 
     #[test]

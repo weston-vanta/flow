@@ -42,9 +42,11 @@ one reason; handle every row.
 - `adopted-<status>: <host>/<pane>`: a session the user asked you to follow changed state; tell
   them. `flow unfollow <host> <pane>` once they no longer need it.
 - `heartbeat`: nothing happened. Glance at `flow status`; report only real changes.
-- `watch-failed: <error>`: the watcher hit an error and stopped, so nothing is watching.
-  Ending the turn starts a new one. If the same error comes back on the next wake, tell the
-  user what it says; it needs fixing outside the conversation.
+- `watch-failed: <error>`: the watcher hit an error. Each distinct error wakes you once;
+  the watcher started at your next turn end keeps retrying it in the background and resumes
+  watching when it clears. Tell the user what it says; it likely needs fixing outside the
+  conversation. The same error waking you again a heartbeat (an hour) later means it is
+  still failing.
 
 ## 3. Acknowledge
 
