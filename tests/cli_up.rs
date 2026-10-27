@@ -252,6 +252,39 @@ fn up_resumes_known_session() {
 }
 
 #[test]
+fn up_starts_fresh_here_when_the_lock_host_is_gone() {
+    let fx = Fixture::new();
+    let gone_path = fx.state.join("hosts/env-0002.json");
+    let mut gone: Value = serde_json::from_str(&fs::read_to_string(&gone_path).unwrap()).unwrap();
+    gone["gone"] = json!(true);
+    fs::write(&gone_path, gone.to_string()).unwrap();
+    fx.write_lock("env-0002", "host-b", LIVE_PANE, Some("s9"));
+
+    let out = fx
+        .flow(&fresh_start())
+        .arg("up")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    assert_eq!(
+        String::from_utf8(out.stderr).unwrap(),
+        "supervisor host host-b is gone; starting a new supervisor here\n"
+    );
+    let calls = fx.calls();
+    assert!(calls.iter().all(|(host, _)| host == "host-a"), "{calls:?}");
+    let line = pane_run_line(&calls);
+    assert!(
+        line.contains("claude --name flow-supervisor --resume s9"),
+        "{line}"
+    );
+    let lock = fx.lock().unwrap();
+    assert_eq!(lock.host_env_id, "env-0001");
+    assert_eq!(lock.claude_session.as_deref(), Some("s9"));
+}
+
+#[test]
 fn up_attaches_when_lock_live() {
     let fx = Fixture::new();
     fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));

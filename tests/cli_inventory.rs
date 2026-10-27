@@ -829,7 +829,7 @@ fn refresh_adds_new_hosts_and_marks_gone() {
     let fx = Fixture::new();
     fs::write(fx.state.join("config.toml"), ONA_CONFIG).unwrap();
     fx.use_ona_fixture();
-    fx.write_cache(PRIMARY, &bare_record("old-name", PRIMARY, ""));
+    fx.write_cache(PRIMARY, &bare_record("primary", PRIMARY, ""));
     fx.write_cache("env-retired", &bare_record("retired", "env-retired", ""));
     let mut script = probes("primary");
     script.extend(probes("side-project"));

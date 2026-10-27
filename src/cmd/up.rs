@@ -22,21 +22,23 @@ pub fn run(state: &StateDir) -> anyhow::Result<()> {
     let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
     let herdr = Herdr::new(runner);
     let hosts = inventory::hosts(state)?;
+    let live = inventory::live_hosts(state)?;
     if let Some(lock) = supervisor::load(state)?
-        && let Some(host) = live_host(&hosts, &herdr, &lock)?
+        && let Some(host) = live_host(&hosts, &live, &herdr, &lock)?
     {
         return attach::exec(&lock, host);
     }
-    let live = inventory::live_hosts(state)?;
     let here = local_host(&live)?;
     let lock = start(state, &herdr, here)?;
     attach::exec(&lock, here)
 }
 
 /// The host running the supervisor `lock` names, when its pane still holds an agent. Fails when
-/// that host cannot be reached, since the supervisor may well be alive there.
+/// that host cannot be reached, since the supervisor may well be alive there; a gone host is
+/// not asked, since the supervisor went with it.
 fn live_host<'a>(
     hosts: &'a [Host],
+    live: &[Host],
     herdr: &Herdr,
     lock: &Lock,
 ) -> anyhow::Result<Option<&'a Host>> {
@@ -47,6 +49,13 @@ fn live_host<'a>(
         );
         return Ok(None);
     };
+    if !live.contains(host) {
+        eprintln!(
+            "supervisor host {} is gone; starting a new supervisor here",
+            host.name
+        );
+        return Ok(None);
+    }
     let agents = match herdr.agents_if_running(host) {
         Ok(agents) => agents,
         Err(err) if herdr::is_unreachable(&err) => bail!(

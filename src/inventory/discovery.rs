@@ -50,9 +50,8 @@ pub fn discover(
     Ok(discovered)
 }
 
-/// The records after Ona's `listed` environments: one per environment not excluded, named by
-/// `config.names` or the slug of its Ona name, with `-2`, `-3`, ... added in id order where names
-/// collide. A new environment gets an empty record seen `now`; one not running is unreachable;
+/// The records after Ona's `listed` environments: one per environment not excluded, named as
+/// `assign_names` says. A new environment gets an empty record seen `now`; one not running is unreachable;
 /// a cached record whose environment is not listed is marked gone. When the listing failed, or
 /// shows only the local environment while other hosts are cached (an environment-scoped token),
 /// the cached records are returned unchanged with a warning.
@@ -75,9 +74,10 @@ pub fn from_ona(
     };
     let is_local = |env_id: &str| local_env_id == Some(env_id);
     let only_local_listed = environments.iter().all(|env| is_local(&env.id));
-    let others_cached = cached
-        .iter()
-        .any(|record| !record.gone && !is_local(&record.env_id));
+    // Excluded records do not count, so excluding a deleted environment ends the warning.
+    let others_cached = cached.iter().any(|record| {
+        !record.gone && !is_local(&record.env_id) && !config.exclude.contains(&record.env_id)
+    });
     if only_local_listed && others_cached {
         return Discovered {
             records: cached,
@@ -88,8 +88,8 @@ pub fn from_ona(
     environments.retain(|env| !config.exclude.contains(&env.id));
     environments.sort_by(|a, b| a.id.cmp(&b.id));
     environments.dedup_by(|a, b| a.id == b.id);
-    let names = assign_names(&environments, &config.names);
     let mut by_id = by_env_id(cached);
+    let names = assign_names(&environments, &config.names, &by_id);
     let mut records: Vec<HostInventory> = environments
         .iter()
         .zip(names)
@@ -155,29 +155,48 @@ pub fn from_static(
     records
 }
 
-/// Each environment's host name, in the order given: its `overrides` entry or the slug of its
-/// name, with `-2`, `-3`, ... added when an earlier environment took it.
+/// Each environment's host name, in the order given (id order), chosen so that names stay put
+/// while environments come and go: first every `overrides` entry, which always wins; then each
+/// cached record keeps its current name unless an override or an earlier kept name took it;
+/// the rest get the slug of their Ona name. A name already taken gets `-2`, `-3`, ... added.
 fn assign_names(
     environments: &[OnaEnvironment],
     overrides: &BTreeMap<String, String>,
+    cached: &BTreeMap<String, HostInventory>,
 ) -> Vec<String> {
     let mut taken = HashSet::new();
-    environments
+    let mut names: Vec<Option<String>> = environments
         .iter()
         .map(|env| {
-            let base = overrides
+            overrides
                 .get(&env.id)
-                .cloned()
-                .unwrap_or_else(|| ona::slug(&env.name));
-            let mut name = base.clone();
-            let mut suffix = 1;
-            while !taken.insert(name.clone()) {
-                suffix += 1;
-                name = format!("{base}-{suffix}");
-            }
-            name
+                .map(|name| take_free(&mut taken, name))
         })
+        .collect();
+    for (env, name) in environments.iter().zip(&mut names) {
+        if name.is_none()
+            && let Some(record) = cached.get(&env.id)
+            && taken.insert(record.name.clone())
+        {
+            *name = Some(record.name.clone());
+        }
+    }
+    environments
+        .iter()
+        .zip(names)
+        .map(|(env, name)| name.unwrap_or_else(|| take_free(&mut taken, &ona::slug(&env.name))))
         .collect()
+}
+
+/// `base`, or `base-2`, `base-3`, ... when taken, marked taken.
+fn take_free(taken: &mut HashSet<String>, base: &str) -> String {
+    let mut name = base.to_owned();
+    let mut suffix = 1;
+    while !taken.insert(name.clone()) {
+        suffix += 1;
+        name = format!("{base}-{suffix}");
+    }
+    name
 }
 
 fn by_env_id(records: Vec<HostInventory>) -> BTreeMap<String, HostInventory> {
@@ -192,4 +211,139 @@ fn mark_gone(records: BTreeMap<String, HostInventory>) -> impl Iterator<Item = H
         gone: true,
         ..record
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const LOCAL: &str = "00000000-0000-4000-8000-000000000001";
+
+    fn env(id_suffix: u32, name: &str) -> OnaEnvironment {
+        OnaEnvironment {
+            id: format!("00000000-0000-4000-8000-{id_suffix:012}"),
+            name: name.to_owned(),
+            phase: "ENVIRONMENT_PHASE_RUNNING".to_owned(),
+            content_location: None,
+        }
+    }
+
+    fn refresh(
+        cached: Vec<HostInventory>,
+        listed: Vec<OnaEnvironment>,
+        config: &HostsConfig,
+    ) -> Discovered {
+        from_ona(
+            cached,
+            Ok(listed),
+            config,
+            Some(LOCAL),
+            Timestamp::UNIX_EPOCH,
+        )
+    }
+
+    /// `(env id suffix, name, gone)` of each record, by env id.
+    fn names(records: &[HostInventory]) -> Vec<(String, String, bool)> {
+        let mut names: Vec<_> = records
+            .iter()
+            .map(|r| (r.env_id[24..].to_owned(), r.name.clone(), r.gone))
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn row(id_suffix: u32, name: &str, gone: bool) -> (String, String, bool) {
+        (format!("{id_suffix:012}"), name.to_owned(), gone)
+    }
+
+    #[test]
+    fn names_stay_put_when_environments_come_and_go() {
+        let config = HostsConfig::default();
+        let first = refresh(
+            Vec::new(),
+            vec![
+                env(1, "Scratch Box"),
+                env(2, "Scratch Box"),
+                env(3, "Scratch Box"),
+            ],
+            &config,
+        );
+        assert_eq!(
+            names(&first.records),
+            [
+                row(1, "scratch-box", false),
+                row(2, "scratch-box-2", false),
+                row(3, "scratch-box-3", false),
+            ]
+        );
+
+        let second = refresh(
+            first.records,
+            vec![
+                env(2, "Scratch Box"),
+                env(3, "Scratch Box"),
+                env(4, "Scratch Box"),
+            ],
+            &config,
+        );
+
+        assert_eq!(second.warning, None);
+        assert_eq!(
+            names(&second.records),
+            [
+                row(1, "scratch-box", true),
+                row(2, "scratch-box-2", false),
+                row(3, "scratch-box-3", false),
+                row(4, "scratch-box", false),
+            ],
+            "existing hosts keep their names; only the new one is named"
+        );
+    }
+
+    #[test]
+    fn an_override_wins_over_an_earlier_slug() {
+        let mut config = HostsConfig::default();
+        config.names.insert(env(2, "").id, "primary".to_owned());
+        let listed = || vec![env(1, "Primary"), env(2, "Side Project")];
+
+        let fresh = refresh(Vec::new(), listed(), &config);
+        assert_eq!(
+            names(&fresh.records),
+            [row(1, "primary-2", false), row(2, "primary", false)]
+        );
+
+        let before = refresh(Vec::new(), listed(), &HostsConfig::default());
+        assert_eq!(names(&before.records)[0], row(1, "primary", false));
+        let after = refresh(before.records, listed(), &config);
+        assert_eq!(
+            names(&after.records),
+            [row(1, "primary-2", false), row(2, "primary", false)],
+            "an override takes its name even from a host that held it"
+        );
+    }
+
+    #[test]
+    fn excluded_hosts_do_not_count_against_a_local_only_listing() {
+        let config = HostsConfig::default();
+        let cached = refresh(
+            Vec::new(),
+            vec![env(1, "Primary"), env(2, "Side Project")],
+            &config,
+        )
+        .records;
+
+        let stuck = refresh(cached.clone(), vec![env(1, "Primary")], &config);
+        assert_eq!(stuck.warning.as_deref(), Some(ONLY_LOCAL_VISIBLE));
+
+        let excluded = HostsConfig {
+            exclude: vec![env(2, "").id],
+            ..HostsConfig::default()
+        };
+        let freed = refresh(cached, vec![env(1, "Primary")], &excluded);
+        assert_eq!(freed.warning, None);
+        assert_eq!(
+            names(&freed.records),
+            [row(1, "primary", false), row(2, "side-project", true)]
+        );
+    }
 }
