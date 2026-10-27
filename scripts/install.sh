@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 # Brings this machine's flow checkout up to date: pulls it, links its state/ to the shared
-# state directory, and builds the binary. Safe to run again, and meant to run on every machine
-# start. It never clones: clone flow to $FLOW_DIR once, then run the clone's copy of this script.
+# state directory, builds the binary, and links the binary into $FLOW_BIN_DIR. Safe to run
+# again, and meant to run on every machine start. It never clones: clone flow to $FLOW_DIR
+# once, then run the clone's copy of this script.
 #
 #   FLOW_DIR         the flow checkout (default /workspaces/flow)
 #   FLOW_STATE_DIR   the shared state directory state/ links to (default /efs-home/flow/state)
+#   FLOW_BIN_DIR     the directory the flow binary is linked into (default $HOME/.local/bin)
 #   FLOW_SKIP_BUILD  set to 1 to skip the build step
 set -euo pipefail
 
 FLOW_DIR="${FLOW_DIR:-/workspaces/flow}"
 FLOW_STATE_DIR="${FLOW_STATE_DIR:-/efs-home/flow/state}"
+FLOW_BIN_DIR="${FLOW_BIN_DIR:-$HOME/.local/bin}"
 
 say() { printf 'install: %s\n' "$*"; }
 fail() {
@@ -61,11 +64,11 @@ else
   say "symlink: done"
 fi
 
+bin="$FLOW_DIR/target/release/flow"
 if [[ ${FLOW_SKIP_BUILD:-} != 1 ]]; then
   if ! command -v cargo >/dev/null; then
     fail "build: cargo not found; install a Rust toolchain (https://rustup.rs) or set FLOW_SKIP_BUILD=1"
   fi
-  bin="$FLOW_DIR/target/release/flow"
   bin_sum=$(checksum "$bin")
   # cargo's own fingerprinting decides whether the binary is stale; an up-to-date build is a no-op.
   cargo build --release --quiet --manifest-path "$FLOW_DIR/Cargo.toml" --target-dir "$FLOW_DIR/target"
@@ -76,7 +79,19 @@ if [[ ${FLOW_SKIP_BUILD:-} != 1 ]]; then
   fi
 fi
 
+# Linked even without a build: the link dangles until the first build, which ln does not mind.
+bin_link="$FLOW_BIN_DIR/flow"
+if [[ -L $bin_link && $(readlink "$bin_link") == "$bin" ]]; then
+  say "link: already"
+elif [[ -e $bin_link && ! -L $bin_link ]]; then
+  fail "link: $bin_link exists and is not a symlink; move it aside so flow can link its binary there"
+else
+  mkdir -p "$FLOW_BIN_DIR"
+  ln -sfn "$bin" "$bin_link"
+  say "link: done"
+fi
+
 case ":$PATH:" in
-  *":$FLOW_DIR/target/release:"*) ;;
-  *) say "PATH: add $FLOW_DIR/target/release to your PATH" ;;
+  *":$FLOW_BIN_DIR:"*) ;;
+  *) say "PATH: add $FLOW_BIN_DIR to your PATH" ;;
 esac

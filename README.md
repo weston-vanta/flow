@@ -27,16 +27,17 @@ Then, on each host:
 
 ```sh
 git clone https://github.com/weston-vanta/flow.git /workspaces/flow && bash /workspaces/flow/scripts/install.sh
-export PATH="/workspaces/flow/target/release:$PATH"
 ```
 
-Put the `export` in your shell profile too, so `flow` stays on `PATH` in new shells.
+install.sh links the binary into `~/.local/bin` (`FLOW_BIN_DIR`), which most shells already
+have on `PATH`; it tells you if yours does not.
 
 `scripts/install.sh` pulls the clone, creates the state directory, links `state/` to it,
-builds `target/release/flow`, and tells you when `target/release` is not on your `PATH`. Each
-step prints `done` or `already`. It is safe to run again, so a machine-start script can call
-it on every start. `FLOW_DIR` (default `/workspaces/flow`) and `FLOW_STATE_DIR` (default
-`/efs-home/flow/state`) change where the clone and the state directory are.
+builds `target/release/flow`, and links that binary into `FLOW_BIN_DIR`. Each step prints
+`done` or `already`. It is safe to run again, so a machine-start script can call it on every
+start. `FLOW_DIR` (default `/workspaces/flow`), `FLOW_STATE_DIR` (default
+`/efs-home/flow/state`) and `FLOW_BIN_DIR` (default `~/.local/bin`) change where the clone,
+the state directory and the binary link are.
 
 Once, on the machine that runs the supervisor:
 

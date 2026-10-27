@@ -30,12 +30,14 @@ struct Fixture {
     origin: PathBuf,
     flow_dir: PathBuf,
     state_dir: PathBuf,
+    /// The `FLOW_BIN_DIR` the binary is linked into; it does not exist yet.
+    bin_dir: PathBuf,
 }
 
 impl Fixture {
     /// A clone of this repo's HEAD tracking a `fixture` branch in a bare origin of its own, so
-    /// the checkout's branch, or a detached HEAD, does not matter; and a state directory path
-    /// that does not exist yet.
+    /// the checkout's branch, or a detached HEAD, does not matter; and state and bin directory
+    /// paths that do not exist yet.
     fn new() -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let origin = dir.path().join("origin.git");
@@ -59,11 +61,13 @@ impl Fixture {
             ],
         );
         let state_dir = dir.path().join("efs/flow/state");
+        let bin_dir = dir.path().join("home/.local/bin");
         Fixture {
             dir,
             origin,
             flow_dir,
             state_dir,
+            bin_dir,
         }
     }
 
@@ -71,8 +75,12 @@ impl Fixture {
         self.flow_dir.join("state")
     }
 
-    fn bin_dir(&self) -> PathBuf {
+    fn release_dir(&self) -> PathBuf {
         self.flow_dir.join("target/release")
+    }
+
+    fn bin_link(&self) -> PathBuf {
+        self.bin_dir.join("flow")
     }
 
     /// Runs this checkout's `scripts/install.sh` on the clone, with `path` as `$PATH` and the
@@ -90,6 +98,7 @@ impl Fixture {
         cmd.arg(Path::new(REPO).join("scripts/install.sh"))
             .env("FLOW_DIR", &self.flow_dir)
             .env("FLOW_STATE_DIR", &self.state_dir)
+            .env("FLOW_BIN_DIR", &self.bin_dir)
             .env_remove("FLOW_SKIP_BUILD")
             .env("PATH", path);
         cmd
@@ -200,22 +209,34 @@ fn lines(out: &Output) -> Vec<String> {
 fn install_sh_is_idempotent() {
     let fx = Fixture::new();
 
+    let script = fx.script(&system_path());
+    let bin_dir_env = script
+        .get_envs()
+        .find(|(key, _)| *key == "FLOW_BIN_DIR")
+        .and_then(|(_, value)| value);
+    assert_eq!(bin_dir_env, Some(fx.bin_dir.as_os_str()));
+
     let first = lines(&fx.install(&system_path()));
 
-    let hint = format!("install: PATH: add {} to your PATH", fx.bin_dir().display());
+    let hint = format!("install: PATH: add {} to your PATH", fx.bin_dir.display());
     assert_eq!(
         first,
         [
             "install: pull: already",
             "install: state dir: done",
             "install: symlink: done",
+            "install: link: done",
             hint.as_str(),
         ]
     );
     assert!(fx.state_dir.is_dir());
     assert_eq!(fs::read_link(fx.link()).unwrap(), fx.state_dir);
+    assert_eq!(
+        fs::read_link(fx.bin_link()).unwrap(),
+        fx.release_dir().join("flow")
+    );
 
-    let on_path = format!("{}:{}", fx.bin_dir().display(), system_path());
+    let on_path = format!("{}:{}", fx.bin_dir.display(), system_path());
     let second = lines(&fx.install(&on_path));
 
     assert_eq!(
@@ -224,9 +245,35 @@ fn install_sh_is_idempotent() {
             "install: pull: already",
             "install: state dir: already",
             "install: symlink: already",
+            "install: link: already",
         ]
     );
     assert_eq!(fs::read_link(fx.link()).unwrap(), fx.state_dir);
+    assert_eq!(
+        fs::read_link(fx.bin_link()).unwrap(),
+        fx.release_dir().join("flow")
+    );
+}
+
+#[test]
+fn install_sh_refuses_a_real_file_at_the_bin_path() {
+    let fx = Fixture::new();
+    fs::create_dir_all(&fx.bin_dir).unwrap();
+    fs::write(fx.bin_link(), "another flow\n").unwrap();
+
+    let out = fx.install(&system_path());
+
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert_eq!(
+        String::from_utf8(out.stderr).unwrap(),
+        format!(
+            "install: link: {} exists and is not a symlink; move it aside so flow can link its \
+             binary there\n",
+            fx.bin_link().display()
+        )
+    );
+    assert!(!fx.bin_link().is_symlink());
+    assert_eq!(fs::read_to_string(fx.bin_link()).unwrap(), "another flow\n");
 }
 
 #[test]
@@ -290,7 +337,7 @@ fn install_sh_rebuilds_after_pulling_an_older_dated_commit() {
     assert!(out.contains(&"install: pull: done".to_owned()), "{out:?}");
     assert!(out.contains(&"install: build: done".to_owned()), "{out:?}");
     assert_eq!(fx.cargo_calls(), 3);
-    let built = fs::read_to_string(fx.bin_dir().join("flow")).unwrap();
+    let built = fs::read_to_string(fx.release_dir().join("flow")).unwrap();
     assert_eq!(
         built,
         git_stdout(&fx.flow_dir, &["rev-parse", "HEAD"]).trim()
@@ -314,7 +361,7 @@ fn install_sh_refuses_to_build_without_cargo() {
         "install: build: cargo not found; install a Rust toolchain (https://rustup.rs) or set \
          FLOW_SKIP_BUILD=1\n"
     );
-    assert!(!fx.bin_dir().exists());
+    assert!(!fx.release_dir().exists());
 }
 
 #[test]

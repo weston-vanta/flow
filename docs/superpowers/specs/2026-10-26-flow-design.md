@@ -157,11 +157,12 @@ designer's call.
    (local disk: fast git and fast `cargo build`). Durable state lives at `/efs-home/flow/`
    and is reached from the clone through a symlink `/workspaces/flow/state ->
    /efs-home/flow/state`. A flow-owned, idempotent `scripts/install.sh` pulls the clone,
-   creates the state directory and symlink, and builds the binary; the user's own
-   machine-start script clones the repo once, calls that script, installs herdr, and
-   keeps its herdr hook path platform-aware. `flow init` writes the operator config from
-   what the local machine can tell it. (Layout is the user's; the symlink direction and
-   the split between the install script and the user's script are the designer's reading.)
+   creates the state directory and symlink, builds the binary, and links it into
+   `~/.local/bin`; the user's own machine-start script clones the repo once, calls that
+   script, installs herdr, and keeps its herdr hook path platform-aware. `flow init` writes
+   the operator config from what the local machine can tell it. (Layout is the user's; the
+   symlink direction and the split between the install script and the user's script are the
+   designer's reading.)
 10. **The supervisor always runs from `/workspaces/flow`.** The harness keys transcripts by
     cwd, and transcripts are on EFS, so `claude --resume` from `/workspaces/flow` on any
     CDE resumes the same supervisor conversation after a recycle. Session start reads the
@@ -384,7 +385,7 @@ Hooks, run by Claude Code rather than by hand:
 - The brief template given to workers, including how they state completion criteria and
   write status lines and reports.
 - Inventory refresh strategy (on demand over ssh vs. a per-CDE hook that publishes to EFS).
-- The user's machine-start script that clones the repo, calls `scripts/install.sh`, installs herdr, and keeps the herdr hook path platform-aware.
+- The user's machine-start script that clones the repo, calls `scripts/install.sh` (which links the binary into `~/.local/bin`), installs herdr, and keeps the herdr hook path platform-aware.
 - Test strategy: the state layer and watcher classification should be testable without
   ssh or herdr; adapters get integration tests against a real second CDE.
 
@@ -411,7 +412,7 @@ above and are binding for Tasks 14–19.
   location, adds new hosts, and marks missing ones gone. Config keeps only overrides
   (name slugs, exclusions) and a static list for machines not managed by Ona. When the Ona
   token has expired, refresh says so in one line and uses the cached set.
-- **`flow init` and `scripts/install.sh`** are flow's; the user's machine-start script
-  shrinks to cloning once, calling the install script, installing herdr, and fixing the
-  herdr hook path. The README lists what the user still provides.
+- **`flow init` and `scripts/install.sh`** are flow's (install.sh links the binary into
+  `~/.local/bin`); the user's machine-start script shrinks to cloning once, calling the
+  install script, installing herdr, and fixing the herdr hook path. The README lists what the user still provides.
 - **CLI reference.** The README and this document carry the list of subcommands (Task 17).
