@@ -653,16 +653,22 @@ fn dispatch_refuses_unknown_local_host() {
 #[test]
 fn dispatch_without_dir_creates_the_task_work_dir() {
     let fx = Fixture::new();
+    let linked = fx.dir.path().join("linked-state");
+    std::os::unix::fs::symlink(&fx.state, &linked).unwrap();
 
     fx.flow(&starts_working(Vec::new()))
+        .env("FLOW_STATE", &linked)
         .args(dispatch_args(&[]))
         .assert()
         .success();
 
     let id = fx.only_task();
     let store = fx.store();
-    let work = store.task_dir(&id).unwrap().join("work");
-    assert!(work.is_absolute(), "{}", work.display());
+    let work = fs::canonicalize(&fx.state)
+        .unwrap()
+        .join("tasks")
+        .join(&id)
+        .join("work");
     assert!(work.is_dir(), "{} was not created", work.display());
     let (rec, _) = store.task(&id).unwrap();
     assert_eq!(rec.cwd, work);

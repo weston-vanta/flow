@@ -1,5 +1,5 @@
-use std::env;
 use std::path::{Path, PathBuf};
+use std::{env, fs, io};
 
 const STATE_ENV: &str = "FLOW_STATE";
 
@@ -29,5 +29,13 @@ impl StateDir {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// This state directory with symlinks resolved: its physical path on the shared volume,
+    /// which is the same on every host.
+    pub fn canonical(&self) -> io::Result<StateDir> {
+        Ok(StateDir {
+            root: fs::canonicalize(&self.root)?,
+        })
     }
 }

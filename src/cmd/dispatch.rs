@@ -88,8 +88,12 @@ pub fn run(state: &StateDir, args: &DispatchArgs) -> anyhow::Result<()> {
             worktree::create(runner.as_ref(), host, repo, branch)?
         }
         WorkDir::Task => {
-            let work = store.task_dir(&id)?.join(WORK_DIR);
-            std::path::absolute(&work).with_context(|| format!("resolving {}", work.display()))?
+            // The repo's `state` symlink exists only where this checkout does; the physical path
+            // is the one every host can reach, and it keeps the worker outside this repo.
+            let physical = state
+                .canonical()
+                .with_context(|| format!("resolving {}", state.root().display()))?;
+            Store::open(&physical).task_dir(&id)?.join(WORK_DIR)
         }
     };
     let herdr = Herdr::new(runner);

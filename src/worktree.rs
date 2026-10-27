@@ -35,11 +35,17 @@ fn create_with_git(
     repo: &Repo,
     branch: &str,
 ) -> anyhow::Result<PathBuf> {
-    let dir = repo.worktrees_dir.clone().unwrap_or_else(|| {
-        let mut sibling = repo.path.clone().into_os_string();
-        sibling.push(WORKTREES_SUFFIX);
-        PathBuf::from(sibling)
-    });
+    let dir = match &repo.worktrees_dir {
+        Some(dir) => dir.clone(),
+        None => sibling_worktrees_dir(&repo.path).ok_or_else(|| {
+            anyhow!(
+                "repo {} at {} has no sibling worktrees directory; set worktrees_dir in \
+                 config.toml",
+                repo.name,
+                repo.path.display()
+            )
+        })?,
+    };
     let path = dir.join(branch);
     let argv: Vec<String> = [
         "git",
@@ -65,6 +71,13 @@ fn create_with_git(
         );
     }
     Ok(path)
+}
+
+/// `<parent>/<name>-worktrees` for a repo at `<parent>/<name>`, ignoring a trailing slash.
+fn sibling_worktrees_dir(repo_path: &Path) -> Option<PathBuf> {
+    let mut name = repo_path.file_name()?.to_owned();
+    name.push(WORKTREES_SUFFIX);
+    Some(repo_path.parent()?.join(name))
 }
 
 /// Runs `tool`'s create template for `branch` inside `repo_path` on `host` and returns the
@@ -277,6 +290,7 @@ mod tests {
                 ..Scripted::default()
             },
             Scripted::default(),
+            Scripted::default(),
             Scripted {
                 status: 128,
                 stderr: "fatal: a branch named 'feature-x' already exists\n".to_owned(),
@@ -289,10 +303,29 @@ mod tests {
         };
 
         let sibling = create(&fake, &host(), &repo(None), "feature-x").unwrap();
+        let slashed = Repo {
+            path: PathBuf::from("/work/repo/"),
+            ..repo(None)
+        };
+        let from_slashed = create(&fake, &host(), &slashed, "feature-x").unwrap();
         let configured = create(&fake, &host(), &in_dir, "feature-x").unwrap();
+        assert!(
+            create(
+                &fake,
+                &host(),
+                &Repo {
+                    path: PathBuf::from("/"),
+                    ..repo(None)
+                },
+                "x"
+            )
+            .is_err(),
+            "the root has no sibling worktrees directory"
+        );
         let err = create(&fake, &host(), &repo(None), "feature-x").unwrap_err();
 
         assert_eq!(sibling, Path::new("/work/repo-worktrees/feature-x"));
+        assert_eq!(from_slashed, Path::new("/work/repo-worktrees/feature-x"));
         assert_eq!(configured, Path::new("/work/trees/feature-x"));
         let calls = fake.calls();
         assert_eq!(
@@ -309,8 +342,9 @@ mod tests {
                 "main"
             ])
         );
+        assert_eq!(calls[1].argv[5], "/work/repo-worktrees/feature-x");
         assert_eq!(
-            calls[1].argv,
+            calls[2].argv,
             words(&[
                 "git",
                 "-C",

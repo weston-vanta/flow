@@ -21,8 +21,10 @@ use crate::worktree;
 const SSH_FAILURE_STATUS: i32 = 255;
 /// The exit code git uses for `fatal:` errors.
 const GIT_FATAL_STATUS: i32 = 128;
-/// What git prints when `-C <path>` names no directory, or a directory that is not a repo.
-const MISSING_REPO_MESSAGES: [&str; 2] = ["cannot change to", "not a git repository"];
+/// What git prints when `-C <path>` names no directory: both parts appear on the same line.
+const NO_DIRECTORY_MESSAGE: [&str; 2] = ["cannot change to", "No such file or directory"];
+/// What git prints when `-C <path>` names a directory that is not a repository.
+const NOT_A_REPO_MESSAGE: &str = "not a git repository";
 const LOADAVG_ARGV: [&str; 2] = ["cat", "/proc/loadavg"];
 const PR_LIST_ARGV: [&str; 11] = [
     "gh",
@@ -498,9 +500,10 @@ fn parse_prs(repo: &str, text: &str) -> anyhow::Result<Vec<Pr>> {
 /// the directory does not exist or is not a git repository.
 fn is_missing_repo(output: &Output) -> bool {
     output.status == GIT_FATAL_STATUS
-        && MISSING_REPO_MESSAGES
-            .iter()
-            .any(|message| output.stderr.contains(message))
+        && output.stderr.lines().any(|line| {
+            NO_DIRECTORY_MESSAGE.iter().all(|part| line.contains(part))
+                || line.contains(NOT_A_REPO_MESSAGE)
+        })
 }
 
 fn is_ssh_failure(output: &Output) -> bool {

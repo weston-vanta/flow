@@ -135,33 +135,33 @@ fn refresh_one(
     }
 }
 
-/// The user's open PRs per configured repo, `(repo name, PRs)` in config order, listed on this
-/// machine when it is a reachable configured host, else on the first reachable one (gh's login
-/// is shared across hosts). A repo's entry holds the reason when no host is reachable or its
-/// listing fails.
+/// The user's open PRs per configured repo, `(repo name, PRs)` in config order. Each repo is
+/// listed on this machine when it is a reachable configured host with the repo checked out, else
+/// on the first reachable host that has it (gh's login is shared across hosts). A repo's entry
+/// holds the reason when no reachable host has it or its listing fails.
 fn list_prs(
     runner: &dyn Runner,
     config: &Config,
     refreshed: &[(&Host, HostInventory)],
 ) -> Vec<(String, Result<Vec<inventory::Pr>, String>)> {
     let local_env_id = host::local_env_id();
-    let mut reachable = refreshed
-        .iter()
-        .filter(|(_, inv)| inv.reachable)
-        .map(|(host, _)| *host);
-    let host = reachable
-        .clone()
-        .find(|host| host::is_local(host, local_env_id.as_deref()))
-        .or_else(|| reachable.next());
     config
         .repos
         .iter()
         .map(|repo| {
+            let mut candidates = refreshed
+                .iter()
+                .filter(|(_, inv)| inv.reachable && !inv.missing_repos.contains(&repo.name))
+                .map(|(host, _)| *host);
+            let host = candidates
+                .clone()
+                .find(|host| host::is_local(host, local_env_id.as_deref()))
+                .or_else(|| candidates.next());
             let prs = match host {
                 Some(host) => {
                     inventory::open_prs(runner, host, repo).map_err(|err| format!("{err:#}"))
                 }
-                None => Err("no host reachable to list open PRs".to_owned()),
+                None => Err(format!("no reachable host has repo {}", repo.name)),
             };
             (repo.name.clone(), prs)
         })

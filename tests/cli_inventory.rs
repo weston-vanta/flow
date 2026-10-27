@@ -558,12 +558,7 @@ branch refs/heads/fix-y
     );
 }
 
-#[test]
-fn inventory_skips_repos_missing_on_a_host() {
-    let fx = Fixture::new();
-    fs::write(
-        fx.state.join("config.toml"),
-        r#"
+const TWO_REPOS_TWO_HOSTS: &str = r#"
 [[repos]]
 name = "example-repo"
 path = "/work/repo"
@@ -578,41 +573,98 @@ default_branch = "main"
 name = "host-a"
 env_id = "env-0001"
 ssh_alias = "host-a.example"
-"#,
-    )
-    .unwrap();
-    let porcelain = "\
+
+[[hosts]]
+name = "host-b"
+env_id = "env-0002"
+ssh_alias = "host-b.example"
+"#;
+
+const REPO_PORCELAIN: &str = "\
 worktree /work/repo
 HEAD 1111111111111111111111111111111111111111
 branch refs/heads/main
 ";
-    let missing = json!({
-        "host": "host-a", "status": 128, "stdout": "",
-        "stderr": "fatal: cannot change to '/work/other': No such file or directory\n",
-    });
-    let script = [
-        on("host-a", porcelain),
-        missing,
+
+const NO_AGENTS: &str = r#"{"id":"cli:agent:list","result":{"agents":[],"type":"agent_list"}}"#;
+
+fn gh_in(dir: &str) -> Vec<String> {
+    words(&[
+        "sh",
+        "-c",
+        r#"cd "$1" && shift && exec "$@""#,
+        "sh",
+        dir,
+        "gh",
+        "pr",
+        "list",
+        "--author",
+        "@me",
+        "--state",
+        "open",
+        "--json",
+        "number,url,headRefName,state",
+        "--limit",
+        "100",
+    ])
+}
+
+/// `host-a`'s probes with `/work/other` answering `other_git`, without any `gh` call.
+fn host_a_without_other(other_git: Value) -> Vec<Value> {
+    vec![
+        on("host-a", REPO_PORCELAIN),
+        other_git,
         on("host-a", LOADAVG),
         on("host-a", SERVER_RUNNING),
-        on(
-            "host-a",
-            r#"{"id":"cli:agent:list","result":{"agents":[],"type":"agent_list"}}"#,
-        ),
+        on("host-a", NO_AGENTS),
         default_session_stopped("host-a"),
-        on("host-a", "[]"),
-        on("host-a", "[]"),
-    ];
+    ]
+}
+
+fn other_git_failed(stderr: &str) -> Value {
+    json!({"host": "host-a", "status": 128, "stdout": "", "stderr": stderr})
+}
+
+const NO_SUCH_DIR: &str = "fatal: cannot change to '/work/other': No such file or directory\n";
+
+#[test]
+fn inventory_skips_repos_missing_on_a_host() {
+    let fx = Fixture::new();
+    fs::write(fx.state.join("config.toml"), TWO_REPOS_TWO_HOSTS).unwrap();
+    let other_porcelain = "\
+worktree /work/other
+HEAD 4444444444444444444444444444444444444444
+branch refs/heads/main
+
+worktree /work/other-worktrees/fix-y
+HEAD 5555555555555555555555555555555555555555
+branch refs/heads/fix-y
+";
+    let other_prs = r#"[{"headRefName":"fix-y","number":21,"state":"OPEN","url":"https://github.com/example/other-repo/pull/21"}]"#;
+    let mut script = host_a_without_other(other_git_failed(NO_SUCH_DIR));
+    script.push(on("host-a", "[]"));
+    script.extend([
+        on("host-b", REPO_PORCELAIN),
+        on("host-b", other_porcelain),
+        on("host-b", LOADAVG),
+        on("host-b", SERVER_RUNNING),
+        on("host-b", NO_AGENTS),
+        default_session_stopped("host-b"),
+        on("host-b", other_prs),
+    ]);
 
     let stdout = stdout_of(fx.flow(&script).args(["inventory", "--refresh"]));
 
-    let lines: Vec<&str> = stdout.lines().collect();
+    let blocks: Vec<Vec<&str>> = stdout
+        .split("\n\n")
+        .map(|block| block.lines().collect())
+        .collect();
     assert!(
-        lines[0].starts_with("host-a  reachable  load 0.26  1 worktrees  0 agents  (seen "),
+        blocks[0][0].starts_with("host-a  reachable  load 0.26  1 worktrees  0 agents  (seen "),
         "{stdout}"
     );
     assert_eq!(
-        lines[1..],
+        blocks[0][1..],
         [
             "  missing: other-repo",
             "  repo example-repo",
@@ -620,32 +672,87 @@ branch refs/heads/main
         ],
         "{stdout}"
     );
+    assert!(
+        blocks[1].contains(&"    fix-y  /work/other-worktrees/fix-y  PR #21 OPEN"),
+        "{stdout}"
+    );
     let cached = fx.cached("env-0001");
     assert_eq!(cached["reachable"], true);
     assert_eq!(cached["missing_repos"], json!(["other-repo"]));
     assert_eq!(cached["worktrees"][0]["repo"], "example-repo");
     assert_eq!(cached["worktrees"].as_array().unwrap().len(), 1);
+    assert_eq!(cached["pr_error"], Value::Null);
+    assert_eq!(fx.cached("env-0002")["pr_error"], Value::Null);
+    assert_eq!(fx.cached("env-0002")["missing_repos"], json!([]));
+    let gh_calls: Vec<(String, Vec<String>)> = fx
+        .calls()
+        .into_iter()
+        .filter(|(_, argv)| argv.get(5).is_some_and(|program| program == "gh"))
+        .collect();
+    assert_eq!(
+        gh_calls,
+        [
+            ("host-a".to_owned(), gh_in("/work/repo")),
+            ("host-b".to_owned(), gh_in("/work/other")),
+        ],
+        "each repo's PRs are listed on the local host, or on a host that has the repo"
+    );
+}
 
-    let broken = Fixture::new();
-    fs::write(
-        broken.state.join("config.toml"),
-        fs::read_to_string(fx.state.join("config.toml")).unwrap(),
-    )
-    .unwrap();
-    let corrupt = json!({
-        "host": "host-a", "status": 128, "stdout": "",
-        "stderr": "fatal: unable to read tree 2222222222222222222222222222222222222222\n",
-    });
-    let mut script = script.to_vec();
-    script[1] = corrupt;
-    let out = broken
+#[test]
+fn inventory_reports_a_repo_no_host_has() {
+    let fx = Fixture::new();
+    let config = TWO_REPOS_TWO_HOSTS
+        .split("[[hosts]]")
+        .take(2)
+        .collect::<Vec<_>>()
+        .join("[[hosts]]");
+    fs::write(fx.state.join("config.toml"), config).unwrap();
+    let mut script = host_a_without_other(other_git_failed(
+        "fatal: not a git repository (or any of the parent directories): .git\n",
+    ));
+    script.push(on("host-a", "[]"));
+
+    let stdout = stdout_of(fx.flow(&script).args(["inventory", "--refresh"]));
+
+    assert!(
+        stdout.contains("  gh failed: other-repo: no reachable host has repo other-repo\n"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("  missing: other-repo\n"), "{stdout}");
+    assert_eq!(
+        fx.cached("env-0001")["pr_error"],
+        "other-repo: no reachable host has repo other-repo"
+    );
+    let gh_calls = fx
+        .calls()
+        .into_iter()
+        .filter(|(_, argv)| argv.get(5).is_some_and(|program| program == "gh"))
+        .count();
+    assert_eq!(gh_calls, 1);
+}
+
+#[test]
+fn inventory_fails_a_host_whose_repo_git_cannot_read() {
+    let fx = Fixture::new();
+    fs::write(fx.state.join("config.toml"), TWO_REPOS_TWO_HOSTS).unwrap();
+    let mut script = host_a_without_other(other_git_failed(
+        "fatal: cannot change to '/work/other': Permission denied\n",
+    ));
+    script.push(
+        json!({"host": "host-b", "status": 255, "stdout": "", "repeat": true,
+        "stderr": "ssh: connect to host host-b.example: Connection refused\n"}),
+    );
+
+    let out = fx
         .flow(&script)
         .args(["inventory", "--refresh"])
         .assert()
         .failure()
         .get_output()
         .clone();
+
     let stderr = String::from_utf8(out.stderr).unwrap();
-    assert!(stderr.contains("unable to read tree"), "{stderr}");
+    assert!(stderr.contains("Permission denied"), "{stderr}");
     assert!(stderr.contains("could not refresh host-a"), "{stderr}");
 }
