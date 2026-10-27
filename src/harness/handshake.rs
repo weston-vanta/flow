@@ -113,12 +113,19 @@ fn await_start_with(
                 pane_text,
             }
             .into()),
-            Polled::TimedOut => bail!(
-                "agent in pane {pane_id} on {} did not start within {} s; workspace \
-                 {workspace_id} is left open for inspection",
-                host.name,
-                timing.timeout.as_secs()
-            ),
+            Polled::TimedOut => {
+                let silent = if clock.no_answer_noted {
+                    "; herdr gave no answer to at least one wait"
+                } else {
+                    ""
+                };
+                bail!(
+                    "agent in pane {pane_id} on {} did not start within {} s{silent}; \
+                     workspace {workspace_id} is left open for inspection",
+                    host.name,
+                    timing.timeout.as_secs()
+                )
+            }
         }
     };
     let status = wait(&[
@@ -450,6 +457,25 @@ mod tests {
 
         assert!(matches!(start, AgentStart::Running), "{start:?}");
         assert_eq!(wait_timeouts(&fake).len(), 2);
+    }
+
+    #[test]
+    fn await_start_timeout_names_a_wait_that_gave_no_answer() {
+        let fake = Arc::new(FakeRunner::new(vec![Scripted {
+            status: 1,
+            repeat: true,
+            ..Scripted::default()
+        }]));
+        let herdr = Herdr::new(fake.clone());
+
+        let err = await_start_with(&herdr, &host(), "w3", PANE, None, &fast()).unwrap_err();
+
+        let err = format!("{err:#}");
+        assert!(
+            err.contains("did not start within 0 s; herdr gave no answer to at least one wait;"),
+            "{err}"
+        );
+        assert!(err.contains("workspace w3 is left open"), "{err}");
     }
 
     #[test]

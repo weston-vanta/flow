@@ -784,6 +784,28 @@ fn attach_without_a_terminal_quotes_the_remote_command_as_one_word() {
 }
 
 #[test]
+fn attach_without_a_terminal_creates_the_control_dir_its_ssh_command_names() {
+    let fx = Fixture::new();
+    fx.write_lock("env-0002", "host-b", LIVE_PANE, None);
+    let runtime = fx.dir.path().join("runtime");
+    fs::create_dir(&runtime).unwrap();
+
+    let stdout = stdout_of(
+        fx.flow(&[])
+            .env("XDG_RUNTIME_DIR", &runtime)
+            .env_remove("FLOW_FAKE_TTY")
+            .arg("attach"),
+    );
+
+    let control_dir = runtime.join("flow");
+    assert!(
+        stdout.contains(&format!("ControlPath={}/ssh-%C", control_dir.display())),
+        "{stdout}"
+    );
+    assert!(control_dir.is_dir(), "{} is missing", control_dir.display());
+}
+
+#[test]
 fn attach_without_lock_says_to_run_up() {
     let fx = Fixture::new();
 

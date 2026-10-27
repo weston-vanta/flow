@@ -1,4 +1,5 @@
-//! `flow attach`: replaces this process with a terminal attached to the supervisor's pane.
+//! `flow attach`: on a terminal, replaces this process with one attached to the supervisor's
+//! pane; otherwise prints the command that attaches.
 
 use std::io::{self, IsTerminal};
 use std::os::unix::process::CommandExt;
@@ -55,11 +56,17 @@ pub(crate) fn exec(lock: &Lock, host: &Host, instead: Instead) -> anyhow::Result
     if !stdout_is_terminal() {
         let command = match instead {
             Instead::FlowAttach => "flow attach".to_owned(),
-            Instead::Command => argv
-                .iter()
-                .map(|word| herdr::shell_word(word))
-                .collect::<Vec<_>>()
-                .join(" "),
+            Instead::Command => {
+                // The printed ssh command names a socket in the control dir, which is gone after
+                // a reboot.
+                if !local {
+                    runner::ensure_control_dir(&control_dir)?;
+                }
+                argv.iter()
+                    .map(|word| herdr::shell_word(word))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            }
         };
         return super::print(&format!(
             "stdout is not a terminal, so flow did not attach; to attach, run: {command}\n"
