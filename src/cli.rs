@@ -58,7 +58,10 @@ pub enum Command {
     /// Stop hook that blocks ending a turn while work is unwatched
     Guard,
     /// Receive harness hook events
-    Hook,
+    Hook {
+        #[command(subcommand)]
+        command: HookCommand,
+    },
     /// Start or reattach the supervisor session
     Up,
     /// Attach to the supervisor session
@@ -169,6 +172,15 @@ pub enum CdeCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum HookCommand {
+    /// Record a Claude Code hook event read as JSON from stdin
+    Claude {
+        #[arg(long, value_name = "ID")]
+        task: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub enum RequestsCommand {
     /// Mark a request dispatched so it stops listing
     Consume { req_id: String },
@@ -195,6 +207,9 @@ pub fn run(cli: Cli, state: &StateDir) -> anyhow::Result<ExitCode> {
         Command::Cde { command } => return run_cde(command, state),
         Command::Status { json } => cmd::status::run(state, json),
         Command::Task { command } => run_task(command, state),
+        Command::Hook {
+            command: HookCommand::Claude { task },
+        } => cmd::hook::run_claude(state, &task, std::io::stdin().lock()),
         Command::Requests { command, json } => match command {
             None => cmd::requests::run_list(state, json),
             Some(RequestsCommand::Consume { req_id }) => cmd::requests::run_consume(state, &req_id),
@@ -205,7 +220,6 @@ pub fn run(cli: Cli, state: &StateDir) -> anyhow::Result<ExitCode> {
         | Command::Watch
         | Command::Wake
         | Command::Guard
-        | Command::Hook
         | Command::Up
         | Command::Attach => anyhow::bail!("not implemented"),
     };

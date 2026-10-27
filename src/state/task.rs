@@ -41,6 +41,8 @@ pub struct Status {
     pub hold: Option<Hold>,
     #[serde(default)]
     pub herdr: Option<HerdrTarget>,
+    #[serde(default)]
+    pub claude_session: Option<ClaudeSession>,
 }
 
 impl Status {
@@ -50,6 +52,7 @@ impl Status {
             last_event: now,
             hold: None,
             herdr: None,
+            claude_session: None,
         }
     }
 }
@@ -126,6 +129,13 @@ pub struct HerdrTarget {
     pub workspace_id: String,
     pub pane_id: String,
     pub agent: String,
+}
+
+/// The Claude Code session a worker runs in, as its `SessionStart` hook reported it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClaudeSession {
+    pub session_id: String,
+    pub transcript_path: PathBuf,
 }
 
 #[cfg(test)]

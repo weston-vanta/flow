@@ -1,5 +1,6 @@
 pub mod cde;
 pub mod cmd;
+pub mod harness;
 pub mod herdr;
 pub mod paths;
 pub mod render;

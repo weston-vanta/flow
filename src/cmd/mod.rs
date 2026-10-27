@@ -2,6 +2,7 @@
 //! data when asked.
 
 pub mod cde;
+pub mod hook;
 pub mod requests;
 pub mod status;
 pub mod task_brief;
