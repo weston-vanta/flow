@@ -349,14 +349,14 @@ impl Herdr {
         Ok((created.workspace.workspace_id, created.root_pane.pane_id))
     }
 
-    /// Closes `workspace_id`; `false` when herdr no longer knows it, so there was nothing to
-    /// close.
     /// The workspaces in flow's session on `host`.
     pub fn workspaces(&self, host: &Host) -> anyhow::Result<Vec<Workspace>> {
         let list: WorkspaceList = self.call_json(host, &self.argv(&["workspace", "list"]))?;
         Ok(list.workspaces)
     }
 
+    /// Closes `workspace_id`; `false` when herdr no longer knows it, so there was nothing to
+    /// close.
     pub fn close_workspace(&self, host: &Host, workspace_id: &str) -> anyhow::Result<bool> {
         let argv = self.argv(&["workspace", "close", workspace_id]);
         let Some(output) = self.call_unless(host, &argv, WORKSPACE_NOT_FOUND_CODE)? else {
@@ -521,7 +521,6 @@ impl Herdr {
         Ok(result.agent.agent_status)
     }
 
-    /// The last `lines` lines of the agent's terminal as plain text.
     /// The last `lines` lines of the terminal in `pane_id`, whether or not herdr sees an agent
     /// there.
     pub fn pane_read(&self, host: &Host, pane_id: &str, lines: u32) -> anyhow::Result<String> {
