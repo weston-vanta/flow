@@ -42,7 +42,7 @@ else
   say "state dir: done"
 fi
 # Absolute, so the link works from anywhere and compares equal to its target on the next run.
-FLOW_STATE_DIR=$(cd "$FLOW_STATE_DIR" && pwd)
+FLOW_STATE_DIR=$(CDPATH='' cd -- "$FLOW_STATE_DIR" && pwd)
 
 link="$FLOW_DIR/state"
 if [[ -L $link ]]; then
@@ -66,10 +66,10 @@ if [[ ${FLOW_SKIP_BUILD:-} != 1 ]]; then
     fail "build: cargo not found; install a Rust toolchain (https://rustup.rs) or set FLOW_SKIP_BUILD=1"
   fi
   bin="$FLOW_DIR/target/release/flow"
-  before=$(checksum "$bin")
+  bin_sum=$(checksum "$bin")
   # cargo's own fingerprinting decides whether the binary is stale; an up-to-date build is a no-op.
   cargo build --release --quiet --manifest-path "$FLOW_DIR/Cargo.toml" --target-dir "$FLOW_DIR/target"
-  if [[ $(checksum "$bin") == "$before" ]]; then
+  if [[ $(checksum "$bin") == "$bin_sum" ]]; then
     say "build: already"
   else
     say "build: done"
