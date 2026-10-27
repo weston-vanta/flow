@@ -1,6 +1,8 @@
 //! Sibling-work requests a task files for the supervisor, at
-//! `tasks/<task-id>/requests/<req-id>.json`. Dispatching one renames it to `<req-id>.json.consumed`.
-//! Request ids are unique across all tasks, consumed requests included.
+//! `tasks/<task-id>/requests/<req-id>.json`, with the brief copied beside it as
+//! `<req-id>.brief.md` so the supervisor can read it from any CDE. Dispatching a request renames
+//! its JSON to `<req-id>.json.consumed` and leaves the brief in place. Request ids are unique
+//! across all tasks, consumed requests included.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -13,6 +15,7 @@ use super::{Store, fs, ids, read_json};
 
 const REQUESTS_DIR: &str = "requests";
 const CONSUMED_SUFFIX: &str = ".consumed";
+const BRIEF_SUFFIX: &str = ".brief.md";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Request {
@@ -22,27 +25,35 @@ pub struct Request {
     pub requested_by: String,
 }
 
+/// What a task asks for when it files a request.
+#[derive(Debug, Clone, Copy)]
+pub struct NewRequest<'a> {
+    pub title: &'a str,
+    pub cde: Option<&'a str>,
+    /// The brief's contents, copied into the request directory.
+    pub brief: &'a [u8],
+}
+
 impl Store {
-    /// Writes `req` under task `from` with a fresh request id and returns the id.
-    pub fn add_request(&self, from: &str, req: &Request) -> anyhow::Result<String> {
+    /// Files `new` under task `from` with a fresh request id and returns the id and the request
+    /// as written.
+    pub fn add_request(&self, from: &str, new: &NewRequest) -> anyhow::Result<(String, Request)> {
         let mut rng = rand::rng();
-        self.add_request_with_ids(from, req, || ids::new_task_id(Timestamp::now(), &mut rng))
+        self.add_request_with_ids(from, new, || ids::new_task_id(Timestamp::now(), &mut rng))
     }
 
-    /// `add_request` with candidate ids drawn from `next_id`. The id is chosen and the file
+    /// `add_request` with candidate ids drawn from `next_id`. The id is chosen and the files
     /// created under the state-wide `requests.lock`, so concurrent writers in any task cannot
-    /// pick the same id.
+    /// pick the same id. The brief is written first, so a listed request always has its brief.
     fn add_request_with_ids(
         &self,
         from: &str,
-        req: &Request,
+        new: &NewRequest,
         mut next_id: impl FnMut() -> String,
-    ) -> anyhow::Result<String> {
+    ) -> anyhow::Result<(String, Request)> {
         let requests = self.existing_task_dir(from)?.join(REQUESTS_DIR);
         std::fs::create_dir_all(&requests)
             .with_context(|| format!("creating {}", requests.display()))?;
-        let mut bytes = serde_json::to_vec_pretty(req)?;
-        bytes.push(b'\n');
         fs::with_lock(&self.requests_lock_target(), || {
             let id = loop {
                 let id = next_id();
@@ -50,8 +61,18 @@ impl Store {
                     break id;
                 }
             };
+            let brief_path = brief_path(&requests, &id);
+            fs::write_new_atomic(&brief_path, new.brief)?;
+            let req = Request {
+                title: new.title.to_owned(),
+                brief_path,
+                cde: new.cde.map(str::to_owned),
+                requested_by: from.to_owned(),
+            };
+            let mut bytes = serde_json::to_vec_pretty(&req)?;
+            bytes.push(b'\n');
             fs::write_new_atomic(&request_path(&requests, &id), &bytes)?;
-            Ok(id)
+            Ok((id, req))
         })
         .with_context(|| format!("adding a request to task {from}"))
     }
@@ -61,11 +82,13 @@ impl Store {
         self.tasks.with_file_name(REQUESTS_DIR)
     }
 
-    /// Whether any task holds request `id`, pending or consumed.
+    /// Whether any task holds request `id`, pending or consumed, or a brief under that id.
     fn request_id_taken(&self, id: &str) -> anyhow::Result<bool> {
         for task in self.task_ids()? {
-            let path = request_path(&self.tasks.join(&task).join(REQUESTS_DIR), id);
-            if path.exists() || consumed_path(&path).exists() {
+            let requests = self.tasks.join(&task).join(REQUESTS_DIR);
+            let path = request_path(&requests, id);
+            if path.exists() || consumed_path(&path).exists() || brief_path(&requests, id).exists()
+            {
                 return Ok(true);
             }
         }
@@ -103,6 +126,10 @@ impl Store {
 
 fn request_path(requests: &Path, id: &str) -> PathBuf {
     requests.join(format!("{id}.json"))
+}
+
+fn brief_path(requests: &Path, id: &str) -> PathBuf {
+    requests.join(format!("{id}{BRIEF_SUFFIX}"))
 }
 
 fn consumed_path(path: &Path) -> PathBuf {
@@ -160,12 +187,11 @@ mod tests {
         (state, store)
     }
 
-    fn request(from: &str, title: &str) -> Request {
-        Request {
-            title: title.to_owned(),
-            brief_path: PathBuf::from("/workspaces/example-repo/brief.md"),
+    fn request(title: &str) -> NewRequest<'_> {
+        NewRequest {
+            title,
             cde: None,
-            requested_by: from.to_owned(),
+            brief: b"Update the example docs.\n",
         }
     }
 
@@ -179,28 +205,27 @@ mod tests {
     fn request_ids_are_unique_across_tasks() {
         let (_state, store) = store_with_tasks(&["aaaaaaab", "aaaaaaac"]);
         let first = store
-            .add_request_with_ids(
-                "aaaaaaab",
-                &request("aaaaaaab", "First"),
-                fixed_ids(&["aaaaaaaz"]),
-            )
-            .unwrap();
+            .add_request_with_ids("aaaaaaab", &request("First"), fixed_ids(&["aaaaaaaz"]))
+            .unwrap()
+            .0;
         store.consume_request(&first).unwrap();
         let reused = store
             .add_request_with_ids(
                 "aaaaaaab",
-                &request("aaaaaaab", "Second"),
+                &request("Second"),
                 fixed_ids(&["aaaaaaaz", "aaaaaaay"]),
             )
-            .unwrap();
+            .unwrap()
+            .0;
 
         let sibling = store
             .add_request_with_ids(
                 "aaaaaaac",
-                &request("aaaaaaac", "Third"),
+                &request("Third"),
                 fixed_ids(&["aaaaaaaz", "aaaaaaay", "aaaaaaax"]),
             )
-            .unwrap();
+            .unwrap()
+            .0;
 
         assert_eq!(
             (first.as_str(), reused.as_str(), sibling.as_str()),
@@ -224,10 +249,11 @@ mod tests {
         let id = store
             .add_request_with_ids(
                 "aaaaaaab",
-                &request("aaaaaaab", "New"),
+                &request("New"),
                 fixed_ids(&["aaaaaaaz", "aaaaaaay"]),
             )
-            .unwrap();
+            .unwrap()
+            .0;
 
         assert_eq!(id, "aaaaaaay");
         assert_eq!(
@@ -239,6 +265,29 @@ mod tests {
                 .unwrap()
                 .title,
             "New"
+        );
+    }
+
+    #[test]
+    fn request_id_skips_a_leftover_brief() {
+        let (_state, store) = store_with_tasks(&["aaaaaaab"]);
+        let requests = store.tasks.join("aaaaaaab").join(REQUESTS_DIR);
+        std::fs::create_dir_all(&requests).unwrap();
+        std::fs::write(brief_path(&requests, "aaaaaaaz"), "left behind\n").unwrap();
+
+        let (id, req) = store
+            .add_request_with_ids(
+                "aaaaaaab",
+                &request("New"),
+                fixed_ids(&["aaaaaaaz", "aaaaaaay"]),
+            )
+            .unwrap();
+
+        assert_eq!(id, "aaaaaaay");
+        assert_eq!(req.brief_path, brief_path(&requests, "aaaaaaay"));
+        assert_eq!(
+            std::fs::read_to_string(&req.brief_path).unwrap(),
+            "Update the example docs.\n"
         );
     }
 }

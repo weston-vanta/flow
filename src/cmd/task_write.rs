@@ -12,7 +12,7 @@ use serde_json::json;
 use crate::paths::StateDir;
 use crate::state::Store;
 use crate::state::events::Event;
-use crate::state::requests::Request;
+use crate::state::requests::NewRequest;
 use crate::state::task::{Decision, Hold, HoldOn, State};
 
 const EVENT_SOURCE: &str = "cli";
@@ -104,7 +104,8 @@ pub fn run_done(state: &StateDir, id: &str, report: &Path) -> anyhow::Result<()>
     append_event(&store, id, "report", json!({ "path": path }))
 }
 
-/// Files a request for the supervisor to dispatch sibling work, and prints the request id.
+/// Files a request for the supervisor to dispatch sibling work, copying `brief` into the state
+/// directory so it is readable from every CDE, and prints the request id.
 pub fn run_request_dispatch(
     state: &StateDir,
     id: &str,
@@ -115,16 +116,14 @@ pub fn run_request_dispatch(
     if !brief.is_file() {
         bail!("brief not found: {}", brief.display());
     }
-    let brief_path =
-        std::path::absolute(brief).with_context(|| format!("resolving {}", brief.display()))?;
+    let body = std::fs::read(brief).with_context(|| format!("reading {}", brief.display()))?;
     let store = Store::open(state);
-    let req = Request {
-        title: title.to_owned(),
-        brief_path,
-        cde: cde.map(str::to_owned),
-        requested_by: id.to_owned(),
+    let new = NewRequest {
+        title,
+        cde,
+        brief: &body,
     };
-    let req_id = store.add_request(id, &req)?;
+    let (req_id, req) = store.add_request(id, &new)?;
     append_event(&store, id, "request.dispatch", serde_json::to_value(&req)?)?;
     super::print(&format!("{req_id}\n"))
 }

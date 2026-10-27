@@ -213,15 +213,17 @@ fn request_dispatch_writes_request_file() {
     );
 
     let req_id = out.trim();
-    let path = store
-        .task_dir(TASK)
-        .unwrap()
-        .join("requests")
-        .join(format!("{req_id}.json"));
+    let requests = store.task_dir(TASK).unwrap().join("requests");
+    let path = requests.join(format!("{req_id}.json"));
     assert!(path.is_file(), "{} missing", path.display());
+    let copied = requests.join(format!("{req_id}.brief.md"));
+    assert_eq!(
+        std::fs::read_to_string(&copied).unwrap(),
+        "Update the example docs.\n"
+    );
     let expected = json!({
         "title": "Update docs",
-        "brief_path": brief,
+        "brief_path": copied,
         "cde": "cde-b",
         "requested_by": TASK,
     });
