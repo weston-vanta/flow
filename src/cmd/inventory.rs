@@ -4,8 +4,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
 
-use anyhow::bail;
+use anyhow::{Context, bail};
 use jiff::Timestamp;
+use serde_json::Value;
 
 use crate::herdr::{self, Agent};
 use crate::host;
@@ -35,12 +36,16 @@ pub fn run(state: &StateDir, refresh: bool, json: bool) -> anyhow::Result<()> {
         Vec::new()
     };
     let inventories = inventory::load_all(state)?;
+    let local = host::local_env_id();
     if json {
-        super::print_json(&inventories)?;
+        let views = inventories
+            .iter()
+            .map(|inventory| json_view(inventory, local.as_deref()))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        super::print_json(&views)?;
     } else if inventories.is_empty() {
         super::print("no inventory cached; run `flow inventory --refresh`\n")?;
     } else {
-        let local = host::local_env_id();
         super::print(&render_all(
             &inventories,
             &config.repos,
@@ -52,6 +57,21 @@ pub fn run(state: &StateDir, refresh: bool, json: bool) -> anyhow::Result<()> {
         bail!("could not refresh {}", failed.join(", "));
     }
     Ok(())
+}
+
+/// The cached record as JSON, with `ssh_alias` resolved as flow reaches the host, `local` for
+/// the host this runs on, and `phase` for Ona's phase.
+fn json_view(inventory: &HostInventory, local_env_id: Option<&str>) -> anyhow::Result<Value> {
+    let host = inventory.host();
+    let local = host::is_local(&host, local_env_id);
+    let mut value = serde_json::to_value(inventory)?;
+    let fields = value
+        .as_object_mut()
+        .context("a host inventory serializes as an object")?;
+    fields.insert("ssh_alias".to_owned(), host.ssh_alias.into());
+    fields.insert("local".to_owned(), local.into());
+    fields.insert("phase".to_owned(), inventory.ona_phase.clone().into());
+    Ok(value)
 }
 
 /// Refreshes every host as `run --refresh` does and prints one summary line per host: its

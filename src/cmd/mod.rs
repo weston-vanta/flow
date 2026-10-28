@@ -4,9 +4,9 @@
 pub mod dispatch;
 pub mod guard;
 pub mod hook;
-pub mod host;
 pub mod init;
 pub mod inventory;
+pub mod run;
 pub mod sessions;
 pub mod status;
 pub mod steer;

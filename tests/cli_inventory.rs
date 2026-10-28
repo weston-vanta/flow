@@ -419,6 +419,58 @@ host-a  reachable · load 0.50 · seen 5m ago
 }
 
 #[test]
+fn inventory_json_describes_each_host() {
+    let fx = Fixture::new();
+    let mut host_a = bare_record("host-a", "env-0001", "");
+    host_a["ona_phase"] = json!("ENVIRONMENT_PHASE_RUNNING");
+    fx.write_cache("env-0001", &host_a);
+    let mut host_b = bare_record("host-b", "env-0002", "host-b.example");
+    host_b["gone"] = json!(true);
+    host_b["reachable"] = json!(false);
+    fx.write_cache("env-0002", &host_b);
+
+    let json_out = stdout_of(fx.flow(&[]).args(["inventory", "--json"]));
+
+    let parsed: Value = serde_json::from_str(&json_out).unwrap();
+    let fields = [
+        "name",
+        "env_id",
+        "ssh_alias",
+        "local",
+        "phase",
+        "seen",
+        "reachable",
+        "gone",
+    ];
+    let hosts: Vec<Value> = parsed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|host| {
+            fields
+                .iter()
+                .map(|field| (field.to_string(), host[field].clone()))
+                .collect()
+        })
+        .collect();
+    assert_eq!(
+        hosts,
+        [
+            json!({
+                "name": "host-a", "env_id": "env-0001", "ssh_alias": "env-0001.ona.environment",
+                "local": true, "phase": "ENVIRONMENT_PHASE_RUNNING", "seen": host_a["seen"],
+                "reachable": true, "gone": false,
+            }),
+            json!({
+                "name": "host-b", "env_id": "env-0002", "ssh_alias": "host-b.example",
+                "local": false, "phase": null, "seen": host_b["seen"], "reachable": false,
+                "gone": true,
+            }),
+        ]
+    );
+}
+
+#[test]
 fn gh_failure_is_recorded_in_cache_and_output() {
     let gh_failed = json!({
         "host": "host-a", "status": 4, "stdout": "",
@@ -930,14 +982,27 @@ fn refresh_adds_new_hosts_and_marks_gone() {
         "{stdout}"
     );
 
-    let listed = stdout_of(fx.flow(&[]).args(["host", "list"]));
-    let names: Vec<&str> = listed
-        .lines()
-        .map(|line| line.split_whitespace().next().unwrap())
+    let listed: Value =
+        serde_json::from_str(&stdout_of(fx.flow(&[]).args(["inventory", "--json"]))).unwrap();
+    let hosts: Vec<(&str, bool)> = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|host| {
+            (
+                host["name"].as_str().unwrap(),
+                host["gone"].as_bool().unwrap(),
+            )
+        })
         .collect();
     assert_eq!(
-        names,
-        ["lab", "scratch-box", "side-project", "retired"],
+        hosts,
+        [
+            ("lab", false),
+            ("retired", true),
+            ("scratch-box", false),
+            ("side-project", false)
+        ],
         "{listed}"
     );
 }

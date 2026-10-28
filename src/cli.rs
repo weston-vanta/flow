@@ -45,10 +45,12 @@ pub enum Command {
     },
     /// Start a worker session for a new task
     Dispatch(DispatchCli),
-    /// List hosts and run commands on them
-    Host {
-        #[command(subcommand)]
-        command: HostCommand,
+    /// Run a command on a host, passing its output and exit code through
+    Run {
+        /// Host to run on
+        host: String,
+        #[arg(last = true, required = true, value_name = "ARGV")]
+        argv: Vec<String>,
     },
     /// Show worktrees, agents, and PRs per host
     Inventory {
@@ -312,22 +314,6 @@ pub enum TaskCommand {
 }
 
 #[derive(Debug, Subcommand)]
-pub enum HostCommand {
-    /// List known hosts from the cache, gone ones last, marking the one this runs on
-    List {
-        /// Print raw JSON instead of the compact view
-        #[arg(long)]
-        json: bool,
-    },
-    /// Run a command on a host, passing its output and exit code through
-    Run {
-        name: String,
-        #[arg(last = true, required = true, value_name = "ARGV")]
-        argv: Vec<String>,
-    },
-}
-
-#[derive(Debug, Subcommand)]
 pub enum HookCommand {
     /// Record a Claude Code hook event read as JSON from stdin
     Claude {
@@ -369,7 +355,10 @@ impl From<Party> for HoldOn {
 pub fn run(cli: Cli, state: &StateDir, repo_root: &Path) -> anyhow::Result<ExitCode> {
     let done = match cli.command {
         Command::Init { force } => cmd::init::run(state, repo_root, force),
-        Command::Host { command } => return run_host(command, state),
+        Command::Run { host, argv } => {
+            let status = cmd::run::run(state, &host, &argv)?;
+            return Ok(ExitCode::from(u8::try_from(status).unwrap_or(u8::MAX)));
+        }
         Command::Status { all, json } => cmd::status::run(state, all, json),
         Command::Task { command } => run_task(command, state),
         Command::Hook {
@@ -396,16 +385,6 @@ pub fn run(cli: Cli, state: &StateDir, repo_root: &Path) -> anyhow::Result<ExitC
         Command::Up => cmd::up::run(state),
     };
     done.map(|()| ExitCode::SUCCESS)
-}
-
-fn run_host(command: HostCommand, state: &StateDir) -> anyhow::Result<ExitCode> {
-    match command {
-        HostCommand::List { json } => cmd::host::run_list(state, json).map(|()| ExitCode::SUCCESS),
-        HostCommand::Run { name, argv } => {
-            let status = cmd::host::run_command(state, &name, &argv)?;
-            Ok(ExitCode::from(u8::try_from(status).unwrap_or(u8::MAX)))
-        }
-    }
 }
 
 fn run_task(command: TaskCommand, state: &StateDir) -> anyhow::Result<()> {
