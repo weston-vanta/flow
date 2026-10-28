@@ -1,11 +1,13 @@
 //! `flow up`: attaches to the live supervisor, or starts one on this host and attaches to it.
 
+use std::io::{self, IsTerminal};
+use std::os::unix::process::CommandExt;
 use std::path::Path;
+use std::process::Command;
 use std::sync::Arc;
 
 use anyhow::{Context, anyhow, bail};
 
-use super::attach::{self, Instead};
 use crate::harness::handshake::{self, AgentStart, StoppedEarly};
 use crate::herdr::{self, Herdr};
 use crate::host;
@@ -34,7 +36,7 @@ pub fn run(state: &StateDir) -> anyhow::Result<()> {
             "attaching to the supervisor on {} (pane {})",
             host.name, lock.herdr.pane_id
         );
-        return attach::exec(&lock, host, Instead::FlowAttach);
+        return attach(&lock, host);
     }
     let here = local_host(&live)?;
     // No supervisor is live, so whatever holds the watch lock is a watcher that outlived its
@@ -58,7 +60,7 @@ pub fn run(state: &StateDir) -> anyhow::Result<()> {
             here.name, lock.herdr.pane_id
         ),
     }
-    attach::exec(&lock, here, Instead::FlowAttach)
+    attach(&lock, here)
 }
 
 /// The host running the supervisor `lock` names, when its pane still holds an agent. When it
@@ -71,7 +73,7 @@ fn live_host<'a>(
     herdr: &Herdr,
     lock: &Lock,
 ) -> anyhow::Result<Option<&'a Host>> {
-    let Some(host) = attach::host(hosts, lock) else {
+    let Some(host) = hosts.iter().find(|host| host.env_id == lock.host_env_id) else {
         eprintln!(
             "supervisor host {} is not a known host; starting a new supervisor here",
             lock.host_env_id
@@ -275,4 +277,45 @@ fn launch_argv(state_root: &Path, session: Option<&str>) -> anyhow::Result<Vec<S
     }
     argv.push(START_PROMPT);
     Ok(argv.into_iter().map(str::to_owned).collect())
+}
+
+/// Under the fake runner, makes `attach` treat stdout as a terminal when set.
+const FAKE_TTY_VAR: &str = "FLOW_FAKE_TTY";
+
+/// Runs the attach command in place of this process, so it owns the terminal. When stdout is
+/// not a terminal, which the attach command needs, it prints the attach command to run from one
+/// and returns. Under the fake runner it prints `attach: <argv>` in place of running it.
+fn attach(lock: &Lock, host: &Host) -> anyhow::Result<()> {
+    let local = host::is_local(host, host::local_env_id().as_deref());
+    let control_dir = runner::default_control_dir();
+    let argv = supervisor::attach_argv(lock, host, local, &control_dir);
+    if !stdout_is_terminal() {
+        // The printed ssh command names a socket in the control dir, which is gone after a
+        // reboot.
+        if !local {
+            runner::ensure_control_dir(&control_dir)?;
+        }
+        let command = argv
+            .iter()
+            .map(|word| herdr::shell_word(word))
+            .collect::<Vec<_>>()
+            .join(" ");
+        return super::print(&format!(
+            "stdout is not a terminal, so flow did not attach; to attach, run: {command}\n"
+        ));
+    }
+    if runner::fake_runner_active() {
+        return super::print(&format!("attach: {}\n", argv.join(" ")));
+    }
+    if !local {
+        runner::ensure_control_dir(&control_dir)?;
+    }
+    let (program, args) = argv.split_first().expect("the attach argv names a program");
+    let err = Command::new(program).args(args).exec();
+    Err(err).with_context(|| format!("running `{}`", argv.join(" ")))
+}
+
+fn stdout_is_terminal() -> bool {
+    io::stdout().is_terminal()
+        || (runner::fake_runner_active() && std::env::var_os(FAKE_TTY_VAR).is_some())
 }

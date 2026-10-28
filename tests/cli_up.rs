@@ -699,25 +699,11 @@ fn up_refuses_when_lock_host_unreachable() {
     assert_eq!(fx.lock().unwrap().herdr.host, "host-b");
 }
 
-#[test]
-fn attach_prints_argv_for_the_lock() {
-    let fx = Fixture::new();
-    fx.write_lock("env-0001", "host-a", LIVE_PANE, None);
-
-    let stdout = stdout_of(fx.flow(&[]).arg("attach"));
-
-    assert_eq!(
-        stdout,
-        format!("attach: herdr --session flow agent attach {LIVE_PANE}\n")
-    );
-    assert!(fx.calls().is_empty());
-}
-
-/// What `flow up` and `flow attach` print in place of attaching when stdout is not a terminal.
+/// What `flow up` prints in place of attaching when stdout is not a terminal.
 const NO_TERMINAL: &str = "stdout is not a terminal, so flow did not attach; to attach, run: ";
 
 #[test]
-fn up_without_a_terminal_says_how_to_attach_instead() {
+fn up_without_a_terminal_prints_the_command_to_run() {
     let fx = Fixture::new();
     fx.write_lock("env-0001", "host-a", LIVE_PANE, None);
 
@@ -727,7 +713,10 @@ fn up_without_a_terminal_says_how_to_attach_instead() {
             .arg("up"),
     );
 
-    assert_eq!(stdout, format!("{NO_TERMINAL}flow attach\n"));
+    assert_eq!(
+        stdout,
+        format!("{NO_TERMINAL}herdr --session flow agent attach {LIVE_PANE}\n")
+    );
     assert_eq!(
         stderr,
         format!("attaching to the supervisor on host-a (pane {LIVE_PANE})\n")
@@ -745,7 +734,10 @@ fn up_without_a_terminal_still_starts_the_supervisor() {
             .arg("up"),
     );
 
-    assert_eq!(stdout, format!("{NO_TERMINAL}flow attach\n"));
+    assert_eq!(
+        stdout,
+        format!("{NO_TERMINAL}herdr --session flow agent attach {NEW_PANE}\n")
+    );
     assert_eq!(
         stderr,
         format!("started a fresh supervisor on host-a (pane {NEW_PANE})\n")
@@ -754,47 +746,35 @@ fn up_without_a_terminal_still_starts_the_supervisor() {
 }
 
 #[test]
-fn attach_without_a_terminal_prints_the_command_to_run() {
-    let fx = Fixture::new();
-    fx.write_lock("env-0001", "host-a", LIVE_PANE, None);
-
-    let (stdout, stderr) = output_of(fx.flow(&[]).env_remove("FLOW_FAKE_TTY").arg("attach"));
-
-    assert_eq!(
-        stdout,
-        format!("{NO_TERMINAL}herdr --session flow agent attach {LIVE_PANE}\n")
-    );
-    assert_eq!(stderr, "");
-    assert!(fx.calls().is_empty());
-}
-
-#[test]
-fn attach_without_a_terminal_quotes_the_remote_command_as_one_word() {
+fn up_without_a_terminal_quotes_the_remote_command_as_one_word() {
     let fx = Fixture::new();
     fx.write_lock("env-0002", "host-b", LIVE_PANE, None);
 
-    let stdout = stdout_of(fx.flow(&[]).env_remove("FLOW_FAKE_TTY").arg("attach"));
+    let stdout = stdout_of(
+        fx.flow(&[ok(&supervisor_agents())])
+            .env_remove("FLOW_FAKE_TTY")
+            .arg("up"),
+    );
 
     assert!(
         stdout.starts_with(&format!("{NO_TERMINAL}ssh -t ")),
         "{stdout}"
     );
     assert!(stdout.contains(" host-b.example 'zsh -lc "), "{stdout}");
-    assert!(fx.calls().is_empty());
 }
 
 #[test]
-fn attach_without_a_terminal_creates_the_control_dir_its_ssh_command_names() {
+fn up_without_a_terminal_creates_the_control_dir_its_ssh_command_names() {
     let fx = Fixture::new();
     fx.write_lock("env-0002", "host-b", LIVE_PANE, None);
     let runtime = fx.dir.path().join("runtime");
     fs::create_dir(&runtime).unwrap();
 
     let stdout = stdout_of(
-        fx.flow(&[])
+        fx.flow(&[ok(&supervisor_agents())])
             .env("XDG_RUNTIME_DIR", &runtime)
             .env_remove("FLOW_FAKE_TTY")
-            .arg("attach"),
+            .arg("up"),
     );
 
     let control_dir = runtime.join("flow");
@@ -806,14 +786,15 @@ fn attach_without_a_terminal_creates_the_control_dir_its_ssh_command_names() {
 }
 
 #[test]
-fn attach_without_lock_says_to_run_up() {
+fn attach_is_not_a_command() {
     let fx = Fixture::new();
+    fx.write_lock("env-0001", "host-a", LIVE_PANE, None);
 
     fx.flow(&[])
         .arg("attach")
         .assert()
-        .failure()
-        .stderr(predicates::str::contains("flow up"));
+        .code(2)
+        .stderr(predicates::str::contains("unrecognized subcommand"));
 }
 
 fn create_task_with_pane(fx: &Fixture) -> Store {

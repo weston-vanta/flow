@@ -1,7 +1,6 @@
 //! Subcommand implementations. Read commands render compact text, or raw serde JSON of the same
 //! data when asked.
 
-pub mod attach;
 pub mod dispatch;
 pub mod guard;
 pub mod hook;

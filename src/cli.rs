@@ -118,8 +118,6 @@ pub enum Command {
     },
     /// Attach to the live supervisor session, or start one on this host and attach
     Up,
-    /// Attach to the supervisor session
-    Attach,
 }
 
 impl Command {
@@ -399,7 +397,6 @@ pub fn run(cli: Cli, state: &StateDir, repo_root: &Path) -> anyhow::Result<ExitC
         Command::Guard => return cmd::guard::run(state),
         Command::Steer { id, text } => cmd::steer::run(state, &id, &text),
         Command::Up => cmd::up::run(state),
-        Command::Attach => cmd::attach::run(state),
     };
     done.map(|()| ExitCode::SUCCESS)
 }
