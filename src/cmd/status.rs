@@ -15,23 +15,31 @@ struct StatusView<'a> {
     adopted: usize,
 }
 
-/// Open tasks, then their holds, then the number of adopted sessions in the cached inventories.
-pub fn run(state: &StateDir, json: bool) -> anyhow::Result<()> {
+/// Open tasks, or with `all` every task, oldest first; then their holds, then the number of
+/// adopted sessions in the cached inventories.
+pub fn run(state: &StateDir, all: bool, json: bool) -> anyhow::Result<()> {
     let mut tasks = Store::open(state).list_tasks()?;
     let adopted = super::sessions::count_adopted(state, &tasks)?;
-    tasks.retain(|(_, status)| status.state.is_open());
+    if !all {
+        tasks.retain(|(_, status)| status.state.is_open());
+    }
     if json {
         return super::print_json(&StatusView {
             tasks: super::task_views(&tasks),
             adopted,
         });
     }
-    super::print(&render_text(&tasks, adopted, Timestamp::now()))
+    super::print(&render_text(&tasks, all, adopted, Timestamp::now()))
 }
 
-fn render_text(tasks: &[(TaskRecord, Status)], adopted: usize, now: Timestamp) -> String {
+fn render_text(
+    tasks: &[(TaskRecord, Status)],
+    all: bool,
+    adopted: usize,
+    now: Timestamp,
+) -> String {
     let mut out = if tasks.is_empty() {
-        "no open tasks\n".to_owned()
+        if all { "no tasks\n" } else { "no open tasks\n" }.to_owned()
     } else {
         render::table(&super::task_rows(tasks, now))
     };

@@ -147,7 +147,40 @@ fn task_brief_prints_verbatim() {
 }
 
 #[test]
-fn task_list_hides_done_unless_all() {
+fn status_hides_done_and_orphaned_unless_all() {
+    let (_repo, state, store) = setup();
+    store
+        .create_task(record("aaaaaaab", "Open work"), "brief")
+        .unwrap();
+    store
+        .create_task(record("aaaaaaac", "Finished work"), "brief")
+        .unwrap();
+    store
+        .set_status("aaaaaaac", |s| s.state = State::Done)
+        .unwrap();
+    store
+        .create_task(record("aaaaaaad", "Abandoned work"), "brief")
+        .unwrap();
+    store
+        .set_status("aaaaaaad", |s| s.state = State::Orphaned)
+        .unwrap();
+
+    let open = stdout(flow(&state).arg("status"));
+    let all = stdout(flow(&state).args(["status", "--all"]));
+
+    let open_lines: Vec<_> = open.lines().collect();
+    assert_eq!(open_lines.len(), 2, "{open}");
+    assert!(open_lines[0].starts_with("aaaaaaab  pending  "), "{open}");
+    let all_lines: Vec<_> = all.lines().collect();
+    assert_eq!(all_lines.len(), 4, "{all}");
+    assert!(all_lines[0].starts_with("aaaaaaab  pending   "), "{all}");
+    assert!(all_lines[1].starts_with("aaaaaaac  done      "), "{all}");
+    assert!(all_lines[2].starts_with("aaaaaaad  orphaned  "), "{all}");
+    assert_eq!(all_lines[3], "adopted: 0 sessions");
+}
+
+#[test]
+fn status_json_tasks_match_the_text_view() {
     let (_repo, state, store) = setup();
     store
         .create_task(record("aaaaaaab", "Open work"), "brief")
@@ -159,14 +192,41 @@ fn task_list_hides_done_unless_all() {
         .set_status("aaaaaaac", |s| s.state = State::Done)
         .unwrap();
 
-    let open = stdout(flow(&state).args(["task", "list"]));
-    let all = stdout(flow(&state).args(["task", "list", "--all"]));
+    let ids = |args: &[&str]| -> Vec<String> {
+        let value: serde_json::Value =
+            serde_json::from_str(&stdout(flow(&state).args(args))).unwrap();
+        value["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|view| view["task"]["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
 
-    assert_eq!(open.lines().count(), 1, "{open}");
-    assert!(open.starts_with("aaaaaaab  pending  "), "{open}");
-    let all_lines: Vec<_> = all.lines().collect();
-    assert_eq!(all_lines.len(), 2, "{all}");
-    assert!(all_lines[1].starts_with("aaaaaaac  done     "), "{all}");
+    assert_eq!(ids(&["status", "--json"]), ["aaaaaaab"]);
+    assert_eq!(ids(&["status", "--all", "--json"]), ["aaaaaaab", "aaaaaaac"]);
+}
+
+#[test]
+fn status_without_tasks_says_so() {
+    let (_repo, state, _store) = setup();
+
+    let open = stdout(flow(&state).arg("status"));
+    let all = stdout(flow(&state).args(["status", "--all"]));
+
+    assert_eq!(open, "no open tasks\nadopted: 0 sessions\n");
+    assert_eq!(all, "no tasks\nadopted: 0 sessions\n");
+}
+
+#[test]
+fn task_list_is_not_a_command() {
+    let (_repo, state, _store) = setup();
+
+    flow(&state)
+        .args(["task", "list"])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains("unrecognized subcommand"));
 }
 
 #[test]

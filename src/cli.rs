@@ -31,6 +31,9 @@ pub enum Command {
     },
     /// Show open tasks, their holds, and adopted sessions
     Status {
+        /// Include done and orphaned tasks
+        #[arg(long)]
+        all: bool,
         /// Print raw JSON instead of the compact view
         #[arg(long)]
         json: bool,
@@ -221,15 +224,6 @@ pub enum TaskCommand {
     },
     /// Print a task's brief in full
     Brief { id: String },
-    /// List open tasks
-    List {
-        /// Include done and orphaned tasks
-        #[arg(long)]
-        all: bool,
-        /// Print raw JSON instead of the compact view
-        #[arg(long)]
-        json: bool,
-    },
     /// Show a task's event log
     Events {
         id: String,
@@ -369,7 +363,7 @@ pub fn run(cli: Cli, state: &StateDir, repo_root: &Path) -> anyhow::Result<ExitC
     let done = match cli.command {
         Command::Init { force } => cmd::init::run(state, repo_root, force),
         Command::Host { command } => return run_host(command, state),
-        Command::Status { json } => cmd::status::run(state, json),
+        Command::Status { all, json } => cmd::status::run(state, all, json),
         Command::Task { command } => run_task(command, state),
         Command::Hook {
             command: HookCommand::Claude { task },
@@ -415,7 +409,6 @@ fn run_task(command: TaskCommand, state: &StateDir) -> anyhow::Result<()> {
     match command {
         TaskCommand::Show { id, json } => cmd::task_show::run(state, &id, json),
         TaskCommand::Brief { id } => cmd::task_brief::run(state, &id),
-        TaskCommand::List { all, json } => cmd::task_list::run(state, all, json),
         TaskCommand::Events { id, last, json } => cmd::task_events::run(state, &id, last, json),
         TaskCommand::Status {
             id,
