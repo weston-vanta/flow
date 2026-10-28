@@ -35,17 +35,13 @@ fn create_with_git(
     repo: &Repo,
     branch: &str,
 ) -> anyhow::Result<PathBuf> {
-    let dir = match &repo.worktrees_dir {
-        Some(dir) => dir.clone(),
-        None => sibling_worktrees_dir(&repo.path).ok_or_else(|| {
-            anyhow!(
-                "repo {} at {} has no sibling worktrees directory; set worktrees_dir in \
-                 config.toml",
-                repo.name,
-                repo.path.display()
-            )
-        })?,
-    };
+    let dir = worktrees_dir(repo).ok_or_else(|| {
+        anyhow!(
+            "repo {} at {} has no sibling worktrees directory; set worktrees_dir in config.toml",
+            repo.name,
+            repo.path.display()
+        )
+    })?;
     let path = dir.join(branch);
     let argv: Vec<String> = [
         "git",
@@ -71,6 +67,15 @@ fn create_with_git(
         );
     }
     Ok(path)
+}
+
+/// Where `git worktree add` puts `repo`'s worktrees: its `worktrees_dir`, else the sibling
+/// `<repo>-worktrees`; `None` when the repo's path has no parent to hold a sibling.
+pub fn worktrees_dir(repo: &Repo) -> Option<PathBuf> {
+    match &repo.worktrees_dir {
+        Some(dir) => Some(dir.clone()),
+        None => sibling_worktrees_dir(&repo.path),
+    }
 }
 
 /// `<parent>/<name>-worktrees` for a repo at `<parent>/<name>`, ignoring a trailing slash.

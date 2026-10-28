@@ -158,6 +158,12 @@ fn words(items: &[&str]) -> Vec<String> {
     items.iter().map(|w| (*w).to_owned()).collect()
 }
 
+/// `stdout` with the age of a host refreshed during the run read as `0s`: the second can tick
+/// over between the probe and the render.
+fn settled(stdout: &str) -> String {
+    stdout.replace("seen 1s ago", "seen 0s ago")
+}
+
 fn stdout_of(cmd: &mut Command) -> String {
     let out = cmd.assert().success().get_output().clone();
     assert!(
@@ -186,20 +192,17 @@ fn refresh_parses_worktrees_load_and_joins_prs() {
 
     let stdout = stdout_of(fx.flow(&script).args(["inventory", "--refresh"]));
 
-    let mut lines = stdout.lines();
-    let header = lines.next().unwrap();
-    assert!(
-        header.starts_with("host-a  reachable  load 0.26  3 worktrees  1 agents  (seen "),
-        "{stdout}"
-    );
     assert_eq!(
-        lines.collect::<Vec<_>>(),
-        [
-            "  main        /workspaces/acme",
-            "  feature-x   /workspaces/acme-worktrees/feature-x  PR #12 OPEN  agent: Build feature x working",
-            "  (detached)  /workspaces/acme-worktrees/bisect",
-        ],
-        "{stdout}"
+        settled(&stdout),
+        "\
+host-a  reachable · load 0.26 · seen 0s ago
+  agents (1)
+    working  Build feature x  /workspaces/acme-worktrees/feature-x
+  repos
+    example-repo  on main · 2 worktrees
+      feature-x   PR #12 open
+      (detached)               /workspaces/acme-worktrees/bisect
+"
     );
 
     let cached = fx.cached("env-0001");
@@ -307,13 +310,16 @@ fn unreachable_host_is_recorded_not_fatal() {
     );
     let blocks: Vec<&str> = stdout.split("\n\n").collect();
     assert_eq!(blocks.len(), 2, "{stdout}");
-    assert!(blocks[0].starts_with("host-a  reachable  "), "{stdout}");
-    assert!(
-        blocks[1].starts_with("host-b  unreachable  load -  1 worktrees  0 agents  (seen "),
-        "{stdout}"
-    );
-    assert!(
-        blocks[1].contains("  feature-y  /workspaces/acme-worktrees/feature-y  PR #14 OPEN"),
+    assert!(blocks[0].starts_with("host-a  reachable · "), "{stdout}");
+    assert_eq!(
+        blocks[1],
+        "\
+host-b  unreachable · seen 2d ago
+  agents (0)
+  repos
+    example-repo  1 worktree
+      feature-y  PR #14 open
+",
         "{stdout}"
     );
 
@@ -360,9 +366,15 @@ fn inventory_without_refresh_reads_cache() {
 
     assert_eq!(
         stdout,
-        "host-a  reachable  load 0.50  1 worktrees  1 agents  (seen 5m)\n\
-         \x20 worktree tool failed: wt: command not found\n\
-         \x20 feature-x  /workspaces/acme-worktrees/feature-x  PR #12 OPEN  agent: w4:p1 idle\n"
+        "\
+host-a  reachable · load 0.50 · seen 5m ago
+  worktree tool failed: wt: command not found
+  agents (1)
+    idle  w4:p1  /workspaces/acme-worktrees/feature-x
+  repos
+    example-repo  1 worktree
+      feature-x  PR #12 open
+"
     );
     assert!(fx.calls().is_empty(), "{:?}", fx.calls());
 
@@ -405,7 +417,7 @@ fn gh_failure_is_recorded_in_cache_and_output() {
         assert!(gh_line.starts_with("  gh failed: "), "{stdout}");
         assert!(gh_line.contains("gh auth login"), "{stdout}");
         assert_eq!(
-            stdout.contains("PR #12 OPEN"),
+            stdout.contains("PR #12 open"),
             expected_prs == json!([12]),
             "{stdout}"
         );
@@ -495,23 +507,17 @@ branch refs/heads/fix-y
 
     let stdout = stdout_of(fx.flow(&script).args(["inventory", "--refresh"]));
 
-    let mut lines = stdout.lines();
-    let header = lines.next().unwrap();
-    assert!(
-        header.starts_with("host-a  reachable  load 0.26  4 worktrees  0 agents  (seen "),
-        "{stdout}"
-    );
     assert_eq!(
-        lines.collect::<Vec<_>>(),
-        [
-            "  repo example-repo",
-            "    main       /work/repo",
-            "    feature-x  /work/repo-worktrees/feature-x  PR #12 OPEN",
-            "  repo other-repo",
-            "    main   /work/other",
-            "    fix-y  /work/other-worktrees/fix-y  PR #21 OPEN",
-        ],
-        "{stdout}"
+        settled(&stdout),
+        "\
+host-a  reachable · load 0.26 · seen 0s ago
+  agents (0)
+  repos
+    example-repo  on main · 1 worktree
+      feature-x  PR #12 open
+    other-repo    on main · 1 worktree
+      fix-y  PR #21 open
+"
     );
 
     let cached = fx.cached("env-0001");
@@ -683,26 +689,22 @@ branch refs/heads/fix-y
 
     let stdout = stdout_of(fx.flow(&script).args(["inventory", "--refresh"]));
 
-    let blocks: Vec<Vec<&str>> = stdout
-        .split("\n\n")
-        .map(|block| block.lines().collect())
-        .collect();
-    assert!(
-        blocks[0][0].starts_with("host-a  reachable  load 0.26  1 worktrees  0 agents  (seen "),
-        "{stdout}"
-    );
     assert_eq!(
-        blocks[0][1..],
-        [
-            "  missing: other-repo",
-            "  repo example-repo",
-            "    main  /work/repo",
-        ],
-        "{stdout}"
-    );
-    assert!(
-        blocks[1].contains(&"    fix-y  /work/other-worktrees/fix-y  PR #21 OPEN"),
-        "{stdout}"
+        settled(&stdout),
+        "\
+host-a  reachable · load 0.26 · seen 0s ago
+  agents (0)
+  repos
+    example-repo  on main
+    other-repo    missing at /work/other
+
+host-b  reachable · load 0.26 · seen 0s ago
+  agents (0)
+  repos
+    example-repo  on main
+    other-repo    on main · 1 worktree
+      fix-y  PR #21 open
+"
     );
     let cached = fx.cached("env-0001");
     assert_eq!(cached["reachable"], true);
@@ -747,7 +749,10 @@ fn inventory_reports_a_repo_no_host_has() {
         stdout.contains("  gh failed: other-repo: no reachable host has repo other-repo\n"),
         "{stdout}"
     );
-    assert!(stdout.contains("  missing: other-repo\n"), "{stdout}");
+    assert!(
+        stdout.contains("    other-repo    missing at /work/other\n"),
+        "{stdout}"
+    );
     assert_eq!(
         fx.cached("env-0001")["pr_error"],
         "other-repo: no reachable host has repo other-repo"
@@ -878,16 +883,19 @@ fn refresh_adds_new_hosts_and_marks_gone() {
         .filter(|line| !line.is_empty() && !line.starts_with(' '))
         .collect();
     assert_eq!(headers.len(), 4, "{stdout}");
-    assert!(headers[0].starts_with("lab  reachable  "), "{stdout}");
     assert!(
-        headers[1].starts_with("scratch-box  unreachable  "),
+        headers[0].starts_with("lab           reachable · "),
         "{stdout}"
     );
     assert!(
-        headers[2].starts_with("side-project  reachable  "),
+        headers[1].starts_with("retired       gone · seen "),
         "{stdout}"
     );
-    assert_eq!(headers[3], "gone: retired", "{stdout}");
+    assert_eq!(headers[2], "scratch-box   never probed", "{stdout}");
+    assert!(
+        headers[3].starts_with("side-project  reachable · "),
+        "{stdout}"
+    );
 
     let listed = stdout_of(fx.flow(&[]).args(["host", "list"]));
     let names: Vec<&str> = listed

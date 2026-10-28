@@ -1,21 +1,24 @@
 //! `flow inventory`: worktrees, agents, PRs, and load per host, from the cache or refreshed.
 
+use std::path::Path;
 use std::sync::Arc;
 use std::thread;
 
 use anyhow::bail;
 use jiff::Timestamp;
 
-use crate::herdr::Agent;
+use crate::herdr::{self, Agent};
 use crate::host;
 use crate::inventory::{self, HostInventory, Unreachable, Worktree, discovery};
 use crate::paths::StateDir;
 use crate::render;
 use crate::runner::{self, Runner};
-use crate::state::config::{Config, Host};
+use crate::state::config::{Config, Host, Repo};
+use crate::worktree;
 
 const DETACHED: &str = "(detached)";
-const NO_LOAD: &str = "-";
+/// The directory the worktree tool keeps its detached base checkout in, under the worktrees dir.
+const BASE_DIR: &str = ".base";
 const ERROR_WIDTH: usize = 160;
 /// What every Ona phase name starts with, as in `ENVIRONMENT_PHASE_RUNNING`.
 const ONA_PHASE_PREFIX: &str = "ENVIRONMENT_PHASE_";
@@ -37,8 +40,13 @@ pub fn run(state: &StateDir, refresh: bool, json: bool) -> anyhow::Result<()> {
     } else if inventories.is_empty() {
         super::print("no inventory cached; run `flow inventory --refresh`\n")?;
     } else {
-        let by_repo = config.repos.len() > 1;
-        super::print(&render_all(&inventories, by_repo, Timestamp::now()))?;
+        let local = host::local_env_id();
+        super::print(&render_all(
+            &inventories,
+            &config.repos,
+            local.as_deref(),
+            Timestamp::now(),
+        ))?;
     }
     if !failed.is_empty() {
         bail!("could not refresh {}", failed.join(", "));
@@ -241,46 +249,34 @@ fn list_prs(
         .collect()
 }
 
-/// Each live host's block, separated by blank lines, then a `gone: <names>` line naming the
-/// hosts that left the host set; worktrees are grouped under a `repo <name>` line per repo when
-/// `by_repo` is set.
-fn render_all(inventories: &[HostInventory], by_repo: bool, now: Timestamp) -> String {
-    let (gone, live): (Vec<&HostInventory>, Vec<&HostInventory>) =
-        inventories.iter().partition(|inv| inv.gone);
-    let mut out = live
+/// Each host's block, separated by blank lines: the local host first, then by name.
+fn render_all(
+    inventories: &[HostInventory],
+    repos: &[Repo],
+    local_env_id: Option<&str>,
+    now: Timestamp,
+) -> String {
+    let mut sorted: Vec<&HostInventory> = inventories.iter().collect();
+    sorted.sort_by_key(|inv| (Some(inv.env_id.as_str()) != local_env_id, inv.name.as_str()));
+    let name_width = sorted
         .iter()
-        .map(|inv| render_block(inv, by_repo, now))
+        .map(|inv| inv.name.chars().count())
+        .max()
+        .unwrap_or(0);
+    sorted
+        .iter()
+        .map(|inv| render_block(inv, repos, name_width, now))
         .collect::<Vec<_>>()
-        .join("\n");
-    if !gone.is_empty() {
-        if !out.is_empty() {
-            out.push('\n');
-        }
-        let names: Vec<&str> = gone.iter().map(|inv| inv.name.as_str()).collect();
-        out.push_str(&format!("gone: {}\n", names.join(", ")));
-    }
-    out
+        .join("\n")
 }
 
-/// The header `name  reachable|unreachable  load <load1>  <N> worktrees  <N> agents  (seen
-/// <age>)`, any recorded errors, a `missing: <repo>` line per repo with no checkout there, then
-/// `branch  path  [PR #n state]  [agent: <title> <status>]` per worktree, under a `repo <name>`
-/// line per repo when `by_repo` is set.
-fn render_block(inv: &HostInventory, by_repo: bool, now: Timestamp) -> String {
-    let mut out = format!(
-        "{}  {}  load {}  {} worktrees  {} agents  (seen {})\n",
-        inv.name,
-        if inv.reachable {
-            "reachable"
-        } else {
-            "unreachable"
-        },
-        inv.load1
-            .map_or_else(|| NO_LOAD.to_owned(), |load| format!("{load:.2}")),
-        inv.worktrees.len(),
-        inv.agents.len(),
-        render::relative(inv.seen, now),
-    );
+/// The host's header, its recorded errors, then its agents and repos. A gone or never-probed
+/// host has only the header.
+fn render_block(inv: &HostInventory, repos: &[Repo], name_width: usize, now: Timestamp) -> String {
+    let mut out = format!("{:<name_width$}  {}\n", inv.name, host_state(inv, now));
+    if inv.gone || never_probed(inv) {
+        return out;
+    }
     for (what, error) in [
         ("worktree tool", &inv.tool_error),
         ("herdr", &inv.herdr_error),
@@ -293,82 +289,229 @@ fn render_block(inv: &HostInventory, by_repo: bool, now: Timestamp) -> String {
             ));
         }
     }
-    for repo in &inv.missing_repos {
-        out.push_str(&format!("  missing: {repo}\n"));
-    }
-    if by_repo {
-        let mut repos: Vec<&str> = Vec::new();
-        for wt in &inv.worktrees {
-            if !repos.contains(&wt.repo.as_str()) {
-                repos.push(&wt.repo);
-            }
-        }
-        for repo in repos {
-            out.push_str(&format!("  repo {repo}\n"));
-            let worktrees = inv.worktrees.iter().filter(|wt| wt.repo == repo);
-            push_indented(&mut out, "    ", &worktree_rows(inv, worktrees));
-        }
-    } else {
-        push_indented(&mut out, "  ", &worktree_rows(inv, inv.worktrees.iter()));
-    }
+    out.push_str(&format!("  agents ({})\n", inv.agents.len()));
+    push_indented(
+        &mut out,
+        "    ",
+        &inv.agents.iter().map(agent_row).collect::<Vec<_>>(),
+    );
+    out.push_str("  repos\n");
+    push_repos(&mut out, inv, repos);
     out
 }
 
-/// `branch  path  [PR #n state]  [agent: <title> <status>]` for each of `worktrees`.
-fn worktree_rows<'a>(
+/// `reachable · load <l1> · seen <age> ago`, `unreachable · seen <age> ago`, `gone · seen <age>
+/// ago`, or `never probed`.
+fn host_state(inv: &HostInventory, now: Timestamp) -> String {
+    let seen = format!("seen {} ago", render::relative(inv.seen, now));
+    if inv.gone {
+        format!("gone · {seen}")
+    } else if never_probed(inv) {
+        "never probed".to_owned()
+    } else if !inv.reachable {
+        format!("unreachable · {seen}")
+    } else {
+        match inv.load1 {
+            Some(load) => format!("reachable · load {load:.2} · {seen}"),
+            None => format!("reachable · {seen}"),
+        }
+    }
+}
+
+/// Whether the record holds nothing a probe would have found: the host has never answered.
+fn never_probed(inv: &HostInventory) -> bool {
+    !inv.reachable
+        && inv.load1.is_none()
+        && inv.worktrees.is_empty()
+        && inv.agents.is_empty()
+        && inv.prs.is_empty()
+        && inv.missing_repos.is_empty()
+        && inv.tool_error.is_none()
+        && inv.herdr_error.is_none()
+        && inv.pr_error.is_none()
+}
+
+/// `<status>[ [session]]  <title, or pane id when untitled>  <cwd>`; the session is named when
+/// it is not flow's own.
+fn agent_row(agent: &Agent) -> Vec<String> {
+    let mut status = agent.status.as_str().to_owned();
+    if agent.session != herdr::SESSION {
+        status.push_str(&format!(" [{}]", agent.session));
+    }
+    let title = if agent.title.is_empty() {
+        &agent.pane_id
+    } else {
+        &agent.title
+    };
+    vec![status, title.clone(), agent.cwd.display().to_string()]
+}
+
+/// A line per configured repo (`<name>  on <branch> · <n> worktrees`, `<name>  missing at
+/// <path>`, or `<name>  unknown` when the inventory records neither) with its worktrees below,
+/// then an `other worktrees` group for worktrees of no configured repo.
+fn push_repos(out: &mut String, inv: &HostInventory, repos: &[Repo]) {
+    let name_width = repos
+        .iter()
+        .map(|repo| repo.name.chars().count())
+        .max()
+        .unwrap_or(0);
+    let owners: Vec<Option<&Repo>> = inv
+        .worktrees
+        .iter()
+        .map(|wt| owning_repo(wt, repos))
+        .collect();
+    for repo in repos {
+        let (summary, rows) = if inv.missing_repos.contains(&repo.name) {
+            (format!("missing at {}", repo.path.display()), Vec::new())
+        } else {
+            let worktrees = inv
+                .worktrees
+                .iter()
+                .zip(&owners)
+                .filter(|(_, owner)| owner.is_some_and(|owner| owner.name == repo.name))
+                .map(|(wt, _)| wt);
+            repo_summary(inv, repo, worktrees)
+        };
+        out.push_str(&format!("    {:<name_width$}  {summary}\n", repo.name));
+        push_indented(out, "      ", &rows);
+    }
+    let others: Vec<Vec<String>> = inv
+        .worktrees
+        .iter()
+        .zip(&owners)
+        .filter(|(_, owner)| owner.is_none())
+        .map(|(wt, _)| vec![branch_name(wt).to_owned(), wt.path.display().to_string()])
+        .collect();
+    if !others.is_empty() {
+        out.push_str("    other worktrees\n");
+        push_indented(out, "      ", &others);
+    }
+}
+
+/// `on <branch of the main checkout> · <n> worktrees` (either part left out when there is
+/// nothing to say, `unknown` when both are) and a row per worktree of `repo` other than its
+/// main and base checkouts.
+fn repo_summary<'a>(
     inv: &HostInventory,
+    repo: &Repo,
     worktrees: impl Iterator<Item = &'a Worktree>,
-) -> Vec<Vec<String>> {
-    worktrees
-        .map(|wt| {
-            let mut row = vec![
-                wt.branch.clone().unwrap_or_else(|| DETACHED.to_owned()),
-                wt.path.display().to_string(),
-                wt.branch
-                    .as_deref()
-                    .and_then(|branch| {
-                        inv.prs
-                            .iter()
-                            .find(|pr| pr.repo == wt.repo && pr.branch == branch)
-                    })
-                    .map_or_else(String::new, |pr| format!("PR #{} {}", pr.number, pr.state)),
-            ];
-            row.extend(
-                inv.agents
-                    .iter()
-                    .filter(|agent| agent.cwd == wt.path)
-                    .map(agent_cell),
-            );
-            while row.last().is_some_and(String::is_empty) {
-                row.pop();
+) -> (String, Vec<Vec<String>>) {
+    let dir = worktree::worktrees_dir(repo);
+    let mut main = None;
+    let mut rows = Vec::new();
+    for wt in worktrees {
+        if wt.path == repo.path {
+            main = Some(wt);
+        } else if !is_base(wt, dir.as_deref()) {
+            rows.push(worktree_row(inv, wt, dir.as_deref()));
+        }
+    }
+    let mut parts = Vec::new();
+    if let Some(main) = main {
+        parts.push(format!("on {}", branch_name(main)));
+    }
+    match rows.len() {
+        0 => {}
+        1 => parts.push("1 worktree".to_owned()),
+        n => parts.push(format!("{n} worktrees")),
+    }
+    if parts.is_empty() {
+        parts.push("unknown".to_owned());
+    }
+    (parts.join(" · "), rows)
+}
+
+/// The configured repo `wt` belongs to: the one it names, else, for an inventory cached before
+/// worktrees named their repo, the one whose checkout or worktrees directory holds it.
+fn owning_repo<'a>(wt: &Worktree, repos: &'a [Repo]) -> Option<&'a Repo> {
+    repos.iter().find(|repo| repo.name == wt.repo).or_else(|| {
+        if !wt.repo.is_empty() {
+            return None;
+        }
+        repos.iter().find(|repo| {
+            wt.path == repo.path
+                || worktree::worktrees_dir(repo).is_some_and(|dir| wt.path.starts_with(dir))
+        })
+    })
+}
+
+/// Whether `wt` is the detached base checkout the worktree tool keeps: `<worktrees dir>/.base`,
+/// or a detached head in a directory named `.base`.
+fn is_base(wt: &Worktree, dir: Option<&Path>) -> bool {
+    let at_base = dir.is_some_and(|dir| wt.path == dir.join(BASE_DIR));
+    let detached_base =
+        wt.branch.is_none() && wt.path.file_name().is_some_and(|name| name == BASE_DIR);
+    at_base || detached_base
+}
+
+/// `<branch>  [PR #<n> <state>]  [<path>]`: the path only when it is not `<dir>/<branch>`.
+fn worktree_row(inv: &HostInventory, wt: &Worktree, dir: Option<&Path>) -> Vec<String> {
+    let pr = wt
+        .branch
+        .as_deref()
+        .and_then(|branch| {
+            inv.prs
+                .iter()
+                .find(|pr| pr.repo == wt.repo && pr.branch == branch)
+        })
+        .map_or_else(String::new, |pr| {
+            format!("PR #{} {}", pr.number, pr.state.to_lowercase())
+        });
+    let conventional = match (&wt.branch, dir) {
+        (Some(branch), Some(dir)) => wt.path == dir.join(branch),
+        _ => false,
+    };
+    let path = if conventional {
+        String::new()
+    } else {
+        wt.path.display().to_string()
+    };
+    vec![branch_name(wt).to_owned(), pr, path]
+}
+
+fn branch_name(wt: &Worktree) -> &str {
+    wt.branch.as_deref().unwrap_or(DETACHED)
+}
+
+/// `rows` without the columns that are empty in every row, and without each row's trailing
+/// empty cells, so the table prints nothing for them.
+fn drop_empty_columns(rows: Vec<Vec<String>>) -> Vec<Vec<String>> {
+    let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
+    let used: Vec<bool> = (0..columns)
+        .map(|i| {
+            rows.iter()
+                .any(|row| row.get(i).is_some_and(|cell| !cell.is_empty()))
+        })
+        .collect();
+    rows.into_iter()
+        .map(|row| {
+            let mut kept: Vec<String> = row
+                .into_iter()
+                .zip(&used)
+                .filter(|(_, used)| **used)
+                .map(|(cell, _)| cell)
+                .collect();
+            while kept.last().is_some_and(String::is_empty) {
+                kept.pop();
             }
-            row
+            kept
         })
         .collect()
 }
 
-/// Appends `rows` as a table, each line prefixed with `indent`.
+/// Appends `rows` as a table, each line prefixed with `indent`, leaving out empty columns.
 fn push_indented(out: &mut String, indent: &str, rows: &[Vec<String>]) {
-    for line in render::table(rows).lines() {
+    for line in render::table(&drop_empty_columns(rows.to_vec())).lines() {
         out.push_str(indent);
         out.push_str(line);
         out.push('\n');
     }
 }
 
-/// `agent: <title, or pane id when untitled> <status>`.
-fn agent_cell(agent: &Agent) -> String {
-    let name = if agent.title.is_empty() {
-        &agent.pane_id
-    } else {
-        &agent.title
-    };
-    format!("agent: {name} {}", agent.status.as_str())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::herdr::AgentStatus;
 
     fn config() -> Config {
         toml::from_str(
@@ -393,6 +536,257 @@ default_branch = "main"
             ona_phase: Some(phase.to_owned()),
             reachable: true,
             ..HostInventory::new(&host, Timestamp::now())
+        }
+    }
+
+    const NOW: &str = "2026-10-26T12:00:00Z";
+
+    fn repos() -> Vec<Repo> {
+        toml::from_str::<Config>(
+            r#"
+[[repos]]
+name = "app"
+path = "/work/app"
+default_branch = "main"
+
+[[repos]]
+name = "lib"
+path = "/work/lib"
+default_branch = "main"
+worktrees_dir = "/work/trees/lib"
+
+[[repos]]
+name = "docs"
+path = "/work/docs"
+default_branch = "main"
+"#,
+        )
+        .unwrap()
+        .repos
+    }
+
+    fn ago(minutes: i64) -> Timestamp {
+        NOW.parse::<Timestamp>().unwrap() - jiff::SignedDuration::from_mins(minutes)
+    }
+
+    fn host(name: &str, seen_minutes_ago: i64) -> HostInventory {
+        let host = Host {
+            name: name.to_owned(),
+            env_id: format!("env-{name}"),
+            ssh_alias: format!("{name}.example"),
+            local_marker_env: None,
+        };
+        HostInventory {
+            reachable: true,
+            ..HostInventory::new(&host, ago(seen_minutes_ago))
+        }
+    }
+
+    fn wt(repo: &str, path: &str, branch: Option<&str>) -> Worktree {
+        Worktree {
+            repo: repo.to_owned(),
+            path: path.into(),
+            branch: branch.map(str::to_owned),
+            busy: None,
+            dirty_files: None,
+        }
+    }
+
+    fn agent(status: AgentStatus, title: &str, cwd: &str, session: &str) -> Agent {
+        Agent {
+            pane_id: "w1:p2".to_owned(),
+            workspace_id: "w1".to_owned(),
+            agent: "claude".to_owned(),
+            status,
+            cwd: cwd.into(),
+            title: title.to_owned(),
+            session: session.to_owned(),
+        }
+    }
+
+    fn pr(repo: &str, branch: &str, number: u64) -> inventory::Pr {
+        inventory::Pr {
+            repo: repo.to_owned(),
+            branch: branch.to_owned(),
+            number,
+            url: format!("https://example.com/pull/{number}"),
+            state: "OPEN".to_owned(),
+        }
+    }
+
+    /// The local host: agents from flow's own and another herdr session, a repo with the base
+    /// checkout, a PR, a worktree outside the convention and a detached one, a repo on a non-main
+    /// branch with no worktrees, a missing repo, and a worktree of no configured repo.
+    fn local_host() -> HostInventory {
+        HostInventory {
+            load1: Some(1.5),
+            agents: vec![
+                agent(
+                    AgentStatus::Idle,
+                    "Build feature x",
+                    "/work/app-worktrees/feature-x",
+                    "flow",
+                ),
+                agent(AgentStatus::Working, "", "/work/app", "default"),
+            ],
+            worktrees: vec![
+                wt("app", "/work/app", Some("main")),
+                wt("app", "/work/app-worktrees/.base", None),
+                wt("app", "/work/app-worktrees/feature-x", Some("feature-x")),
+                wt("app", "/work/elsewhere/fix-y", Some("fix-y")),
+                wt("app", "/work/app-worktrees/bisect", None),
+                wt("lib", "/work/lib", Some("release")),
+                wt("retired", "/work/old/spike", Some("spike")),
+            ],
+            prs: vec![pr("app", "feature-x", 12)],
+            missing_repos: vec!["docs".to_owned()],
+            ..host("host-b", 2)
+        }
+    }
+
+    /// A remote host whose inventory predates the `docs` repo: one worktree of `lib`.
+    fn remote_host() -> HostInventory {
+        HostInventory {
+            load1: Some(0.2),
+            worktrees: vec![
+                wt("app", "/work/app", Some("main")),
+                wt("lib", "/work/lib", Some("main")),
+                wt("lib", "/work/trees/lib/fix-z", Some("fix-z")),
+            ],
+            ..host("host-a", 1)
+        }
+    }
+
+    fn unreachable_host() -> HostInventory {
+        HostInventory {
+            reachable: false,
+            worktrees: vec![
+                wt("app", "/work/app", Some("main")),
+                wt("lib", "/work/lib", Some("main")),
+            ],
+            pr_error: Some("gh: not logged in".to_owned()),
+            missing_repos: vec!["docs".to_owned()],
+            ..host("host-c", 180)
+        }
+    }
+
+    fn gone_host() -> HostInventory {
+        HostInventory {
+            reachable: false,
+            gone: true,
+            worktrees: vec![wt("app", "/work/app", Some("main"))],
+            ..host("host-d", 5 * 24 * 60)
+        }
+    }
+
+    fn never_probed_host() -> HostInventory {
+        HostInventory {
+            reachable: false,
+            ..host("host-long-name", 0)
+        }
+    }
+
+    fn render(inventories: &[HostInventory]) -> String {
+        render_all(
+            inventories,
+            &repos(),
+            Some("env-host-b"),
+            NOW.parse().unwrap(),
+        )
+    }
+
+    #[test]
+    fn render_lays_out_hosts_agents_and_repos() {
+        let inventories = [
+            never_probed_host(),
+            gone_host(),
+            unreachable_host(),
+            remote_host(),
+            local_host(),
+        ];
+        assert_eq!(
+            render(&inventories),
+            "\
+host-b          reachable · load 1.50 · seen 2m ago
+  agents (2)
+    idle               Build feature x  /work/app-worktrees/feature-x
+    working [default]  w1:p2            /work/app
+  repos
+    app   on main · 3 worktrees
+      feature-x   PR #12 open
+      fix-y                    /work/elsewhere/fix-y
+      (detached)               /work/app-worktrees/bisect
+    lib   on release
+    docs  missing at /work/docs
+    other worktrees
+      spike  /work/old/spike
+
+host-a          reachable · load 0.20 · seen 1m ago
+  agents (0)
+  repos
+    app   on main
+    lib   on main · 1 worktree
+      fix-z
+    docs  unknown
+
+host-c          unreachable · seen 3h ago
+  gh failed: gh: not logged in
+  agents (0)
+  repos
+    app   on main
+    lib   on main
+    docs  missing at /work/docs
+
+host-d          gone · seen 5d ago
+
+host-long-name  never probed
+"
+        );
+    }
+
+    #[test]
+    fn render_counts_several_worktrees_and_pads_path_column_only_when_needed() {
+        let inventory = HostInventory {
+            worktrees: vec![
+                wt("app", "/work/app", Some("main")),
+                wt("app", "/work/app-worktrees/a", Some("a")),
+                wt("app", "/work/app-worktrees/longer-b", Some("longer-b")),
+            ],
+            prs: vec![pr("app", "a", 7)],
+            ..host("host-a", 0)
+        };
+        assert_eq!(
+            render(&[inventory]),
+            "\
+host-a  reachable · seen 0s ago
+  agents (0)
+  repos
+    app   on main · 2 worktrees
+      a         PR #7 open
+      longer-b
+    lib   unknown
+    docs  unknown
+"
+        );
+    }
+
+    #[test]
+    fn render_puts_the_local_host_first_then_sorts_by_name() {
+        let rendered = render(&[host("zeta", 0), host("host-b", 0), host("alpha", 0)]);
+        let headers: Vec<&str> = rendered
+            .lines()
+            .filter(|line| !line.starts_with(' '))
+            .filter(|line| !line.is_empty())
+            .map(|line| line.split(' ').next().unwrap())
+            .collect();
+        assert_eq!(headers, ["host-b", "alpha", "zeta"]);
+    }
+
+    #[test]
+    fn render_has_no_trailing_whitespace() {
+        let rendered = render(&[local_host(), remote_host(), unreachable_host()]);
+        for line in rendered.lines() {
+            assert_eq!(line, line.trim_end(), "{rendered}");
         }
     }
 
