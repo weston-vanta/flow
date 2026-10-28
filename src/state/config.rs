@@ -61,8 +61,10 @@ pub struct Repo {
     pub name: String,
     pub path: PathBuf,
     pub default_branch: String,
-    /// Where `git worktree add` puts worktrees when there is no worktree tool; the sibling
-    /// `<path>-worktrees` when unset.
+    /// Where the repo's worktrees live, as `<dir>/<branch>`: dispatch's `git worktree add`
+    /// fallback creates them there, and `flow inventory` shows a path only for worktrees
+    /// elsewhere. When unset, dispatch uses the sibling `<path>-worktrees`, and the inventory
+    /// view infers it from the existing worktrees, falling back to that sibling.
     #[serde(default)]
     pub worktrees_dir: Option<PathBuf>,
     /// Creates and lists the repo's worktrees; plain `git worktree` when unset.

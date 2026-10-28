@@ -1,6 +1,6 @@
 //! `flow inventory`: worktrees, agents, PRs, and load per host, from the cache or refreshed.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
 
@@ -331,12 +331,12 @@ fn never_probed(inv: &HostInventory) -> bool {
         && inv.pr_error.is_none()
 }
 
-/// `<status>[ [session]]  <title, or pane id when untitled>  <cwd>`; the session is named when
-/// it is not flow's own.
+/// `<status>[ [flow]]  <title, or pane id when untitled>  <cwd>`; agents in flow's own herdr
+/// session are tagged to tell them from the user's.
 fn agent_row(agent: &Agent) -> Vec<String> {
     let mut status = agent.status.as_str().to_owned();
-    if agent.session != herdr::SESSION {
-        status.push_str(&format!(" [{}]", agent.session));
+    if agent.session == herdr::SESSION {
+        status.push_str(&format!(" [{}]", herdr::SESSION));
     }
     let title = if agent.title.is_empty() {
         &agent.pane_id
@@ -390,13 +390,20 @@ fn push_repos(out: &mut String, inv: &HostInventory, repos: &[Repo]) {
 
 /// `on <branch of the main checkout> · <n> worktrees` (either part left out when there is
 /// nothing to say, `unknown` when both are) and a row per worktree of `repo` other than its
-/// main and base checkouts.
+/// main and base checkouts. Worktrees outside the repo's worktrees dir show their path; the dir
+/// is inferred from the worktrees when the repo does not configure one.
 fn repo_summary<'a>(
     inv: &HostInventory,
     repo: &Repo,
     worktrees: impl Iterator<Item = &'a Worktree>,
 ) -> (String, Vec<Vec<String>>) {
-    let dir = worktree::worktrees_dir(repo);
+    let worktrees: Vec<&Worktree> = worktrees.collect();
+    let inferred = repo
+        .worktrees_dir
+        .is_none()
+        .then(|| inferred_worktrees_dir(&repo.path, worktrees.iter().copied()))
+        .flatten();
+    let dir = inferred.or_else(|| worktree::worktrees_dir(repo));
     let mut main = None;
     let mut rows = Vec::new();
     for wt in worktrees {
@@ -467,6 +474,27 @@ fn worktree_row(inv: &HostInventory, wt: &Worktree, dir: Option<&Path>) -> Vec<S
         wt.path.display().to_string()
     };
     vec![branch_name(wt).to_owned(), pr, path]
+}
+
+/// The directory every worktree of a repo at `repo_path`, other than the main checkout, sits
+/// in: `<dir>` of a worktree at `<dir>/<branch>`, else the worktree's parent. `None` when there
+/// are no such worktrees or they do not all agree.
+fn inferred_worktrees_dir<'a>(
+    repo_path: &Path,
+    worktrees: impl Iterator<Item = &'a Worktree>,
+) -> Option<PathBuf> {
+    let mut dirs = worktrees
+        .filter(|wt| wt.path != repo_path)
+        .map(|wt| match &wt.branch {
+            Some(branch) if wt.path.ends_with(branch) => wt
+                .path
+                .ancestors()
+                .nth(Path::new(branch).components().count()),
+            _ => wt.path.parent(),
+        });
+    let first = dirs.next()??;
+    dirs.all(|dir| dir == Some(first))
+        .then(|| first.to_path_buf())
 }
 
 fn branch_name(wt: &Worktree) -> &str {
@@ -709,8 +737,8 @@ default_branch = "main"
             "\
 host-b          reachable · load 1.50 · seen 2m ago
   agents (2)
-    idle               Build feature x  /work/app-worktrees/feature-x
-    working [default]  w1:p2            /work/app
+    idle [flow]  Build feature x  /work/app-worktrees/feature-x
+    working      w1:p2            /work/app
   repos
     app   on main · 3 worktrees
       feature-x   PR #12 open
@@ -768,6 +796,74 @@ host-a  reachable · seen 0s ago
     docs  unknown
 "
         );
+    }
+
+    #[test]
+    fn render_takes_the_worktrees_dir_from_the_worktrees_when_unset() {
+        let inventory = HostInventory {
+            worktrees: vec![
+                wt("app", "/work/app", Some("main")),
+                wt("app", "/work/app.wt/.base", None),
+                wt("app", "/work/app.wt/user/a", Some("user/a")),
+                wt("app", "/work/app.wt/b", Some("b")),
+                wt("app", "/work/app.wt/renamed", Some("c")),
+            ],
+            ..host("host-a", 0)
+        };
+        assert_eq!(
+            render(&[inventory]),
+            "\
+host-a  reachable · seen 0s ago
+  agents (0)
+  repos
+    app   on main · 3 worktrees
+      user/a
+      b
+      c       /work/app.wt/renamed
+    lib   unknown
+    docs  unknown
+"
+        );
+    }
+
+    fn infer(worktrees: &[Worktree]) -> Option<PathBuf> {
+        inferred_worktrees_dir(Path::new("/work/app"), worktrees.iter())
+    }
+
+    #[test]
+    fn inferred_worktrees_dir_is_the_dir_every_worktree_sits_in() {
+        let worktrees = [
+            wt("app", "/work/app", Some("main")),
+            wt("app", "/work/app.wt/user/a", Some("user/a")),
+            wt("app", "/work/app.wt/b", Some("b")),
+            wt("app", "/work/app.wt/renamed", Some("c")),
+            wt("app", "/work/app.wt/bisect", None),
+        ];
+        assert_eq!(infer(&worktrees), Some(PathBuf::from("/work/app.wt")));
+    }
+
+    #[test]
+    fn inferred_worktrees_dir_counts_the_base_checkout() {
+        let worktrees = [
+            wt("app", "/work/app", Some("main")),
+            wt("app", "/work/app.wt/.base", None),
+        ];
+        assert_eq!(infer(&worktrees), Some(PathBuf::from("/work/app.wt")));
+    }
+
+    #[test]
+    fn inferred_worktrees_dir_is_none_for_mixed_dirs() {
+        let worktrees = [
+            wt("app", "/work/app.wt/a", Some("a")),
+            wt("app", "/work/elsewhere/b", Some("b")),
+        ];
+        assert_eq!(infer(&worktrees), None);
+    }
+
+    #[test]
+    fn inferred_worktrees_dir_is_none_without_worktrees() {
+        assert_eq!(infer(&[wt("app", "/work/app", Some("main"))]), None);
+        assert_eq!(infer(&[]), None);
     }
 
     #[test]

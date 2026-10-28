@@ -69,7 +69,7 @@ fn create_with_git(
     Ok(path)
 }
 
-/// Where `git worktree add` puts `repo`'s worktrees: its `worktrees_dir`, else the sibling
+/// Where `repo`'s worktrees live by config: its `worktrees_dir`, else the sibling
 /// `<repo>-worktrees`; `None` when the repo's path has no parent to hold a sibling.
 pub fn worktrees_dir(repo: &Repo) -> Option<PathBuf> {
     match &repo.worktrees_dir {
