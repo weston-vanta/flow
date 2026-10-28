@@ -290,7 +290,7 @@ fn hold_sets_hold_and_logs() {
 }
 
 #[test]
-fn requests_lists_then_consume_hides() {
+fn status_lists_pending_requests() {
     let (repo, state, store) = setup();
     store
         .create_task(record("aaaaaaac", "Second task"), "brief")
@@ -311,45 +311,49 @@ fn requests_lists_then_consume_hides() {
     );
     let (with_host, without_host) = (with_host.trim(), without_host.trim());
 
-    let listed = stdout(flow(&state).arg("requests"));
+    let listed = stdout(flow(&state).arg("status"));
 
-    let mut lines: Vec<_> = listed.lines().collect();
-    lines.sort();
-    let mut expected = vec![
-        format!("{with_host}  {TASK}  host-b  Update docs"),
-        format!("{without_host}  aaaaaaac  -       Bump the client"),
-    ];
-    expected.sort();
-    assert_eq!(lines, expected, "{listed}");
+    let lines: Vec<_> = listed.lines().collect();
+    assert_eq!(
+        lines[2..],
+        [
+            "requests:".to_owned(),
+            format!("{with_host}  {TASK}  host-b  Update docs"),
+            format!("{without_host}  aaaaaaac  -       Bump the client"),
+            "adopted: 0 sessions".to_owned(),
+        ],
+        "{listed}"
+    );
 
-    flow(&state)
-        .args(["requests", "consume", with_host])
-        .assert()
-        .success();
-
-    let listed = stdout(flow(&state).arg("requests"));
-    assert!(!listed.contains(with_host), "{listed}");
-    assert!(listed.contains(without_host), "{listed}");
-    let consumed = store
-        .task_dir(TASK)
+    store.consume_request(with_host).unwrap();
+    let json = stdout(flow(&state).args(["status", "--json"]));
+    let json: Value = serde_json::from_str(&json).unwrap();
+    let copied = store
+        .task_dir("aaaaaaac")
         .unwrap()
         .join("requests")
-        .join(format!("{with_host}.json.consumed"));
-    assert!(consumed.is_file());
+        .join(format!("{without_host}.brief.md"));
+    assert_eq!(
+        json["requests"],
+        json!([{
+            "id": without_host,
+            "title": "Bump the client",
+            "brief_path": copied,
+            "host": null,
+            "requested_by": "aaaaaaac",
+        }])
+    );
+}
 
-    let json = stdout(flow(&state).args(["requests", "--json"]));
-    let json: Value = serde_json::from_str(&json).unwrap();
-    let rows = json.as_array().expect("array of requests");
-    assert_eq!(rows.len(), 1, "{json}");
-    assert_eq!(rows[0]["id"], without_host);
-    assert_eq!(rows[0]["requested_by"], "aaaaaaac");
-    assert_eq!(rows[0]["host"], Value::Null);
+#[test]
+fn requests_is_not_a_command() {
+    let (_repo, state, _store) = setup();
 
     flow(&state)
-        .args(["requests", "consume", with_host])
+        .arg("requests")
         .assert()
-        .failure()
-        .code(1);
+        .code(2)
+        .stderr(predicates::str::contains("unrecognized subcommand"));
 }
 
 #[test]

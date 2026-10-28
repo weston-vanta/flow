@@ -1,5 +1,6 @@
 //! `flow dispatch`: creates a task and starts its worker in a herdr pane on the chosen host, in
-//! an existing directory, a new worktree of a configured repo, or the task's own work directory.
+//! an existing directory, a new worktree of a configured repo, or the task's own work directory;
+//! from a brief given here or from a pending dispatch request, which it consumes.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -33,9 +34,24 @@ const HAND_DISPATCH_NOTE: &str = "note: no supervisor turn is watching; the supe
 /// The task's own working directory, inside its task directory, for work outside any repo.
 const WORK_DIR: &str = "work";
 
+#[derive(Clone)]
 pub enum BriefSource {
     File(PathBuf),
     Text(String),
+}
+
+/// Where the task's title and brief come from.
+pub enum TaskSource {
+    Given {
+        title: String,
+        brief: BriefSource,
+    },
+    /// A pending dispatch request, which supplies the brief, and the title, host, and parent
+    /// unless given; `title` overrides the request's.
+    Request {
+        req_id: String,
+        title: Option<String>,
+    },
 }
 
 /// Where the worker runs.
@@ -52,10 +68,9 @@ pub enum DirSource {
 }
 
 pub struct DispatchArgs {
-    /// The host to run on; the machine flow runs on when unset.
+    /// The host to run on; the request's host, else the machine flow runs on, when unset.
     pub host: Option<String>,
-    pub title: String,
-    pub brief: BriefSource,
+    pub source: TaskSource,
     pub criteria: String,
     pub dir: DirSource,
     pub parent: Option<String>,
@@ -63,7 +78,8 @@ pub struct DispatchArgs {
 }
 
 /// Creates the task, starts its worker, and prints `dispatched <id> on <host> (<pane_id>)`,
-/// with a note when run outside the supervisor's session.
+/// with a note when run outside the supervisor's session. A dispatched request is consumed once
+/// the worker has started.
 /// A failure once the task exists leaves it `blocked` with a supervisor hold naming the failure.
 pub fn run(state: &StateDir, args: &DispatchArgs) -> anyhow::Result<()> {
     // Workers get task paths (work dir, settings, brief) under the physical shared-volume path:
@@ -73,8 +89,10 @@ pub fn run(state: &StateDir, args: &DispatchArgs) -> anyhow::Result<()> {
         .canonical()
         .with_context(|| format!("resolving {}", state.root().display()))?;
     let config = Config::load(state)?;
+    let store = Store::open(state);
+    let ask = Ask::resolve(&store, args)?;
     let hosts = inventory::hosts(state)?;
-    let host = match &args.host {
+    let host = match &ask.host {
         Some(name) => host::find(&hosts, name),
         None => host::local(&hosts),
     }
@@ -82,14 +100,13 @@ pub fn run(state: &StateDir, args: &DispatchArgs) -> anyhow::Result<()> {
     if !inventory::live_hosts(state)?.contains(host) {
         return Err(Refused(format!("host {} is gone", host.name)).into());
     }
-    let store = Store::open(state);
-    if let Some(parent) = &args.parent {
+    if let Some(parent) = &ask.parent {
         store
             .task(parent)
             .map_err(|err| Refused(format!("--parent: {err:#}")))?;
     }
     let dir = WorkDir::resolve(&args.dir, &config, host)?;
-    let body = match &args.brief {
+    let body = match &ask.brief {
         BriefSource::File(path) => {
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?
         }
@@ -114,8 +131,8 @@ pub fn run(state: &StateDir, args: &DispatchArgs) -> anyhow::Result<()> {
 
     let rec = TaskRecord {
         id,
-        parent: args.parent.clone(),
-        title: args.title.clone(),
+        parent: ask.parent.clone(),
+        title: ask.title.clone(),
         host: host.name.clone(),
         cwd,
         repo: match &dir {
@@ -148,7 +165,10 @@ pub fn run(state: &StateDir, args: &DispatchArgs) -> anyhow::Result<()> {
             if !supervisor::is_supervisor_session() {
                 super::print(HAND_DISPATCH_NOTE)?;
             }
-            Ok(())
+            match &ask.request {
+                Some(request) => consume(&store, request, &rec.id),
+                None => Ok(()),
+            }
         }
         Err(err) => {
             if let Err(record_err) = record_failure(&store, &rec.id, &err) {
@@ -157,6 +177,71 @@ pub fn run(state: &StateDir, args: &DispatchArgs) -> anyhow::Result<()> {
             Err(err)
         }
     }
+}
+
+/// The task's title, brief, host, and parent, from the arguments over the request's.
+struct Ask {
+    title: String,
+    brief: BriefSource,
+    host: Option<String>,
+    parent: Option<String>,
+    request: Option<RequestRef>,
+}
+
+/// A pending request this dispatch consumes once its worker starts.
+struct RequestRef {
+    req_id: String,
+    requested_by: String,
+}
+
+impl Ask {
+    /// Fails with `Refused` when the request is unknown or already consumed.
+    fn resolve(store: &Store, args: &DispatchArgs) -> anyhow::Result<Ask> {
+        let (req_id, title) = match &args.source {
+            TaskSource::Given { title, brief } => {
+                return Ok(Ask {
+                    title: title.clone(),
+                    brief: brief.clone(),
+                    host: args.host.clone(),
+                    parent: args.parent.clone(),
+                    request: None,
+                });
+            }
+            TaskSource::Request { req_id, title } => (req_id, title),
+        };
+        let (_, request) = store
+            .pending_requests()?
+            .into_iter()
+            .find(|(id, _)| id == req_id)
+            .ok_or_else(|| Refused(format!("no pending request: {req_id}")))?;
+        Ok(Ask {
+            title: title.clone().unwrap_or(request.title),
+            brief: BriefSource::File(request.brief_path),
+            host: args.host.clone().or(request.host),
+            parent: Some(
+                args.parent
+                    .clone()
+                    .unwrap_or_else(|| request.requested_by.clone()),
+            ),
+            request: Some(RequestRef {
+                req_id: req_id.clone(),
+                requested_by: request.requested_by,
+            }),
+        })
+    }
+}
+
+/// Marks the request dispatched as task `id` and logs it on the requesting task.
+fn consume(store: &Store, request: &RequestRef, id: &str) -> anyhow::Result<()> {
+    store
+        .consume_request(&request.req_id)
+        .with_context(|| format!("task {id} is dispatched, but its request was not consumed"))?;
+    append_event(
+        store,
+        &request.requested_by,
+        "request.consumed",
+        json!({"req_id": request.req_id, "task": id}),
+    )
 }
 
 /// `DirSource` checked against the config before anything runs.

@@ -7,7 +7,6 @@ pub mod hook;
 pub mod host;
 pub mod init;
 pub mod inventory;
-pub mod requests;
 pub mod sessions;
 pub mod status;
 pub mod steer;

@@ -5,7 +5,9 @@ use assert_cmd::Command;
 use flow::paths::StateDir;
 use flow::state::Store;
 use flow::state::events::{self, Event};
-use flow::state::task::{HerdrTarget, HoldOn, State};
+use flow::state::requests::NewRequest;
+use flow::state::task::{Harness, HerdrTarget, HoldOn, State, TaskRecord};
+use jiff::Timestamp;
 use serde_json::{Value, json};
 
 const CONFIG: &str = r#"
@@ -132,6 +134,79 @@ impl Fixture {
     fn events(&self, id: &str) -> Vec<Event> {
         events::read_all(&self.store().task_dir(id).unwrap()).unwrap()
     }
+
+    /// Creates task `REQUESTER` and files a dispatch request from it for `host`; returns the
+    /// request id.
+    fn file_request(&self, host: Option<&str>) -> String {
+        let store = self.store();
+        store
+            .create_task(
+                TaskRecord {
+                    id: REQUESTER.to_owned(),
+                    parent: None,
+                    title: "Split the indexer".to_owned(),
+                    host: "host-a".to_owned(),
+                    cwd: PathBuf::from(WORKTREE),
+                    repo: None,
+                    harness: Harness::Claude,
+                    created: Timestamp::now(),
+                    owner: "supervisor".to_owned(),
+                },
+                "brief",
+            )
+            .unwrap();
+        let new = NewRequest {
+            title: "Rebuild the search index",
+            host,
+            brief: REQUEST_BRIEF.as_bytes(),
+        };
+        store.add_request(REQUESTER, &new).unwrap().0
+    }
+
+    /// The id of the only task other than `REQUESTER`.
+    fn dispatched_task(&self) -> String {
+        let ids: Vec<String> = self
+            .store()
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .map(|(rec, _)| rec.id)
+            .filter(|id| id != REQUESTER)
+            .collect();
+        assert_eq!(ids.len(), 1, "{ids:?}");
+        ids[0].clone()
+    }
+
+    fn pending_request_ids(&self) -> Vec<String> {
+        self.store()
+            .pending_requests()
+            .unwrap()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
+    }
+}
+
+/// The task that files dispatch requests in the request tests.
+const REQUESTER: &str = "aaaaaaab";
+const REQUEST_BRIEF: &str = "Rebuild the search index from the request.\n";
+
+/// `flow dispatch --request <req_id>` with criteria and `--dir WORKTREE`, then `extra`.
+fn request_dispatch_args(req_id: &str, extra: &[&str]) -> Vec<String> {
+    let mut args: Vec<String> = [
+        "dispatch",
+        "--request",
+        req_id,
+        "--criteria",
+        "- A draft PR is open",
+        "--dir",
+        WORKTREE,
+    ]
+    .iter()
+    .map(|s| (*s).to_owned())
+    .collect();
+    args.extend(extra.iter().map(|s| (*s).to_owned()));
+    args
 }
 
 fn ok(stdout: &str) -> Value {
@@ -933,4 +1008,163 @@ fn dispatch_branch_uses_the_named_repo() {
         );
         assert!(refused.calls().is_empty(), "{args:?}");
     }
+}
+
+#[test]
+fn dispatch_from_a_request_fills_its_fields_and_consumes_it() {
+    let fx = Fixture::new();
+    let req_id = fx.file_request(Some("host-a"));
+
+    let out = fx
+        .flow(&starts_working(Vec::new()))
+        .args(request_dispatch_args(&req_id, &[]))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let id = fx.dispatched_task();
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap(),
+        format!("dispatched {id} on host-a ({PANE})\n{HAND_DISPATCH_NOTE}")
+    );
+    let store = fx.store();
+    let (rec, status) = store.task(&id).unwrap();
+    assert_eq!(rec.title, "Rebuild the search index");
+    assert_eq!(rec.host, "host-a");
+    assert_eq!(rec.parent.as_deref(), Some(REQUESTER));
+    assert_eq!(status.state, State::Working);
+    let brief = store.brief(&id).unwrap();
+    assert!(
+        brief.contains("Rebuild the search index from the request."),
+        "{brief}"
+    );
+    assert!(brief.contains("- A draft PR is open"), "{brief}");
+    assert!(fx.pending_request_ids().is_empty());
+    let consumed = fx
+        .events(REQUESTER)
+        .into_iter()
+        .find(|ev| ev.kind == "request.consumed")
+        .expect("request.consumed event");
+    assert_eq!(consumed.data, json!({"req_id": req_id, "task": id}));
+}
+
+#[test]
+fn dispatch_flags_override_the_request() {
+    let fx = Fixture::new();
+    let req_id = fx.file_request(Some("host-z"));
+
+    fx.flow(&starts_working(Vec::new()))
+        .args(request_dispatch_args(
+            &req_id,
+            &["--host", "host-a", "--title", "Rebuild it nightly"],
+        ))
+        .assert()
+        .success();
+
+    let (rec, _) = fx.store().task(&fx.dispatched_task()).unwrap();
+    assert_eq!(rec.host, "host-a");
+    assert_eq!(rec.title, "Rebuild it nightly");
+    assert!(fx.pending_request_ids().is_empty());
+}
+
+#[test]
+fn dispatch_from_a_request_leaves_it_pending_when_the_start_fails() {
+    let fx = Fixture::new();
+    let req_id = fx.file_request(None);
+    let script = vec![
+        ok(SERVER_RUNNING),
+        ok(NO_AGENTS),
+        ok(WORKSPACE_CREATE),
+        ok(PANE_RUN_OK),
+        failed(AGENT_WAIT_TIMEOUT),
+    ];
+
+    fx.flow(&script)
+        .args(request_dispatch_args(&req_id, &[]))
+        .assert()
+        .code(1);
+
+    let (_, status) = fx.store().task(&fx.dispatched_task()).unwrap();
+    assert_eq!(status.state, State::Blocked);
+    assert_eq!(fx.pending_request_ids(), [req_id]);
+    assert!(
+        !fx.events(REQUESTER)
+            .iter()
+            .any(|ev| ev.kind == "request.consumed")
+    );
+}
+
+#[test]
+fn dispatch_refuses_an_unknown_or_consumed_request() {
+    let fx = Fixture::new();
+    let req_id = fx.file_request(None);
+    fx.store().consume_request(&req_id).unwrap();
+
+    for id in ["aaaaaaaz", req_id.as_str()] {
+        fx.flow(&[])
+            .args(request_dispatch_args(id, &[]))
+            .assert()
+            .code(2)
+            .stderr(predicates::str::contains(format!(
+                "no pending request: {id}"
+            )));
+    }
+
+    assert!(fx.calls().is_empty());
+    assert_eq!(fx.store().list_tasks().unwrap().len(), 1);
+}
+
+#[test]
+fn dispatch_refuses_a_brief_alongside_a_request() {
+    let fx = Fixture::new();
+    let req_id = fx.file_request(None);
+
+    for brief in [
+        ["--brief", "Other work."],
+        ["--brief-file", "/tmp/brief.md"],
+    ] {
+        fx.flow(&[])
+            .args(request_dispatch_args(&req_id, &brief))
+            .assert()
+            .code(2)
+            .stderr(predicates::str::contains("the request supplies the brief"));
+    }
+
+    assert!(fx.calls().is_empty());
+    assert_eq!(fx.pending_request_ids(), [req_id]);
+}
+
+#[test]
+fn dispatch_needs_exactly_one_brief_source_and_a_title() {
+    let fx = Fixture::new();
+    let mut without_brief = dispatch_args(&["--dir", WORKTREE]);
+    without_brief.drain(5..7);
+    let mut without_title = dispatch_args(&["--dir", WORKTREE]);
+    without_title.drain(3..5);
+    let mut both_briefs = dispatch_args(&["--dir", WORKTREE]);
+    both_briefs.extend(["--brief-file".to_owned(), "/tmp/brief.md".to_owned()]);
+
+    for (args, message) in [
+        (
+            without_brief,
+            "pass exactly one of --request, --brief-file, and --brief",
+        ),
+        (
+            both_briefs,
+            "pass exactly one of --request, --brief-file, and --brief",
+        ),
+        (
+            without_title,
+            "--title is required unless --request supplies it",
+        ),
+    ] {
+        fx.flow(&[])
+            .args(&args)
+            .assert()
+            .code(2)
+            .stderr(predicates::str::contains(message));
+    }
+
+    assert!(fx.calls().is_empty());
 }

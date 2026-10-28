@@ -204,7 +204,20 @@ fn status_json_tasks_match_the_text_view() {
     };
 
     assert_eq!(ids(&["status", "--json"]), ["aaaaaaab"]);
-    assert_eq!(ids(&["status", "--all", "--json"]), ["aaaaaaab", "aaaaaaac"]);
+    assert_eq!(
+        ids(&["status", "--all", "--json"]),
+        ["aaaaaaab", "aaaaaaac"]
+    );
+}
+
+#[test]
+fn status_json_lists_no_requests_as_empty() {
+    let (_repo, state, _store) = setup();
+
+    let out = stdout(flow(&state).args(["status", "--json"]));
+
+    let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(value["requests"], json!([]));
 }
 
 #[test]

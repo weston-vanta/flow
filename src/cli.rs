@@ -5,7 +5,7 @@ use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 
 use flow::cmd;
 use flow::cmd::Refused;
-use flow::cmd::dispatch::{BriefSource, DirSource, DispatchArgs};
+use flow::cmd::dispatch::{BriefSource, DirSource, DispatchArgs, TaskSource};
 use flow::cmd::task_write::ReportedState;
 use flow::paths::StateDir;
 use flow::state::task::HoldOn;
@@ -29,7 +29,7 @@ pub enum Command {
         #[arg(long)]
         force: bool,
     },
-    /// Show open tasks, their holds, and adopted sessions
+    /// Show open tasks, their holds, pending dispatch requests, and adopted sessions
     Status {
         /// Include done and orphaned tasks
         #[arg(long)]
@@ -42,14 +42,6 @@ pub enum Command {
     Task {
         #[command(subcommand)]
         command: TaskCommand,
-    },
-    /// List dispatch requests not yet consumed
-    Requests {
-        #[command(subcommand)]
-        command: Option<RequestsCommand>,
-        /// Print raw JSON instead of the compact view
-        #[arg(long)]
-        json: bool,
     },
     /// Start a worker session for a new task
     Dispatch(DispatchCli),
@@ -143,24 +135,23 @@ impl Command {
 }
 
 #[derive(Debug, Args)]
-#[command(group(ArgGroup::new("brief_source").required(true)))]
 #[command(group(ArgGroup::new("dir_source")))]
 pub struct DispatchCli {
-    /// Host to run the worker on [default: this machine]
+    /// Pending dispatch request to dispatch, from `flow status`; it supplies the brief, and the
+    /// title, host, and parent unless given
+    #[arg(long, value_name = "REQ_ID")]
+    request: Option<String>,
+    /// Host to run the worker on [default: the request's host, else this machine]
     #[arg(long, value_name = "NAME")]
     host: Option<String>,
+    /// Required unless --request supplies it
     #[arg(long)]
-    title: String,
+    title: Option<String>,
     /// File holding the ask, read on this machine
-    #[arg(long, value_name = "FILE", group = "brief_source")]
+    #[arg(long, value_name = "FILE")]
     brief_file: Option<PathBuf>,
     /// The ask itself
-    #[arg(
-        long,
-        value_name = "TEXT",
-        group = "brief_source",
-        allow_hyphen_values = true
-    )]
+    #[arg(long, value_name = "TEXT", allow_hyphen_values = true)]
     brief: Option<String>,
     /// What must be true for the task to be done, often a `- ` list
     #[arg(long, value_name = "TEXT", allow_hyphen_values = true)]
@@ -175,7 +166,7 @@ pub struct DispatchCli {
     /// Configured repo to create the --branch worktree in; needed when several are configured
     #[arg(long, value_name = "NAME")]
     repo: Option<String>,
-    /// Task this one was split from
+    /// Task this one was split from [default: the request's requesting task]
     #[arg(long, value_name = "ID")]
     parent: Option<String>,
     /// Dispatch even when another agent already works in the directory
@@ -187,10 +178,35 @@ impl TryFrom<DispatchCli> for DispatchArgs {
     type Error = anyhow::Error;
 
     fn try_from(cli: DispatchCli) -> anyhow::Result<DispatchArgs> {
-        let brief = match (cli.brief_file, cli.brief) {
-            (Some(path), None) => BriefSource::File(path),
-            (None, Some(text)) => BriefSource::Text(text),
-            _ => anyhow::bail!("pass exactly one of --brief-file and --brief"),
+        let source = match (cli.request, cli.brief_file, cli.brief) {
+            (Some(req_id), None, None) => TaskSource::Request {
+                req_id,
+                title: cli.title,
+            },
+            (Some(_), _, _) => {
+                return Err(Refused(
+                    "--brief and --brief-file do not apply with --request: the request supplies \
+                     the brief"
+                        .to_owned(),
+                )
+                .into());
+            }
+            (None, file, text) => {
+                let brief = match (file, text) {
+                    (Some(path), None) => BriefSource::File(path),
+                    (None, Some(text)) => BriefSource::Text(text),
+                    _ => {
+                        return Err(Refused(
+                            "pass exactly one of --request, --brief-file, and --brief".to_owned(),
+                        )
+                        .into());
+                    }
+                };
+                let title = cli.title.ok_or_else(|| {
+                    Refused("--title is required unless --request supplies it".to_owned())
+                })?;
+                TaskSource::Given { title, brief }
+            }
         };
         let dir = match (cli.dir, cli.branch, cli.repo) {
             (None, Some(branch), repo) => DirSource::Branch { branch, repo },
@@ -203,8 +219,7 @@ impl TryFrom<DispatchCli> for DispatchArgs {
         };
         Ok(DispatchArgs {
             host: cli.host,
-            title: cli.title,
-            brief,
+            source,
             criteria: cli.criteria,
             dir,
             parent: cli.parent,
@@ -336,12 +351,6 @@ pub enum WakeCommand {
     },
 }
 
-#[derive(Debug, Subcommand)]
-pub enum RequestsCommand {
-    /// Mark a request dispatched so it stops listing
-    Consume { req_id: String },
-}
-
 /// Who answers a hold or made a decision.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum Party {
@@ -374,10 +383,6 @@ pub fn run(cli: Cli, state: &StateDir, repo_root: &Path) -> anyhow::Result<ExitC
             cmd::hook::run_supervisor(state, std::io::stdin().lock());
             Ok(())
         }
-        Command::Requests { command, json } => match command {
-            None => cmd::requests::run_list(state, json),
-            Some(RequestsCommand::Consume { req_id }) => cmd::requests::run_consume(state, &req_id),
-        },
         Command::Dispatch(args) => cmd::dispatch::run(state, &args.try_into()?),
         Command::Inventory { refresh, json } => cmd::inventory::run(state, refresh, json),
         Command::Sessions { json, summaries } => cmd::sessions::run(state, json, summaries),
