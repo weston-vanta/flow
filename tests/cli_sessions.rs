@@ -384,6 +384,35 @@ fn sessions_update_only_agents_in_an_existing_cache() {
 }
 
 #[test]
+fn sessions_reaching_herdr_clear_a_probe_failure() {
+    let fx = Fixture::new();
+    fx.single_host();
+    let mut earlier = host_b_cache();
+    earlier["name"] = json!("host-a");
+    earlier["env_id"] = json!("env-0001");
+    earlier["reachable"] = json!(false);
+    earlier["probe_error"] = json!("ssh: connect to host host-a.example: timed out");
+    fx.write_cache("env-0001", &earlier);
+    let script = [
+        on("host-a", SERVER_RUNNING),
+        on("host-a", FLOW_AGENTS),
+        default_not_running("host-a"),
+    ];
+
+    stdout_of(fx.flow(&script).arg("sessions"));
+
+    let cached = fx.cached("env-0001");
+    assert_eq!(cached["reachable"], true);
+    assert_eq!(cached["probe_error"], Value::Null);
+    let inventory = stdout_of(fx.flow(&[]).arg("inventory"));
+    assert!(
+        inventory.starts_with("host-a  reachable · load 0.50 · seen "),
+        "{inventory}"
+    );
+    assert!(!inventory.contains("probe failed"), "{inventory}");
+}
+
+#[test]
 fn sessions_record_a_flow_session_failure() {
     let fx = Fixture::new();
     fx.single_host();

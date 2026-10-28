@@ -72,7 +72,7 @@ pub struct HostInventory {
     pub agents: Vec<Agent>,
     /// Open PRs whose head branch is checked out in one of `worktrees` of the same repo.
     pub prs: Vec<Pr>,
-    /// Why the last probe could not reach the host; cleared by a probe that does.
+    /// Why the last probe could not reach the host; cleared once a probe or herdr reaches it.
     #[serde(default)]
     pub probe_error: Option<String>,
     /// Why the worktree tool's list failed; `busy` and `dirty_files` are then unknown.
@@ -358,7 +358,8 @@ pub fn herdr_agents(runner: &Arc<dyn Runner>, host: &Host, sessions: &[String]) 
 }
 
 /// `cached` with its agents and herdr error replaced by `found` as of `now`, or, with nothing
-/// cached, an inventory of only those agents. Nothing else in a cached inventory changes.
+/// cached, an inventory of only those agents. herdr answering means the host was reached, so a
+/// cached inventory is marked reachable and its probe error cleared; nothing else changes.
 pub fn with_agents(
     host: &Host,
     cached: Option<HostInventory>,
@@ -368,8 +369,10 @@ pub fn with_agents(
     match cached {
         Some(cached) => HostInventory {
             seen: now,
+            reachable: true,
             agents: found.agents,
             herdr_error: found.error,
+            probe_error: None,
             ..cached
         },
         None => HostInventory {
