@@ -4,7 +4,7 @@ use assert_cmd::Command;
 use flow::paths::StateDir;
 use flow::state::Store;
 use flow::state::events::{self, Event};
-use flow::state::task::{Harness, HoldOn, State, TaskRecord};
+use flow::state::task::{Harness, Hold, HoldOn, State, TaskRecord};
 use jiff::Timestamp;
 use serde_json::{Value, json};
 
@@ -343,6 +343,86 @@ fn status_lists_pending_requests() {
             "requested_by": "aaaaaaac",
         }])
     );
+}
+
+#[test]
+fn status_lists_holds_then_requests_then_adopted() {
+    let (repo, state, store) = setup();
+    store
+        .set_status(TASK, |s| {
+            s.state = State::NeedsDecision;
+            s.hold = Some(Hold {
+                on: HoldOn::Supervisor,
+                what: "Which backoff schedule?".to_owned(),
+                since: Timestamp::now(),
+            });
+        })
+        .unwrap();
+    let brief = repo.path().join("sibling-brief.md");
+    std::fs::write(&brief, "Sibling work.\n").unwrap();
+    let req_id = stdout(
+        flow(&state)
+            .args(["task", "request-dispatch", TASK])
+            .args(["--title", "Update docs", "--brief"])
+            .arg(&brief),
+    );
+
+    let listed = stdout(flow(&state).arg("status"));
+
+    let lines: Vec<_> = listed.lines().collect();
+    assert_eq!(lines.len(), 6, "{listed}");
+    assert!(
+        lines[0].starts_with(&format!("{TASK}  needs-decision  host-a  ")),
+        "{listed}"
+    );
+    assert_eq!(lines[1], "holds:", "{listed}");
+    assert!(
+        lines[2].starts_with(&format!("{TASK}  supervisor  Which backoff schedule?  ")),
+        "{listed}"
+    );
+    assert_eq!(lines[3], "requests:", "{listed}");
+    assert_eq!(
+        lines[4],
+        format!("{}  {TASK}  -  Update docs", req_id.trim())
+    );
+    assert_eq!(lines[5], "adopted: 0 sessions", "{listed}");
+}
+
+#[test]
+fn status_skips_an_unreadable_request_with_a_warning() {
+    let (repo, state, store) = setup();
+    let brief = repo.path().join("sibling-brief.md");
+    std::fs::write(&brief, "Sibling work.\n").unwrap();
+    let req_id = stdout(
+        flow(&state)
+            .args(["task", "request-dispatch", TASK])
+            .args(["--title", "Update docs", "--brief"])
+            .arg(&brief),
+    );
+    let req_id = req_id.trim();
+    let broken = store
+        .task_dir(TASK)
+        .unwrap()
+        .join("requests")
+        .join("aaaaaaaz.json");
+    std::fs::write(&broken, "{not json").unwrap();
+
+    for args in [&["status"][..], &["status", "--json"][..]] {
+        let out = flow(&state)
+            .args(args)
+            .assert()
+            .success()
+            .get_output()
+            .clone();
+        let stdout = String::from_utf8(out.stdout).unwrap();
+        let stderr = String::from_utf8(out.stderr).unwrap();
+        assert!(stdout.contains(req_id), "{stdout}");
+        assert!(!stdout.contains("aaaaaaaz"), "{stdout}");
+        assert!(
+            stderr.contains(&broken.display().to_string()),
+            "{args:?}: {stderr}"
+        );
+    }
 }
 
 #[test]

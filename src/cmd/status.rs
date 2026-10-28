@@ -30,7 +30,17 @@ struct RequestView<'a> {
 pub fn run(state: &StateDir, all: bool, json: bool) -> anyhow::Result<()> {
     let store = Store::open(state);
     let mut tasks = store.list_tasks()?;
-    let requests = store.pending_requests()?;
+    let requests: Vec<(String, Request)> = store
+        .pending_request_reads()?
+        .into_iter()
+        .filter_map(|(id, request)| match request {
+            Ok(request) => Some((id, request)),
+            Err(err) => {
+                eprintln!("skipping request {id}: {err:#}");
+                None
+            }
+        })
+        .collect();
     let adopted = super::sessions::count_adopted(state, &tasks)?;
     if !all {
         tasks.retain(|(_, status)| status.state.is_open());

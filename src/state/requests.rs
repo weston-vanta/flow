@@ -96,12 +96,23 @@ impl Store {
     }
 
     /// Every request not yet consumed, across all tasks, ordered by task then request id.
+    /// Fails when any request cannot be read.
     pub fn pending_requests(&self) -> anyhow::Result<Vec<(String, Request)>> {
+        self.pending_request_reads()?
+            .into_iter()
+            .map(|(id, request)| Ok((id, request?)))
+            .collect()
+    }
+
+    /// `pending_requests`, with each request's read on its own, so one unreadable request file
+    /// does not hide the others. The error names the file.
+    pub fn pending_request_reads(&self) -> anyhow::Result<Vec<(String, anyhow::Result<Request>)>> {
         let mut out = Vec::new();
         for task in self.task_ids()? {
             let requests = self.tasks.join(&task).join(REQUESTS_DIR);
             for id in request_ids(&requests)? {
-                out.push((id.clone(), read_json(&request_path(&requests, &id))?));
+                let request = read_json(&request_path(&requests, &id));
+                out.push((id, request));
             }
         }
         Ok(out)

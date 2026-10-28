@@ -140,20 +140,7 @@ impl Fixture {
     fn file_request(&self, host: Option<&str>) -> String {
         let store = self.store();
         store
-            .create_task(
-                TaskRecord {
-                    id: REQUESTER.to_owned(),
-                    parent: None,
-                    title: "Split the indexer".to_owned(),
-                    host: "host-a".to_owned(),
-                    cwd: PathBuf::from(WORKTREE),
-                    repo: None,
-                    harness: Harness::Claude,
-                    created: Timestamp::now(),
-                    owner: "supervisor".to_owned(),
-                },
-                "brief",
-            )
+            .create_task(task_record(REQUESTER, "Split the indexer"), "brief")
             .unwrap();
         let new = NewRequest {
             title: "Rebuild the search index",
@@ -163,7 +150,7 @@ impl Fixture {
         store.add_request(REQUESTER, &new).unwrap().0
     }
 
-    /// The id of the only task other than `REQUESTER`.
+    /// The id of the only task other than `REQUESTER` and `OTHER_PARENT`.
     fn dispatched_task(&self) -> String {
         let ids: Vec<String> = self
             .store()
@@ -171,7 +158,7 @@ impl Fixture {
             .unwrap()
             .into_iter()
             .map(|(rec, _)| rec.id)
-            .filter(|id| id != REQUESTER)
+            .filter(|id| id != REQUESTER && id != OTHER_PARENT)
             .collect();
         assert_eq!(ids.len(), 1, "{ids:?}");
         ids[0].clone()
@@ -189,6 +176,22 @@ impl Fixture {
 
 /// The task that files dispatch requests in the request tests.
 const REQUESTER: &str = "aaaaaaab";
+/// A task other than `REQUESTER` that a request's dispatch may name as its parent.
+const OTHER_PARENT: &str = "aaaaaaac";
+
+fn task_record(id: &str, title: &str) -> TaskRecord {
+    TaskRecord {
+        id: id.to_owned(),
+        parent: None,
+        title: title.to_owned(),
+        host: "host-a".to_owned(),
+        cwd: PathBuf::from(WORKTREE),
+        repo: None,
+        harness: Harness::Claude,
+        created: Timestamp::now(),
+        owner: "supervisor".to_owned(),
+    }
+}
 const REQUEST_BRIEF: &str = "Rebuild the search index from the request.\n";
 
 /// `flow dispatch --request <req_id>` with criteria and `--dir WORKTREE`, then `extra`.
@@ -1066,6 +1069,59 @@ fn dispatch_flags_override_the_request() {
     assert_eq!(rec.host, "host-a");
     assert_eq!(rec.title, "Rebuild it nightly");
     assert!(fx.pending_request_ids().is_empty());
+}
+
+#[test]
+fn dispatch_explicit_parent_overrides_the_requester() {
+    let fx = Fixture::new();
+    let req_id = fx.file_request(None);
+    fx.store()
+        .create_task(task_record(OTHER_PARENT, "Plan the indexer"), "brief")
+        .unwrap();
+
+    fx.flow(&starts_working(Vec::new()))
+        .args(request_dispatch_args(&req_id, &["--parent", OTHER_PARENT]))
+        .assert()
+        .success();
+
+    let (rec, _) = fx.store().task(&fx.dispatched_task()).unwrap();
+    assert_eq!(rec.parent.as_deref(), Some(OTHER_PARENT));
+    assert!(fx.pending_request_ids().is_empty());
+}
+
+#[test]
+fn dispatch_says_the_worker_started_when_its_request_cannot_be_consumed() {
+    let fx = Fixture::new();
+    let req_id = fx.file_request(None);
+    // A directory where the consumed request would go makes the rename fail.
+    let requests = fx.store().task_dir(REQUESTER).unwrap().join("requests");
+    fs::create_dir(requests.join(format!("{req_id}.json.consumed"))).unwrap();
+
+    let out = fx
+        .flow(&starts_working(Vec::new()))
+        .args(request_dispatch_args(&req_id, &[]))
+        .assert()
+        .code(1)
+        .get_output()
+        .clone();
+
+    let id = fx.dispatched_task();
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap(),
+        format!("dispatched {id} on host-a ({PANE})\n{HAND_DISPATCH_NOTE}")
+    );
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.starts_with(&format!(
+            "task {id} is dispatched and its worker started, but request {req_id} was not \
+             consumed: "
+        )),
+        "{stderr}"
+    );
+    assert_eq!(stderr.lines().count(), 1, "{stderr}");
+    let (_, status) = fx.store().task(&id).unwrap();
+    assert_eq!(status.state, State::Working);
+    assert_eq!(fx.pending_request_ids(), [req_id]);
 }
 
 #[test]

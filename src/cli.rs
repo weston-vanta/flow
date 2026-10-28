@@ -374,7 +374,7 @@ pub fn run(cli: Cli, state: &StateDir, repo_root: &Path) -> anyhow::Result<ExitC
             cmd::hook::run_supervisor(state, std::io::stdin().lock());
             Ok(())
         }
-        Command::Dispatch(args) => cmd::dispatch::run(state, &args.try_into()?),
+        Command::Dispatch(args) => return cmd::dispatch::run(state, &args.try_into()?),
         Command::Inventory { refresh, json } => cmd::inventory::run(state, refresh, json),
         Command::Sessions { json, summaries } => cmd::sessions::run(state, json, summaries),
         Command::Follow { host, pane_id } => cmd::sessions::run_follow(state, &host, &pane_id),

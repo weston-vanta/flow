@@ -3,6 +3,7 @@
 //! from a brief given here or from a pending dispatch request, which it consumes.
 
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -79,9 +80,10 @@ pub struct DispatchArgs {
 
 /// Creates the task, starts its worker, and prints `dispatched <id> on <host> (<pane_id>)`,
 /// with a note when run outside the supervisor's session. A dispatched request is consumed once
-/// the worker has started.
+/// the worker has started, before anything is printed; when that fails the worker keeps
+/// running, and the failure is reported first and exits 1.
 /// A failure once the task exists leaves it `blocked` with a supervisor hold naming the failure.
-pub fn run(state: &StateDir, args: &DispatchArgs) -> anyhow::Result<()> {
+pub fn run(state: &StateDir, args: &DispatchArgs) -> anyhow::Result<ExitCode> {
     // Workers get task paths (work dir, settings, brief) under the physical shared-volume path:
     // the repo's `state` symlink exists only where this checkout does, and a path through it
     // would put the worker inside this repo.
@@ -158,6 +160,17 @@ pub fn run(state: &StateDir, args: &DispatchArgs) -> anyhow::Result<()> {
                     rec.id
                 );
             }
+            let code = match ask
+                .request
+                .as_ref()
+                .map_or(Ok(()), |request| consume(&store, request, &rec.id))
+            {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(err) => {
+                    eprintln!("{err:#}");
+                    ExitCode::FAILURE
+                }
+            };
             super::print(&format!(
                 "dispatched {} on {} ({pane_id})\n",
                 rec.id, host.name
@@ -165,10 +178,7 @@ pub fn run(state: &StateDir, args: &DispatchArgs) -> anyhow::Result<()> {
             if !supervisor::is_supervisor_session() {
                 super::print(HAND_DISPATCH_NOTE)?;
             }
-            match &ask.request {
-                Some(request) => consume(&store, request, &rec.id),
-                None => Ok(()),
-            }
+            Ok(code)
         }
         Err(err) => {
             if let Err(record_err) = record_failure(&store, &rec.id, &err) {
@@ -233,15 +243,26 @@ impl Ask {
 
 /// Marks the request dispatched as task `id` and logs it on the requesting task.
 fn consume(store: &Store, request: &RequestRef, id: &str) -> anyhow::Result<()> {
-    store
-        .consume_request(&request.req_id)
-        .with_context(|| format!("task {id} is dispatched, but its request was not consumed"))?;
+    let req_id = &request.req_id;
+    store.consume_request(req_id).with_context(|| {
+        format!(
+            "task {id} is dispatched and its worker started, but request {req_id} was not \
+             consumed"
+        )
+    })?;
     append_event(
         store,
         &request.requested_by,
         "request.consumed",
-        json!({"req_id": request.req_id, "task": id}),
+        json!({"req_id": req_id, "task": id}),
     )
+    .with_context(|| {
+        format!(
+            "task {id} is dispatched and request {req_id} consumed, but logging it on task {} \
+             failed",
+            request.requested_by
+        )
+    })
 }
 
 /// `DirSource` checked against the config before anything runs.
