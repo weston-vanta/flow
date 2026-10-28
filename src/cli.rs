@@ -86,6 +86,7 @@ pub enum Command {
         pane_id: String,
     },
     /// Watch tasks and exit 2 with a reason when the supervisor should wake
+    #[command(hide = true)]
     Watch {
         /// Wake after this many seconds even when nothing happened [default: 3600]
         #[arg(long, value_name = "SECS")]
@@ -95,13 +96,16 @@ pub enum Command {
         once: bool,
     },
     /// Drain and acknowledge queued wakes
+    #[command(hide = true)]
     Wake {
         #[command(subcommand)]
         command: WakeCommand,
     },
     /// Stop hook that blocks ending a turn while work is unwatched
+    #[command(hide = true)]
     Guard,
     /// Receive harness hook events
+    #[command(hide = true)]
     Hook {
         #[command(subcommand)]
         command: HookCommand,

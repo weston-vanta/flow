@@ -7,8 +7,9 @@ description: Use when a worker reports `needs-decision` or `blocked`, or a task 
 
 ## 1. Read the question
 
-`flow task show <id>` shows the hold: who it waits on and the worker's question.
-`flow task brief <id>` and `flow task events <id> --last 10` give the context.
+`flow task show <id>` shows the hold: who it waits on and the worker's question. The brief
+(the file `flow task show` names, or `flow task show <id> --json`) and
+`flow task events <id> --last 10` give the context.
 
 ## 2. Decide or escalate
 

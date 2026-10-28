@@ -1,6 +1,6 @@
 ---
 name: flow-dispatch
-description: Use when the user asks for work a worker should do, or `flow requests` lists a worker's dispatch request. Covers choosing a host from `flow inventory`, writing a brief with completion criteria, and starting the worker with `flow dispatch`.
+description: Use when the user asks for work a worker should do, or `flow status` lists a worker's dispatch request. Covers choosing a host from `flow inventory`, writing a brief with completion criteria, and starting the worker with `flow dispatch`.
 ---
 
 # Dispatching a worker
@@ -67,8 +67,10 @@ Tell the user in one line what went where, and end the turn; `flow watch` arms o
 
 ## Worker requests
 
-`flow requests` lists `req-id  from-task  host  title`; `flow requests --json` adds the
-`brief_path`. Dispatch it as above with `--brief-file <brief_path> --parent <from-task>`,
-using the requested host unless the inventory shows a better home, then
-`flow requests consume <req-id>`. A request outside what the user asked for is a question
-for the user (`flow-escalate`), not an automatic dispatch.
+`flow status` lists pending requests under `requests:` as `req-id  from-task  host  title`;
+`flow status --json` adds each request's `brief_path`. Read the brief, then dispatch it with
+`flow dispatch --request <req-id> --criteria "- <criterion>" [--dir <path> | --branch <name>]`:
+the request supplies the brief, the title, the host and `--parent <from-task>`, and is
+consumed once the worker starts. Pass `--host` when the inventory shows a better home, or
+`--title` to retitle it. A request outside what the user asked for is a question for the user
+(`flow-escalate`), not an automatic dispatch.
