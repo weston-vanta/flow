@@ -42,7 +42,8 @@ one reason; handle every row.
 - `request: <id>`: a dispatch request; follow the `flow-dispatch` skill.
 - `adopted-<status>: <host>/<pane>`: a session the user asked you to follow changed state; tell
   them what it is doing, from `flow sessions --summaries` (`flow sessions --json` gives each
-  row's pane). `flow unfollow <host> <pane>` once they no longer need it.
+  row's pane). A summary whose `matched_by` is `cwd` in `--json` is a guess by directory; say
+  so. `flow unfollow <host> <pane>` once they no longer need it.
 - `heartbeat`: nothing happened. Glance at `flow status`; report only real changes.
 - `watch-failed: <error>`: the watcher hit an error. Each distinct error wakes you once;
   the watcher started at your next turn end keeps retrying it in the background and resumes

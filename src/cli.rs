@@ -78,7 +78,7 @@ pub enum Command {
     Follow {
         /// Host the session runs on
         host: String,
-        /// herdr pane the session runs in, as `flow sessions` shows it
+        /// herdr pane the session runs in, from `flow sessions --json`
         pane_id: String,
     },
     /// Stop waking the supervisor for an adopted session

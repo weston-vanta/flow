@@ -345,7 +345,7 @@ Operator:
 - `flow host list [--json]`: known hosts from the cache, gone ones last, marking the one this runs on.
 - `flow host run <name> -- <argv>...`: run a command on a host, passing its output and exit code through.
 - `flow sessions [--summaries] [--json]`: herdr agents across hosts, with their tasks or as adopted sessions; `--summaries` adds each session's latest summary, and `--json` includes summaries and pane ids.
-- `flow follow <host> <pane-id>`: wake the supervisor when an adopted session changes state.
+- `flow follow <host> <pane-id>`: wake the supervisor when an adopted session changes state (pane ids from `flow sessions --json`).
 - `flow unfollow <host> <pane-id>`: stop waking the supervisor for an adopted session.
 - `flow wake drain`: print the queued wakes not yet acknowledged.
 - `flow wake ack --through <N>`: acknowledge every queued wake up to and including N.

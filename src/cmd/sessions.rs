@@ -284,6 +284,7 @@ mod tests {
             },
             task: task.map(str::to_owned),
             session: None,
+            matched_by: None,
             summary: None,
         }
     }

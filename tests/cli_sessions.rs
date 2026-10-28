@@ -261,6 +261,8 @@ fn sessions_lists_adopted_with_summary() {
     let parsed: Value = serde_json::from_str(&json_out).unwrap();
     assert_eq!(parsed[0]["task"], TASK_ID);
     assert_eq!(parsed[1]["task"], Value::Null);
+    assert_eq!(parsed[0]["matched_by"], Value::Null);
+    assert_eq!(parsed[1]["matched_by"], "cwd");
     assert_eq!(parsed[1]["session"]["session_id"], HAND_SESSION_ID);
     assert_eq!(parsed[1]["session"]["name"], "tidy-docs");
     assert!(
@@ -331,6 +333,13 @@ fn sessions_match_hand_sessions_by_the_id_herdr_reports() {
         "{json_out}"
     );
     assert_eq!(parsed[2]["summary"], "Fixing links.");
+    let matched_by: Vec<&Value> = parsed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| &entry["matched_by"])
+        .collect();
+    assert_eq!(matched_by, [&Value::Null, &json!("id"), &json!("id")]);
 }
 
 #[test]
