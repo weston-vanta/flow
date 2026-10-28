@@ -86,6 +86,10 @@ pub struct Agent {
     /// Inventories cached before sessions were recorded held only flow's own agents.
     #[serde(default = "flow_session")]
     pub session: String,
+    /// The id of the agent's own session, such as Claude Code's session id, as herdr reports
+    /// it; `None` when herdr has not reported one.
+    #[serde(default)]
+    pub agent_session_id: Option<String>,
 }
 
 fn flow_session() -> String {
@@ -116,7 +120,7 @@ struct AgentResult {
 }
 
 /// `AgentInfo`: `pane_id`, `workspace_id` and `agent_status` are required; `agent`, `cwd`,
-/// `terminal_title` and `terminal_title_stripped` are nullable.
+/// `terminal_title`, `terminal_title_stripped` and `agent_session` are nullable.
 #[derive(Deserialize)]
 struct AgentInfo {
     pane_id: String,
@@ -126,6 +130,29 @@ struct AgentInfo {
     cwd: Option<PathBuf>,
     terminal_title: Option<String>,
     terminal_title_stripped: Option<String>,
+    #[serde(default)]
+    agent_session: Option<AgentSessionInfo>,
+}
+
+/// `AgentSessionInfo`: the agent's own session, named by `kind` `id` (its id is `value`) or
+/// `path` (`value` is its transcript, named after the id).
+#[derive(Deserialize)]
+struct AgentSessionInfo {
+    kind: String,
+    value: String,
+}
+
+impl AgentSessionInfo {
+    fn id(self) -> Option<String> {
+        match self.kind.as_str() {
+            "id" => Some(self.value),
+            "path" => Path::new(&self.value)
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .map(str::to_owned),
+            _ => None,
+        }
+    }
 }
 
 impl AgentInfo {
@@ -141,6 +168,7 @@ impl AgentInfo {
                 .or(self.terminal_title)
                 .unwrap_or_default(),
             session: session.to_owned(),
+            agent_session_id: self.agent_session.and_then(AgentSessionInfo::id),
         }
     }
 }
@@ -829,6 +857,7 @@ mod tests {
                     cwd: PathBuf::from("/workspaces/acme-worktrees/login-form"),
                     title: "Refactor login form".to_owned(),
                     session: "flow".to_owned(),
+                    agent_session_id: None,
                 },
                 Agent {
                     pane_id: "w2:p1".to_owned(),
@@ -838,12 +867,29 @@ mod tests {
                     cwd: PathBuf::from("/workspaces/acme-worktrees/cache-fix"),
                     title: "Fix cache eviction".to_owned(),
                     session: "flow".to_owned(),
+                    agent_session_id: Some("00000000-0000-4000-8000-0000000000a2".to_owned()),
                 },
             ]
         );
         assert_eq!(
             argvs(&fake),
             [words(&["herdr", "--session", "flow", "agent", "list"])]
+        );
+    }
+
+    #[test]
+    fn agent_session_reported_as_a_path_reads_as_its_file_stem() {
+        let list = AGENT_LIST.replacen(
+            r#""kind":"id","source":"herdr:claude","value":"00000000-0000-4000-8000-0000000000a2""#,
+            r#""kind":"path","source":"herdr:claude","value":"/home/dev/.claude/projects/-w/00000000-0000-4000-8000-0000000000a3.jsonl""#,
+            1,
+        );
+        assert_ne!(list, AGENT_LIST);
+        let (herdr, _) = herdr(vec![ok(&list)]);
+        let agents = herdr.agents(&host()).unwrap();
+        assert_eq!(
+            agents[1].agent_session_id.as_deref(),
+            Some("00000000-0000-4000-8000-0000000000a3")
         );
     }
 

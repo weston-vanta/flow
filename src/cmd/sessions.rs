@@ -31,10 +31,7 @@ pub fn run(state: &StateDir, json: bool) -> anyhow::Result<()> {
     let tasks = Store::open(state).list_tasks()?;
     let claude_home = adopt::claude_home()?;
     let registry = adopt::registry_sessions(&claude_home)?;
-    let mut adopted: Vec<Adopted> = inventories
-        .iter()
-        .flat_map(|inv| adopt::match_agents(&inv.name, &inv.agents, &tasks, &registry))
-        .collect();
+    let mut adopted = adopt::match_agents(&agents_by_host(&inventories), &tasks, &registry);
     add_summaries(&mut adopted, &claude_home);
     if json {
         super::print_json(&adopted)
@@ -47,12 +44,19 @@ pub fn run(state: &StateDir, json: bool) -> anyhow::Result<()> {
 
 /// How many cached agents run no task: the adopted sessions as of each host's last inventory.
 pub fn count_adopted(state: &StateDir, tasks: &[(TaskRecord, Status)]) -> anyhow::Result<usize> {
-    Ok(inventory::load_all(state)?
-        .iter()
+    let inventories: Vec<HostInventory> = inventory::load_all(state)?
+        .into_iter()
         .filter(|inv| !inv.gone)
-        .flat_map(|inv| adopt::match_agents(&inv.name, &inv.agents, tasks, &[]))
-        .filter(|adopted| adopted.task.is_none())
-        .count())
+        .collect();
+    let adopted = adopt::match_agents(&agents_by_host(&inventories), tasks, &[]);
+    Ok(adopted.iter().filter(|entry| entry.task.is_none()).count())
+}
+
+fn agents_by_host(inventories: &[HostInventory]) -> Vec<(&str, &[Agent])> {
+    inventories
+        .iter()
+        .map(|inv| (inv.name.as_str(), inv.agents.as_slice()))
+        .collect()
 }
 
 /// Adds the agent in `pane_id` on `host`, as of the cached inventory, to the follow list.

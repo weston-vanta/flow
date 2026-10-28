@@ -5,10 +5,11 @@
 //! `state/supervisor/follow.json`, names the adopted sessions whose state changes should wake
 //! the supervisor.
 //!
-//! Known limitation: Claude Code's home directory is one directory shared by every machine, so
-//! the registry lists sessions from all of them. The main checkout's cwd exists on every
-//! machine, so a hand session there can be matched to a sibling machine's session and show its
-//! summary.
+//! herdr can report an agent's Claude Code session id, which names its registry session
+//! exactly. An agent it reports none for is matched by cwd. Known limitation of that fallback:
+//! Claude Code's home directory is one directory shared by every machine, so the registry lists
+//! sessions from all of them. The main checkout's cwd exists on every machine, so such an agent
+//! there can be matched to a sibling machine's session and show its summary.
 
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom};
@@ -242,34 +243,49 @@ fn away_summary(line: &[u8]) -> Option<String> {
         .flatten()
 }
 
-/// Matches each of `agents`, herdr's agents on `host`, to the task whose worker runs in its pane
-/// and to a registry session. A task's agent gets the task's own Claude Code session when the
-/// registry has it; any other agent gets the most recently updated session started in its cwd
-/// that no task claims. Summaries are left for the caller to read.
+/// Matches each agent of `hosts`, herdr's agents per host, to the task whose worker runs in its
+/// pane and to a registry session. A task's agent gets the task's own Claude Code session when
+/// the registry has it. Any other agent herdr reports a session id for gets the registry
+/// session with that id, or none when the registry lacks it. The rest get the most recently
+/// updated session started in their cwd that no task or other agent holds, so no session goes
+/// to two agents. Summaries are left for the caller to read.
 pub fn match_agents(
-    host: &str,
-    agents: &[Agent],
+    hosts: &[(&str, &[Agent])],
     tasks: &[(TaskRecord, Status)],
     registry: &[RegistrySession],
 ) -> Vec<Adopted> {
-    let claimed: Vec<&str> = tasks
+    let agents = || {
+        hosts
+            .iter()
+            .flat_map(|(host, agents)| agents.iter().map(move |agent| (*host, agent)))
+    };
+    let mut held: Vec<&str> = tasks
         .iter()
         .filter_map(|(_, status)| status.claude_session.as_ref())
         .map(|claude| claude.session_id.as_str())
+        .chain(agents().filter_map(|(_, agent)| agent.agent_session_id.as_deref()))
         .collect();
-    agents
-        .iter()
-        .map(|agent| {
+    let by_id = |id: &str| registry.iter().find(|s| s.session_id == id);
+    agents()
+        .map(|(host, agent)| {
             let task = task_in_pane(host, agent, tasks);
-            let session = task
+            let task_session = task
                 .and_then(|(_, status)| status.claude_session.as_ref())
-                .and_then(|claude| registry.iter().find(|s| s.session_id == claude.session_id))
-                .or_else(|| {
-                    registry
+                .and_then(|claude| by_id(&claude.session_id));
+            let session = match (task_session, &agent.agent_session_id) {
+                (Some(session), _) => Some(session),
+                (None, Some(id)) => by_id(id),
+                (None, None) => {
+                    let newest = registry
                         .iter()
-                        .filter(|s| s.cwd == agent.cwd && !claimed.contains(&s.session_id.as_str()))
-                        .max_by_key(|s| s.updated)
-                });
+                        .filter(|s| s.cwd == agent.cwd && !held.contains(&s.session_id.as_str()))
+                        .max_by_key(|s| s.updated);
+                    if let Some(session) = newest {
+                        held.push(&session.session_id);
+                    }
+                    newest
+                }
+            };
             Adopted {
                 host: host.to_owned(),
                 agent: agent.clone(),
@@ -420,7 +436,22 @@ mod tests {
             cwd: PathBuf::from(cwd),
             title: String::new(),
             session: session.to_owned(),
+            agent_session_id: None,
         }
+    }
+
+    fn reporting(id: &str, agent: Agent) -> Agent {
+        Agent {
+            agent_session_id: Some(id.to_owned()),
+            ..agent
+        }
+    }
+
+    fn session_ids(adopted: &[Adopted]) -> Vec<Option<&str>> {
+        adopted
+            .iter()
+            .map(|a| a.session.as_ref().map(|s| s.session_id.as_str()))
+            .collect()
     }
 
     fn task(id: &str, host: &str, pane_id: &str, session_id: &str) -> (TaskRecord, Status) {
@@ -479,7 +510,7 @@ mod tests {
             registered("s-hand", "/work/repo", 300),
         ];
 
-        let adopted = match_agents("host-a", &agents, &tasks, &registry);
+        let adopted = match_agents(&[("host-a", &agents)], &tasks, &registry);
 
         let summary: Vec<(Option<&str>, Option<&str>)> = adopted
             .iter()
@@ -500,5 +531,59 @@ mod tests {
         );
         assert!(adopted.iter().all(|a| a.host == "host-a"));
         assert_eq!(adopted[1].agent, agents[1]);
+    }
+
+    #[test]
+    fn match_takes_the_session_herdr_reports() {
+        let agents = [
+            reporting("s1", agent("default", "w1:p1", "/work/repo")),
+            reporting("s2", agent("default", "w1:p2", "/work/repo")),
+        ];
+        let registry = [
+            registered("s1", "/work/repo", 100),
+            registered("s2", "/work/repo", 200),
+            registered("s3", "/work/repo", 300),
+        ];
+
+        let adopted = match_agents(&[("host-a", &agents)], &[], &registry);
+
+        assert_eq!(session_ids(&adopted), [Some("s1"), Some("s2")]);
+    }
+
+    #[test]
+    fn match_leaves_a_reported_session_the_registry_lacks_unmatched() {
+        let agents = [reporting("s-gone", agent("default", "w1:p1", "/work/repo"))];
+        let registry = [registered("s1", "/work/repo", 100)];
+
+        let adopted = match_agents(&[("host-a", &agents)], &[], &registry);
+
+        assert_eq!(session_ids(&adopted), [None]);
+    }
+
+    #[test]
+    fn match_by_cwd_skips_sessions_another_agent_holds() {
+        let agents = [
+            agent("default", "w1:p1", "/work/repo"),
+            agent("default", "w1:p2", "/work/repo"),
+            agent("default", "w1:p3", "/work/repo"),
+        ];
+        let elsewhere = [reporting("s3", agent("default", "w1:p1", "/work/repo"))];
+        let registry = [
+            registered("s1", "/work/repo", 100),
+            registered("s2", "/work/repo", 200),
+            registered("s3", "/work/repo", 300),
+        ];
+
+        let adopted = match_agents(
+            &[("host-a", &agents), ("host-b", &elsewhere)],
+            &[],
+            &registry,
+        );
+
+        assert_eq!(
+            session_ids(&adopted),
+            [Some("s2"), Some("s1"), None, Some("s3")]
+        );
+        assert_eq!(adopted[3].host, "host-b");
     }
 }

@@ -655,6 +655,7 @@ default_branch = "main"
             cwd: cwd.into(),
             title: title.to_owned(),
             session: session.to_owned(),
+            agent_session_id: None,
         }
     }
 

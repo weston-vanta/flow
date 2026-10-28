@@ -262,6 +262,67 @@ fn sessions_lists_adopted_with_summary() {
     );
 }
 
+const SECOND_SESSION_ID: &str = "00000000-0000-4000-8000-000000000003";
+
+/// Two hand sessions in `/work/repo`, each reporting its own Claude Code session id.
+const DEFAULT_AGENTS_WITH_IDS: &str = r#"{"id":"cli:agent:list","result":{"agents":[{"agent":"claude","agent_session":{"agent":"claude","kind":"id","source":"herdr:claude","value":"00000000-0000-4000-8000-000000000001"},"agent_status":"idle","cwd":"/work/repo","pane_id":"w1:p1","terminal_title_stripped":"Tidy docs","workspace_id":"w1"},{"agent":"claude","agent_session":{"agent":"claude","kind":"id","source":"herdr:claude","value":"00000000-0000-4000-8000-000000000003"},"agent_status":"working","cwd":"/work/repo","pane_id":"w1:p2","terminal_title_stripped":"Fix links","workspace_id":"w1"}],"type":"agent_list"}}"#;
+
+#[test]
+fn sessions_match_hand_sessions_by_the_id_herdr_reports() {
+    let fx = Fixture::new();
+    fx.single_host();
+    // Newer than the fixture's session in the same cwd, so a cwd match would pick it for both.
+    let home = fx.dir.path().join("claude");
+    let registry = json!({
+        "sessionId": SECOND_SESSION_ID, "cwd": "/work/repo", "status": "busy",
+        "updatedAt": 1_793_000_900_000_i64, "pidDomain": "machine-0001",
+    });
+    fs::write(home.join("sessions/2.json"), registry.to_string()).unwrap();
+    let summary = json!({"type": "system", "subtype": "away_summary", "content": "Fixing links."});
+    fs::write(
+        home.join(format!("projects/-work-repo/{SECOND_SESSION_ID}.jsonl")),
+        format!("{summary}\n"),
+    )
+    .unwrap();
+    let script = [
+        on("host-a", SERVER_RUNNING),
+        on("host-a", FLOW_AGENTS),
+        on("host-a", DEFAULT_AGENTS_WITH_IDS),
+    ];
+
+    let json_out = stdout_of(fx.flow(&script).args(["sessions", "--json"]));
+
+    let parsed: Value = serde_json::from_str(&json_out).unwrap();
+    let matched: Vec<(&Value, &Value)> = parsed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            (
+                &entry["session"]["session_id"],
+                &entry["agent"]["agent_session_id"],
+            )
+        })
+        .collect();
+    assert_eq!(
+        matched,
+        [
+            (&Value::Null, &Value::Null),
+            (&json!(HAND_SESSION_ID), &json!(HAND_SESSION_ID)),
+            (&json!(SECOND_SESSION_ID), &json!(SECOND_SESSION_ID)),
+        ],
+        "{json_out}"
+    );
+    assert!(
+        parsed[1]["summary"]
+            .as_str()
+            .unwrap()
+            .ends_with("review of the new index page."),
+        "{json_out}"
+    );
+    assert_eq!(parsed[2]["summary"], "Fixing links.");
+}
+
 #[test]
 fn sessions_update_only_agents_in_an_existing_cache() {
     let fx = Fixture::new();
