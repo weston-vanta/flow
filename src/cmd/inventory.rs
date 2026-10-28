@@ -193,7 +193,7 @@ fn refresh_all(state: &StateDir, config: &Config) -> anyhow::Result<Vec<String>>
 }
 
 /// `host`'s fresh inventory keeping what discovery recorded in `record`, or `record` marked
-/// unreachable when the host does not answer.
+/// unreachable, with why, when the host does not answer.
 fn refresh_one(
     runner: &Arc<dyn Runner>,
     config: &Config,
@@ -210,7 +210,13 @@ fn refresh_one(
         }),
         Err(err) if err.is::<Unreachable>() => {
             eprintln!("{err:#}");
-            Ok(inventory::unreachable(host, Some(record.clone()), now))
+            let probe_error = err
+                .downcast_ref::<Unreachable>()
+                .map(|unreachable| unreachable.detail.clone());
+            Ok(HostInventory {
+                probe_error,
+                ..inventory::unreachable(host, Some(record.clone()), now)
+            })
         }
         Err(err) => Err(err),
     }
@@ -278,6 +284,7 @@ fn render_block(inv: &HostInventory, repos: &[Repo], name_width: usize, now: Tim
         return out;
     }
     for (what, error) in [
+        ("probe", &inv.probe_error),
         ("worktree tool", &inv.tool_error),
         ("herdr", &inv.herdr_error),
         ("gh", &inv.pr_error),
@@ -326,6 +333,7 @@ fn never_probed(inv: &HostInventory) -> bool {
         && inv.agents.is_empty()
         && inv.prs.is_empty()
         && inv.missing_repos.is_empty()
+        && inv.probe_error.is_none()
         && inv.tool_error.is_none()
         && inv.herdr_error.is_none()
         && inv.pr_error.is_none()
@@ -355,12 +363,13 @@ fn push_repos(out: &mut String, inv: &HostInventory, repos: &[Repo]) {
         .map(|repo| repo.name.chars().count())
         .max()
         .unwrap_or(0);
+    let dirs: Vec<Option<PathBuf>> = repos.iter().map(|repo| repo_dir(inv, repo)).collect();
     let owners: Vec<Option<&Repo>> = inv
         .worktrees
         .iter()
-        .map(|wt| owning_repo(wt, repos))
+        .map(|wt| owning_repo(wt, repos, &dirs))
         .collect();
-    for repo in repos {
+    for (repo, dir) in repos.iter().zip(&dirs) {
         let (summary, rows) = if inv.missing_repos.contains(&repo.name) {
             (format!("missing at {}", repo.path.display()), Vec::new())
         } else {
@@ -370,7 +379,7 @@ fn push_repos(out: &mut String, inv: &HostInventory, repos: &[Repo]) {
                 .zip(&owners)
                 .filter(|(_, owner)| owner.is_some_and(|owner| owner.name == repo.name))
                 .map(|(wt, _)| wt);
-            repo_summary(inv, repo, worktrees)
+            repo_summary(inv, repo, dir.as_deref(), worktrees)
         };
         out.push_str(&format!("    {:<name_width$}  {summary}\n", repo.name));
         push_indented(out, "      ", &rows);
@@ -390,27 +399,20 @@ fn push_repos(out: &mut String, inv: &HostInventory, repos: &[Repo]) {
 
 /// `on <branch of the main checkout> · <n> worktrees` (either part left out when there is
 /// nothing to say, `unknown` when both are) and a row per worktree of `repo` other than its
-/// main and base checkouts. Worktrees outside the repo's worktrees dir show their path; the dir
-/// is inferred from the worktrees when the repo does not configure one.
+/// main and base checkouts. Worktrees outside `dir`, the repo's worktrees dir, show their path.
 fn repo_summary<'a>(
     inv: &HostInventory,
     repo: &Repo,
+    dir: Option<&Path>,
     worktrees: impl Iterator<Item = &'a Worktree>,
 ) -> (String, Vec<Vec<String>>) {
-    let worktrees: Vec<&Worktree> = worktrees.collect();
-    let inferred = repo
-        .worktrees_dir
-        .is_none()
-        .then(|| inferred_worktrees_dir(&repo.path, worktrees.iter().copied()))
-        .flatten();
-    let dir = inferred.or_else(|| worktree::worktrees_dir(repo));
     let mut main = None;
     let mut rows = Vec::new();
     for wt in worktrees {
         if wt.path == repo.path {
             main = Some(wt);
-        } else if !is_base(wt, dir.as_deref()) {
-            rows.push(worktree_row(inv, wt, dir.as_deref()));
+        } else if !is_base(wt, dir) {
+            rows.push(worktree_row(inv, wt, dir));
         }
     }
     let mut parts = Vec::new();
@@ -428,16 +430,31 @@ fn repo_summary<'a>(
     (parts.join(" · "), rows)
 }
 
+/// `repo`'s worktrees dir on this host: the configured one, else the one inferred from the
+/// worktrees naming the repo (or naming none, in an inventory cached before worktrees named
+/// their repo), else the sibling default.
+fn repo_dir(inv: &HostInventory, repo: &Repo) -> Option<PathBuf> {
+    if repo.worktrees_dir.is_some() {
+        return worktree::worktrees_dir(repo);
+    }
+    let worktrees = inv
+        .worktrees
+        .iter()
+        .filter(|wt| wt.repo == repo.name || wt.repo.is_empty());
+    inferred_worktrees_dir(&repo.path, worktrees).or_else(|| worktree::worktrees_dir(repo))
+}
+
 /// The configured repo `wt` belongs to: the one it names, else, for an inventory cached before
-/// worktrees named their repo, the one whose checkout or worktrees directory holds it.
-fn owning_repo<'a>(wt: &Worktree, repos: &'a [Repo]) -> Option<&'a Repo> {
+/// worktrees named their repo, the one whose checkout or worktrees dir (`dirs`, by repo) holds it.
+fn owning_repo<'a>(wt: &Worktree, repos: &'a [Repo], dirs: &[Option<PathBuf>]) -> Option<&'a Repo> {
     repos.iter().find(|repo| repo.name == wt.repo).or_else(|| {
         if !wt.repo.is_empty() {
             return None;
         }
-        repos.iter().find(|repo| {
-            wt.path == repo.path
-                || worktree::worktrees_dir(repo).is_some_and(|dir| wt.path.starts_with(dir))
+        repos.iter().zip(dirs).find_map(|(repo, dir)| {
+            let holds =
+                wt.path == repo.path || dir.as_deref().is_some_and(|dir| wt.path.starts_with(dir));
+            holds.then_some(repo)
         })
     })
 }
@@ -476,25 +493,34 @@ fn worktree_row(inv: &HostInventory, wt: &Worktree, dir: Option<&Path>) -> Vec<S
     vec![branch_name(wt).to_owned(), pr, path]
 }
 
-/// The directory every worktree of a repo at `repo_path`, other than the main checkout, sits
-/// in: `<dir>` of a worktree at `<dir>/<branch>`, else the worktree's parent. `None` when there
-/// are no such worktrees or they do not all agree.
+/// Where the worktrees of a repo at `repo_path` live, judged from the worktrees other than the
+/// main checkout: the directory holding a `.base` checkout when there is one, else the directory
+/// more than half of them sit in (`<dir>` of a worktree at `<dir>/<branch>`, else the worktree's
+/// parent). `None` when neither exists.
 fn inferred_worktrees_dir<'a>(
     repo_path: &Path,
     worktrees: impl Iterator<Item = &'a Worktree>,
 ) -> Option<PathBuf> {
-    let mut dirs = worktrees
-        .filter(|wt| wt.path != repo_path)
-        .map(|wt| match &wt.branch {
+    let worktrees: Vec<&Worktree> = worktrees.filter(|wt| wt.path != repo_path).collect();
+    let base = worktrees
+        .iter()
+        .find(|wt| wt.path.file_name().is_some_and(|name| name == BASE_DIR));
+    if let Some(base) = base {
+        return base.path.parent().map(Path::to_path_buf);
+    }
+    let dirs: Vec<&Path> = worktrees
+        .iter()
+        .filter_map(|wt| match &wt.branch {
             Some(branch) if wt.path.ends_with(branch) => wt
                 .path
                 .ancestors()
                 .nth(Path::new(branch).components().count()),
             _ => wt.path.parent(),
-        });
-    let first = dirs.next()??;
-    dirs.all(|dir| dir == Some(first))
-        .then(|| first.to_path_buf())
+        })
+        .collect();
+    dirs.iter()
+        .find(|dir| dirs.iter().filter(|other| other == dir).count() * 2 > worktrees.len())
+        .map(|dir| dir.to_path_buf())
 }
 
 fn branch_name(wt: &Worktree) -> &str {
@@ -692,6 +718,7 @@ default_branch = "main"
                 wt("app", "/work/app", Some("main")),
                 wt("lib", "/work/lib", Some("main")),
             ],
+            probe_error: Some("ssh: connect to host host-c.example: timed out".to_owned()),
             pr_error: Some("gh: not logged in".to_owned()),
             missing_repos: vec!["docs".to_owned()],
             ..host("host-c", 180)
@@ -758,6 +785,7 @@ host-a          reachable · load 0.20 · seen 1m ago
     docs  unknown
 
 host-c          unreachable · seen 3h ago
+  probe failed: ssh: connect to host host-c.example: timed out
   gh failed: gh: not logged in
   agents (0)
   repos
@@ -826,6 +854,78 @@ host-a  reachable · seen 0s ago
         );
     }
 
+    #[test]
+    fn render_reads_a_host_whose_first_probe_failed_as_unreachable() {
+        let inventory = HostInventory {
+            reachable: false,
+            probe_error: Some("ssh: Could not resolve hostname".to_owned()),
+            ..host("host-a", 0)
+        };
+        assert_eq!(
+            render(&[inventory]),
+            "\
+host-a  unreachable · seen 0s ago
+  probe failed: ssh: Could not resolve hostname
+  agents (0)
+  repos
+    app   unknown
+    lib   unknown
+    docs  unknown
+"
+        );
+    }
+
+    #[test]
+    fn render_prints_the_path_of_a_worktree_outside_the_majority_dir() {
+        let inventory = HostInventory {
+            worktrees: vec![
+                wt("app", "/work/app", Some("main")),
+                wt("app", "/work/app.wt/a", Some("a")),
+                wt("app", "/work/app.wt/b", Some("b")),
+                wt("app", "/work/elsewhere/c", Some("c")),
+            ],
+            ..host("host-a", 0)
+        };
+        assert_eq!(
+            render(&[inventory]),
+            "\
+host-a  reachable · seen 0s ago
+  agents (0)
+  repos
+    app   on main · 3 worktrees
+      a
+      b
+      c  /work/elsewhere/c
+    lib   unknown
+    docs  unknown
+"
+        );
+    }
+
+    #[test]
+    fn render_files_unnamed_worktrees_under_the_repo_whose_inferred_dir_holds_them() {
+        let inventory = HostInventory {
+            worktrees: vec![
+                wt("", "/work/app", Some("main")),
+                wt("", "/work/app.wt/.base", None),
+                wt("", "/work/app.wt/a", Some("a")),
+            ],
+            prs: vec![pr("", "a", 3)],
+            ..host("host-a", 0)
+        };
+        let repos: Vec<Repo> = repos().into_iter().take(1).collect();
+        assert_eq!(
+            render_all(&[inventory], &repos, None, NOW.parse().unwrap()),
+            "\
+host-a  reachable · seen 0s ago
+  agents (0)
+  repos
+    app  on main · 1 worktree
+      a  PR #3 open
+"
+        );
+    }
+
     fn infer(worktrees: &[Worktree]) -> Option<PathBuf> {
         inferred_worktrees_dir(Path::new("/work/app"), worktrees.iter())
     }
@@ -858,6 +958,33 @@ host-a  reachable · seen 0s ago
             wt("app", "/work/elsewhere/b", Some("b")),
         ];
         assert_eq!(infer(&worktrees), None);
+    }
+
+    #[test]
+    fn inferred_worktrees_dir_prefers_the_base_checkouts_dir() {
+        let worktrees = [
+            wt("app", "/work/app.wt/.base", None),
+            wt("app", "/work/other/a", Some("a")),
+            wt("app", "/work/other/b", Some("b")),
+        ];
+        assert_eq!(infer(&worktrees), Some(PathBuf::from("/work/app.wt")));
+    }
+
+    #[test]
+    fn inferred_worktrees_dir_takes_a_strict_majority() {
+        let majority = [
+            wt("app", "/work/app.wt/a", Some("a")),
+            wt("app", "/work/app.wt/b", Some("b")),
+            wt("app", "/work/elsewhere/c", Some("c")),
+        ];
+        assert_eq!(infer(&majority), Some(PathBuf::from("/work/app.wt")));
+        let half = [
+            wt("app", "/work/app.wt/a", Some("a")),
+            wt("app", "/work/app.wt/b", Some("b")),
+            wt("app", "/work/elsewhere/c", Some("c")),
+            wt("app", "/work/elsewhere/d", Some("d")),
+        ];
+        assert_eq!(infer(&half), None);
     }
 
     #[test]

@@ -72,6 +72,9 @@ pub struct HostInventory {
     pub agents: Vec<Agent>,
     /// Open PRs whose head branch is checked out in one of `worktrees` of the same repo.
     pub prs: Vec<Pr>,
+    /// Why the last probe could not reach the host; cleared by a probe that does.
+    #[serde(default)]
+    pub probe_error: Option<String>,
     /// Why the worktree tool's list failed; `busy` and `dirty_files` are then unknown.
     #[serde(default)]
     pub tool_error: Option<String>,
@@ -102,6 +105,7 @@ impl HostInventory {
             worktrees: Vec::new(),
             agents: Vec::new(),
             prs: Vec::new(),
+            probe_error: None,
             tool_error: None,
             herdr_error: None,
             pr_error: None,

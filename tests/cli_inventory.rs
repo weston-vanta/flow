@@ -158,10 +158,29 @@ fn words(items: &[&str]) -> Vec<String> {
     items.iter().map(|w| (*w).to_owned()).collect()
 }
 
-/// `stdout` with the age of a host refreshed during the run read as `0s`: the second can tick
-/// over between the probe and the render.
+/// The time `days` days before now, as cached inventories record it.
+fn days_ago(days: i64) -> String {
+    (jiff::Timestamp::now() - jiff::SignedDuration::from_hours(24 * days)).to_string()
+}
+
+/// `stdout` with every age in seconds read as `0s`: the second can tick over between a host's
+/// probe and the render.
 fn settled(stdout: &str) -> String {
-    stdout.replace("seen 1s ago", "seen 0s ago")
+    let mut out = String::new();
+    let mut rest = stdout;
+    while let Some(at) = rest.find("seen ") {
+        let (before, from) = rest.split_at(at + "seen ".len());
+        out.push_str(before);
+        let digits = from.len() - from.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        if digits > 0 && from[digits..].starts_with("s ago") {
+            out.push('0');
+            rest = &from[digits..];
+        } else {
+            rest = from;
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 fn stdout_of(cmd: &mut Command) -> String {
@@ -187,6 +206,10 @@ fn single_host_config(fx: &Fixture) {
 fn refresh_parses_worktrees_load_and_joins_prs() {
     let fx = Fixture::new();
     single_host_config(&fx);
+    let mut stale = bare_record("host-a", "env-0001", "host-a.example");
+    stale["reachable"] = json!(false);
+    stale["probe_error"] = json!("ssh: connect to host host-a.example: timed out");
+    fx.write_cache("env-0001", &stale);
     let mut script = host_a_probes();
     script.push(on("host-a", PR_LIST));
 
@@ -209,6 +232,11 @@ host-a  reachable · load 0.26 · seen 0s ago
     assert_eq!(cached["name"], "host-a");
     assert_eq!(cached["env_id"], "env-0001");
     assert_eq!(cached["reachable"], true);
+    assert_eq!(
+        cached["probe_error"],
+        Value::Null,
+        "a probe that answers clears it"
+    );
     assert_eq!(cached["load1"], 0.26);
     assert_eq!(
         cached["worktrees"],
@@ -275,7 +303,7 @@ host-a  reachable · load 0.26 · seen 0s ago
 #[test]
 fn unreachable_host_is_recorded_not_fatal() {
     let fx = Fixture::new();
-    let earlier = "2026-10-26T09:00:00Z";
+    let earlier = days_ago(2);
     fx.write_cache(
         "env-0002",
         &json!({
@@ -315,6 +343,7 @@ fn unreachable_host_is_recorded_not_fatal() {
         blocks[1],
         "\
 host-b  unreachable · seen 2d ago
+  probe failed: ssh: Could not resolve hostname host-b.example: Name or service not known
   agents (0)
   repos
     example-repo  1 worktree
@@ -325,7 +354,11 @@ host-b  unreachable · seen 2d ago
 
     let cached = fx.cached("env-0002");
     assert_eq!(cached["reachable"], false);
-    assert_eq!(cached["seen"], earlier);
+    assert_eq!(cached["seen"], earlier.as_str());
+    assert_eq!(
+        cached["probe_error"],
+        "ssh: Could not resolve hostname host-b.example: Name or service not known"
+    );
     assert_eq!(cached["load1"], Value::Null);
     assert_eq!(cached["worktrees"][0]["branch"], "feature-y");
     assert_eq!(cached["prs"][0]["number"], 14);
@@ -399,7 +432,7 @@ fn gh_failure_is_recorded_in_cache_and_output() {
     with_cache.write_cache(
         "env-0001",
         &json!({
-            "name": "host-a", "env_id": "env-0001", "seen": "2026-10-26T09:00:00Z",
+            "name": "host-a", "env_id": "env-0001", "seen": days_ago(2),
             "reachable": true, "load1": 0.5, "worktrees": [], "agents": [],
             "prs": [
                 {"repo": "example-repo", "branch": "feature-x", "number": 12, "url": "https://github.com/example/acme/pull/12", "state": "OPEN"},
@@ -811,7 +844,7 @@ fn ona_fixture() -> PathBuf {
 fn bare_record(name: &str, env_id: &str, ssh_alias: &str) -> Value {
     json!({
         "name": name, "env_id": env_id, "ssh_alias": ssh_alias,
-        "seen": "2026-10-20T09:00:00Z", "reachable": true, "load1": null,
+        "seen": days_ago(8), "reachable": true, "load1": null,
         "worktrees": [], "agents": [], "prs": [],
     })
 }
