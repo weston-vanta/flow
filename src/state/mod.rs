@@ -86,9 +86,13 @@ impl Store {
 
     /// The task's `brief.md`, verbatim.
     pub fn brief(&self, id: &str) -> anyhow::Result<String> {
-        let dir = self.existing_task_dir(id)?;
-        let path = dir.join(BRIEF_FILE);
+        let path = self.brief_path(id)?;
         std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))
+    }
+
+    /// The path of the task's `brief.md`, failing when the task does not exist.
+    pub fn brief_path(&self, id: &str) -> anyhow::Result<PathBuf> {
+        Ok(self.existing_task_dir(id)?.join(BRIEF_FILE))
     }
 
     /// Every task, oldest first (ids sort as strings by creation time).

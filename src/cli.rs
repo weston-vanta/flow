@@ -237,8 +237,6 @@ pub enum TaskCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Print a task's brief in full
-    Brief { id: String },
     /// Show a task's event log
     Events {
         id: String,
@@ -413,7 +411,6 @@ fn run_host(command: HostCommand, state: &StateDir) -> anyhow::Result<ExitCode> 
 fn run_task(command: TaskCommand, state: &StateDir) -> anyhow::Result<()> {
     match command {
         TaskCommand::Show { id, json } => cmd::task_show::run(state, &id, json),
-        TaskCommand::Brief { id } => cmd::task_brief::run(state, &id),
         TaskCommand::Events { id, last, json } => cmd::task_events::run(state, &id, last, json),
         TaskCommand::Status {
             id,

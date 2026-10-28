@@ -1,3 +1,6 @@
+use std::path::Path;
+
+use anyhow::Context;
 use jiff::Timestamp;
 use serde::Serialize;
 
@@ -17,6 +20,11 @@ struct ShowView<'a> {
 
 /// A key/value block for the task, then the head of its brief.
 pub fn run(state: &StateDir, id: &str, json: bool) -> anyhow::Result<()> {
+    // The brief's path is printed for the reader to open, so it is absolute and the same on
+    // every host.
+    let state = &state
+        .canonical()
+        .with_context(|| format!("resolving {}", state.root().display()))?;
     let store = Store::open(state);
     let (task, status) = store.task(id)?;
     let brief = store.brief(id)?;
@@ -27,10 +35,23 @@ pub fn run(state: &StateDir, id: &str, json: bool) -> anyhow::Result<()> {
             brief: &brief,
         });
     }
-    super::print(&render_text(&task, &status, &brief, Timestamp::now()))
+    let brief_path = store.brief_path(id)?;
+    super::print(&render_text(
+        &task,
+        &status,
+        &brief,
+        &brief_path,
+        Timestamp::now(),
+    ))
 }
 
-fn render_text(task: &TaskRecord, status: &Status, brief: &str, now: Timestamp) -> String {
+fn render_text(
+    task: &TaskRecord,
+    status: &Status,
+    brief: &str,
+    brief_path: &Path,
+    now: Timestamp,
+) -> String {
     let mut fields = vec![
         ("id", task.id.clone()),
         ("title", task.title.clone()),
@@ -75,8 +96,8 @@ fn render_text(task: &TaskRecord, status: &Status, brief: &str, now: Timestamp) 
     if lines.len() > BRIEF_HEAD_LINES {
         let more = lines.len() - BRIEF_HEAD_LINES;
         out.push_str(&format!(
-            "… ({more} more lines; flow task brief {})\n",
-            task.id
+            "… ({more} more lines in {})\n",
+            brief_path.display()
         ));
     }
     out

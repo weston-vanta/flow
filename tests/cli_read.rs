@@ -125,7 +125,10 @@ fn task_show_elides_brief() {
     assert!(out.contains("title       Add retry\n"), "{out}");
     assert!(out.contains("state       pending\n"), "{out}");
     let expected_head: String = brief.lines().take(10).map(|l| format!("{l}\n")).collect();
-    let expected_tail = "… (30 more lines; flow task brief aaaaaaab)\n";
+    let brief_path = std::fs::canonicalize(&state)
+        .unwrap()
+        .join("tasks/aaaaaaab/brief.md");
+    let expected_tail = format!("… (30 more lines in {})\n", brief_path.display());
     assert!(
         out.ends_with(&format!("\n{expected_head}{expected_tail}")),
         "{out}"
@@ -134,16 +137,17 @@ fn task_show_elides_brief() {
 }
 
 #[test]
-fn task_brief_prints_verbatim() {
+fn task_brief_is_not_a_command() {
     let (_repo, state, store) = setup();
-    let brief = "# Retry\n\nAdd retry.\n\n\n";
     store
-        .create_task(record("aaaaaaab", "Add retry"), brief)
+        .create_task(record("aaaaaaab", "Add retry"), "brief")
         .unwrap();
 
-    let out = stdout(flow(&state).args(["task", "brief", "aaaaaaab"]));
-
-    assert_eq!(out, brief);
+    flow(&state)
+        .args(["task", "brief", "aaaaaaab"])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains("unrecognized subcommand"));
 }
 
 #[test]
