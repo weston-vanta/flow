@@ -77,7 +77,7 @@ Operator:
 - `flow inventory [--refresh] [--json]`: worktrees, agents, and PRs per host; `--refresh` first discovers hosts from Ona (or the static list), probes each running one, and lists open PRs.
 - `flow host list [--json]`: known hosts from the cache, gone ones last, marking the one this runs on.
 - `flow host run <name> -- <argv>...`: run a command on a host, passing its output and exit code through.
-- `flow sessions [--json]`: herdr agents across hosts, with their tasks or as adopted sessions.
+- `flow sessions [--summaries] [--json]`: herdr agents across hosts, with their tasks or as adopted sessions; `--summaries` adds each session's latest summary, and `--json` includes summaries and pane ids.
 - `flow follow <host> <pane-id>`: wake the supervisor when an adopted session changes state.
 - `flow unfollow <host> <pane-id>`: stop waking the supervisor for an adopted session.
 - `flow wake drain`: print the queued wakes not yet acknowledged.

@@ -70,6 +70,9 @@ pub enum Command {
         /// Print raw JSON instead of the compact view
         #[arg(long)]
         json: bool,
+        /// Print each session's latest summary under its row
+        #[arg(long)]
+        summaries: bool,
     },
     /// Wake the supervisor when an adopted session changes state
     Follow {
@@ -385,7 +388,7 @@ pub fn run(cli: Cli, state: &StateDir, repo_root: &Path) -> anyhow::Result<ExitC
         },
         Command::Dispatch(args) => cmd::dispatch::run(state, &args.try_into()?),
         Command::Inventory { refresh, json } => cmd::inventory::run(state, refresh, json),
-        Command::Sessions { json } => cmd::sessions::run(state, json),
+        Command::Sessions { json, summaries } => cmd::sessions::run(state, json, summaries),
         Command::Follow { host, pane_id } => cmd::sessions::run_follow(state, &host, &pane_id),
         Command::Unfollow { host, pane_id } => cmd::sessions::run_unfollow(state, &host, &pane_id),
         Command::Watch { heartbeat, once } => return cmd::watch::run(state, heartbeat, once),

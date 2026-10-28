@@ -49,7 +49,8 @@ At the start of every session, fresh or resumed, before anything else:
 1. `flow wake drain`: wakes queued while no supervisor ran. Handle them with the `flow-wake`
    skill and acknowledge them.
 2. `flow status`: open tasks, their holds, adopted sessions.
-3. `flow sessions`: herdr agents on every host, matched to tasks or shown as adopted.
+3. `flow sessions --summaries`: herdr agents on every host, matched to tasks or shown as
+   adopted, with what each session is doing.
 4. `flow requests`: dispatch requests from workers not yet handled (`flow-dispatch` skill).
 5. If `state/operator.md` exists, read it. It holds operator-specific conventions (the
    monorepo's workflow, preferred hosts) and is never committed.

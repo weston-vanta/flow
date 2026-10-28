@@ -36,7 +36,7 @@ const SERVER_RUNNING: &str = "status: running\nversion: 0.9.5\nendpoint_compatib
      private_protocol: 22\nprivate_protocol_compatible: yes\n\
      socket: /home/dev/.config/herdr/sessions/flow/herdr.sock\n";
 
-const FLOW_AGENTS: &str = r#"{"id":"cli:agent:list","result":{"agents":[{"agent":"claude","agent_status":"working","cwd":"/work/repo.wt/feature","pane_id":"w1:p1","terminal_title":"✳ Build feature","terminal_title_stripped":"Build feature","workspace_id":"w1"}],"type":"agent_list"}}"#;
+const FLOW_AGENTS: &str = r#"{"id":"cli:agent:list","result":{"agents":[{"agent":"claude","agent_status":"working","cwd":"/work/repo.wt/feature","pane_id":"w1:p1","terminal_title":"✳ aaaaaaab","terminal_title_stripped":"aaaaaaab","workspace_id":"w1"}],"type":"agent_list"}}"#;
 
 const DEFAULT_AGENTS: &str = r#"{"id":"cli:agent:list","result":{"agents":[{"agent":"claude","agent_status":"idle","cwd":"/work/repo","pane_id":"w1:p1","terminal_title":"✳ Tidy docs","terminal_title_stripped":"Tidy docs","workspace_id":"w1"}],"type":"agent_list"}}"#;
 
@@ -221,9 +221,9 @@ fn sessions_lists_adopted_with_summary() {
 
     assert_eq!(
         stdout,
-        "host-a  w1:p1  working  aaaaaaab  Build feature\n\
-         host-a  w1:p1  idle     adopted   Tidy docs      Moved the guides into one folder and \
-         fixed the links between them; waiting for …\n"
+        "HOST    STATUS   TASK      TITLE\n\
+         host-a  working  aaaaaaab  Build feature\n\
+         host-a  idle     adopted   Tidy docs\n"
     );
     let argvs: Vec<Vec<String>> = fx.calls().into_iter().map(|(_, argv)| argv).collect();
     assert_eq!(
@@ -246,6 +246,16 @@ fn sessions_lists_adopted_with_summary() {
         .map(|agent| &agent["session"])
         .collect();
     assert_eq!(sessions, [&json!("flow"), &json!("default")]);
+
+    let stdout = stdout_of(fx.flow(&host_a_agents()).args(["sessions", "--summaries"]));
+    assert_eq!(
+        stdout,
+        "HOST    STATUS   TASK      TITLE\n\
+         host-a  working  aaaaaaab  Build feature\n\
+         host-a  idle     adopted   Tidy docs\n\
+         \x20                          Moved the guides into one folder and fixed the links \
+         between them; waiting for a review of the new …\n"
+    );
 
     let json_out = stdout_of(fx.flow(&host_a_agents()).args(["sessions", "--json"]));
     let parsed: Value = serde_json::from_str(&json_out).unwrap();
@@ -324,6 +334,22 @@ fn sessions_match_hand_sessions_by_the_id_herdr_reports() {
 }
 
 #[test]
+fn sessions_without_agents_say_so() {
+    let fx = Fixture::new();
+    fx.single_host();
+    let script = [
+        on("host-a", SERVER_RUNNING),
+        on(
+            "host-a",
+            r#"{"id":"cli:agent:list","result":{"agents":[],"type":"agent_list"}}"#,
+        ),
+        default_not_running("host-a"),
+    ];
+
+    assert_eq!(stdout_of(fx.flow(&script).arg("sessions")), "no agents\n");
+}
+
+#[test]
 fn sessions_update_only_agents_in_an_existing_cache() {
     let fx = Fixture::new();
     fx.single_host();
@@ -344,7 +370,10 @@ fn sessions_update_only_agents_in_an_existing_cache() {
 
     let stdout = stdout_of(fx.flow(&script).arg("sessions"));
 
-    assert_eq!(stdout, "host-a  w1:p1  working  aaaaaaab  Build feature\n");
+    assert_eq!(
+        stdout,
+        "HOST    STATUS   TASK      TITLE\nhost-a  working  aaaaaaab  Build feature\n"
+    );
     let cached = fx.cached("env-0001");
     assert_ne!(cached["seen"], earlier["seen"]);
     assert_eq!(cached["agents"][0]["pane_id"], "w1:p1");
@@ -383,10 +412,9 @@ fn sessions_record_a_flow_session_failure() {
         stderr.contains("herdr --session flow status server") && stderr.contains("internal error"),
         "{stderr}"
     );
-    assert_eq!(stdout.lines().count(), 1, "{stdout}");
-    assert!(
-        stdout.starts_with("host-a  w1:p1  idle  adopted  Tidy docs  Moved the guides"),
-        "{stdout}"
+    assert_eq!(
+        stdout,
+        "HOST    STATUS  TASK     TITLE\nhost-a  idle    adopted  Tidy docs\n"
     );
     let cached = fx.cached("env-0001");
     assert_eq!(cached["herdr_error"], stderr.trim_end());
@@ -420,11 +448,8 @@ fn sessions_fall_back_to_cache_for_unreachable_host() {
     assert_eq!(stderr.lines().count(), 1, "{stderr}");
     assert!(stderr.starts_with("host unreachable: host-b"), "{stderr}");
     let lines: Vec<&str> = stdout.lines().collect();
-    assert_eq!(lines.len(), 3, "{stdout}");
-    assert_eq!(
-        lines[2],
-        "host-b  w5:p1  blocked  adopted   Upgrade toolchain"
-    );
+    assert_eq!(lines.len(), 4, "{stdout}");
+    assert_eq!(lines[3], "host-b  blocked  adopted   Upgrade toolchain");
     assert_eq!(fx.cached("env-0002"), host_b_cache());
 }
 
@@ -472,12 +497,12 @@ fn follow_checks_the_pane_and_is_idempotent() {
         .args(["follow", "host-b", "w9:p9"])
         .assert()
         .code(2)
-        .stderr("no agent in pane w9:p9 on host-b (run flow sessions)\n");
+        .stderr("no agent in pane w9:p9 on host-b (run flow sessions --json)\n");
     fx.flow(&[])
         .args(["follow", "host-a", "w5:p1"])
         .assert()
         .code(2)
-        .stderr("no agent in pane w5:p1 on host-a (run flow sessions)\n");
+        .stderr("no agent in pane w5:p1 on host-a (run flow sessions --json)\n");
     assert!(fx.calls().is_empty());
 }
 

@@ -9,7 +9,8 @@ use jiff::Timestamp;
 
 use super::Refused;
 use crate::adopt::{self, Adopted, FollowList, Followed};
-use crate::herdr::{self, Agent};
+use crate::herdr::{self, Agent, AgentStatus};
+use crate::host;
 use crate::inventory::{self, HostInventory};
 use crate::paths::StateDir;
 use crate::render;
@@ -19,11 +20,13 @@ use crate::state::config::{Config, Host};
 use crate::state::task::{Status, TaskRecord};
 
 const ADOPTED: &str = "adopted";
-const SUMMARY_WIDTH: usize = 80;
+const HEADER: [&str; 4] = ["HOST", "STATUS", "TASK", "TITLE"];
+const SUMMARY_WIDTH: usize = 100;
 
 /// Lists every herdr agent on every live host, asking herdr now. A host that answers gets
 /// its cached agents and herdr error replaced; one that does not shows its cached agents.
-pub fn run(state: &StateDir, json: bool) -> anyhow::Result<()> {
+/// Session summaries are read for `json` and `summaries`.
+pub fn run(state: &StateDir, json: bool, summaries: bool) -> anyhow::Result<()> {
     let config = Config::load(state)?;
     let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
     let hosts = inventory::live_hosts(state)?;
@@ -32,13 +35,20 @@ pub fn run(state: &StateDir, json: bool) -> anyhow::Result<()> {
     let claude_home = adopt::claude_home()?;
     let registry = adopt::registry_sessions(&claude_home)?;
     let mut adopted = adopt::match_agents(&agents_by_host(&inventories), &tasks, &registry);
-    add_summaries(&mut adopted, &claude_home);
+    if json || summaries {
+        add_summaries(&mut adopted, &claude_home);
+    }
     if json {
         super::print_json(&adopted)
     } else if adopted.is_empty() {
         super::print("no agents\n")
     } else {
-        super::print(&render_text(&adopted))
+        let local = host::local_env_id();
+        let local_host = inventories
+            .iter()
+            .find(|inv| Some(inv.env_id.as_str()) == local.as_deref())
+            .map(|inv| inv.name.as_str());
+        super::print(&render_text(&adopted, &tasks, local_host, summaries))
     }
 }
 
@@ -75,7 +85,7 @@ pub fn run_follow(state: &StateDir, host: &str, pane_id: &str) -> anyhow::Result
         .or_else(|| agents.first())
         .ok_or_else(|| {
             Refused(format!(
-                "no agent in pane {pane_id} on {host} (run flow sessions)"
+                "no agent in pane {pane_id} on {host} (run flow sessions --json)"
             ))
         })?;
     let followed = Followed {
@@ -160,29 +170,276 @@ fn add_summaries(adopted: &mut [Adopted], claude_home: &Path) {
     }
 }
 
-/// `host  pane  status  task-or-adopted  title  summary`, the summary cut to `SUMMARY_WIDTH`.
-fn render_text(adopted: &[Adopted]) -> String {
-    let rows: Vec<Vec<String>> = adopted
+/// A table of `HOST  STATUS  TASK  TITLE`, the local host's agents first, then by host, status
+/// (`working`, `blocked`, the rest), and title. TASK is the agent's task or `adopted`; TITLE is
+/// the task's title for a worker, else herdr's title, or the pane id when there is none. With
+/// `summaries`, a known summary follows its agent on a line of its own, indented to TITLE and
+/// cut to `SUMMARY_WIDTH`.
+fn render_text(
+    adopted: &[Adopted],
+    tasks: &[(TaskRecord, Status)],
+    local_host: Option<&str>,
+    summaries: bool,
+) -> String {
+    let mut sorted: Vec<(&Adopted, &str)> = adopted
         .iter()
-        .map(|entry| {
-            let mut row = vec![
+        .map(|entry| (entry, title(entry, tasks)))
+        .collect();
+    sorted.sort_by(|a, b| sort_key(a, local_host).cmp(&sort_key(b, local_host)));
+    let rows: Vec<Vec<String>> = std::iter::once(HEADER.map(str::to_owned).to_vec())
+        .chain(sorted.iter().map(|(entry, title)| {
+            vec![
                 entry.host.clone(),
-                entry.agent.pane_id.clone(),
                 entry.agent.status.as_str().to_owned(),
                 entry.task.clone().unwrap_or_else(|| ADOPTED.to_owned()),
-                entry.agent.title.clone(),
-                entry
-                    .summary
-                    .as_deref()
-                    .map_or_else(String::new, |summary| {
-                        render::truncate(summary, SUMMARY_WIDTH)
-                    }),
-            ];
-            while row.last().is_some_and(String::is_empty) {
-                row.pop();
-            }
-            row
-        })
+                (*title).to_owned(),
+            ]
+        }))
         .collect();
-    render::table(&rows)
+    let indent = " ".repeat(
+        (0..HEADER.len() - 1)
+            .map(|i| {
+                rows.iter()
+                    .map(|row| row[i].chars().count())
+                    .max()
+                    .unwrap_or(0)
+                    + 2
+            })
+            .sum(),
+    );
+    let table = render::table(&rows);
+    let mut lines = table.lines();
+    let mut out = String::new();
+    let mut push = |line: &str| {
+        out.push_str(line.trim_end());
+        out.push('\n');
+    };
+    if let Some(header) = lines.next() {
+        push(header);
+    }
+    for (line, (entry, _)) in lines.zip(&sorted) {
+        push(line);
+        let summary = (entry.summary.as_deref()).filter(|s| summaries && !s.trim().is_empty());
+        if let Some(summary) = summary {
+            push(&format!(
+                "{indent}{}",
+                render::truncate(summary, SUMMARY_WIDTH)
+            ));
+        }
+    }
+    out
+}
+
+fn sort_key<'a>(
+    (entry, title): &(&'a Adopted, &'a str),
+    local_host: Option<&str>,
+) -> (bool, &'a str, u8, &'a str) {
+    let status = match entry.agent.status {
+        AgentStatus::Working => 0,
+        AgentStatus::Blocked => 1,
+        _ => 2,
+    };
+    (
+        Some(entry.host.as_str()) != local_host,
+        &entry.host,
+        status,
+        title,
+    )
+}
+
+/// The title of `entry`'s task when it has one, else herdr's title, else its pane id.
+fn title<'a>(entry: &'a Adopted, tasks: &'a [(TaskRecord, Status)]) -> &'a str {
+    let task_title = entry.task.as_deref().and_then(|id| {
+        tasks
+            .iter()
+            .find(|(record, _)| record.id == id)
+            .map(|(record, _)| record.title.as_str())
+    });
+    match task_title {
+        Some(title) => title,
+        None if entry.agent.title.is_empty() => &entry.agent.pane_id,
+        None => &entry.agent.title,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+    use crate::state::task::Harness;
+
+    fn entry(host: &str, status: AgentStatus, title: &str, task: Option<&str>) -> Adopted {
+        Adopted {
+            host: host.to_owned(),
+            agent: Agent {
+                pane_id: "w1:p3".to_owned(),
+                workspace_id: "w1".to_owned(),
+                agent: "claude".to_owned(),
+                status,
+                cwd: PathBuf::from("/work/app"),
+                title: title.to_owned(),
+                session: "default".to_owned(),
+                agent_session_id: None,
+            },
+            task: task.map(str::to_owned),
+            session: None,
+            summary: None,
+        }
+    }
+
+    fn task(id: &str, title: &str) -> (TaskRecord, Status) {
+        let record = TaskRecord {
+            id: id.to_owned(),
+            parent: None,
+            title: title.to_owned(),
+            host: "host-a".to_owned(),
+            cwd: PathBuf::from("/work/app.wt/feature-x"),
+            repo: Some("app".to_owned()),
+            harness: Harness::Claude,
+            created: Timestamp::UNIX_EPOCH,
+            owner: "supervisor".to_owned(),
+        };
+        (record, Status::pending(Timestamp::UNIX_EPOCH))
+    }
+
+    fn summarized(summary: &str, entry: Adopted) -> Adopted {
+        Adopted {
+            summary: Some(summary.to_owned()),
+            ..entry
+        }
+    }
+
+    #[test]
+    fn render_lays_out_a_header_and_a_summary_line_per_agent() {
+        let adopted = [
+            entry("host-b", AgentStatus::Idle, "Write notes", Some("2sqz6nfw")),
+            summarized(
+                "Building feature-x; waiting on review.",
+                entry("host-a", AgentStatus::Working, "Build feature-x", None),
+            ),
+        ];
+
+        assert_eq!(
+            render_text(&adopted, &[], Some("host-a"), true),
+            "HOST    STATUS   TASK      TITLE\n\
+             host-a  working  adopted   Build feature-x\n\
+             \x20                          Building feature-x; waiting on review.\n\
+             host-b  idle     2sqz6nfw  Write notes\n"
+        );
+    }
+
+    #[test]
+    fn render_puts_the_local_host_first_then_sorts_by_host_status_and_title() {
+        let adopted = [
+            entry("host-a", AgentStatus::Idle, "s1", None),
+            entry("host-c", AgentStatus::Idle, "s2", None),
+            entry("host-b", AgentStatus::Done, "s3", None),
+            entry("host-b", AgentStatus::Idle, "s4", None),
+            entry("host-b", AgentStatus::Blocked, "s5", None),
+            entry("host-b", AgentStatus::Unknown, "s0", None),
+            entry("host-b", AgentStatus::Working, "s6", None),
+        ];
+
+        let titles: Vec<String> = render_text(&adopted, &[], Some("host-c"), true)
+            .lines()
+            .skip(1)
+            .map(|line| line.rsplit(' ').next().unwrap().to_owned())
+            .collect();
+
+        assert_eq!(titles, ["s2", "s1", "s6", "s5", "s0", "s3", "s4"]);
+    }
+
+    #[test]
+    fn render_cuts_the_summary_at_100_characters() {
+        // 98 characters, then a two-byte character as the 99th and more text after it.
+        let summary = format!("{}éxyz", "a".repeat(98));
+        let adopted = [summarized(
+            &summary,
+            entry("host-a", AgentStatus::Idle, "s1", None),
+        )];
+
+        let text = render_text(&adopted, &[], None, true);
+
+        let line = text.lines().nth(2).unwrap().trim_start();
+        assert_eq!(line, format!("{}é…", "a".repeat(98)));
+        assert_eq!(line.chars().count(), 100);
+        let short = format!("{}é", "a".repeat(99));
+        let adopted = [summarized(
+            &short,
+            entry("host-a", AgentStatus::Idle, "s1", None),
+        )];
+        assert_eq!(
+            render_text(&adopted, &[], None, true)
+                .lines()
+                .nth(2)
+                .unwrap()
+                .trim_start(),
+            short
+        );
+    }
+
+    #[test]
+    fn render_names_an_untitled_agent_by_its_pane_and_skips_a_missing_summary() {
+        let adopted = [
+            entry("host-a", AgentStatus::Idle, "", None),
+            summarized("", entry("host-a", AgentStatus::Idle, "s1", None)),
+        ];
+
+        assert_eq!(
+            render_text(&adopted, &[], None, true),
+            "HOST    STATUS  TASK     TITLE\n\
+             host-a  idle    adopted  s1\n\
+             host-a  idle    adopted  w1:p3\n"
+        );
+    }
+
+    #[test]
+    fn render_has_no_trailing_whitespace() {
+        let adopted = [
+            summarized(
+                "trailing spaces   ",
+                entry("host-a", AgentStatus::Working, "padded title  ", None),
+            ),
+            entry("host-b", AgentStatus::Idle, "s1", Some("aaaaaaab")),
+        ];
+
+        let text = render_text(&adopted, &[], Some("host-a"), true);
+
+        assert!(text.ends_with('\n'));
+        for line in text.lines() {
+            assert_eq!(line, line.trim_end(), "{text:?}");
+        }
+        assert_eq!(text.lines().count(), 4);
+    }
+
+    #[test]
+    fn render_without_summaries_prints_one_line_per_agent() {
+        let adopted = [summarized(
+            "Building feature-x; waiting on review.",
+            entry("host-a", AgentStatus::Working, "Build feature-x", None),
+        )];
+
+        assert_eq!(
+            render_text(&adopted, &[], Some("host-a"), false),
+            "HOST    STATUS   TASK     TITLE\n\
+             host-a  working  adopted  Build feature-x\n"
+        );
+    }
+
+    #[test]
+    fn render_titles_a_worker_by_its_task() {
+        let adopted = [
+            entry("host-a", AgentStatus::Working, "aaaaaaab", Some("aaaaaaab")),
+            entry("host-a", AgentStatus::Idle, "Hand session", None),
+        ];
+        let tasks = [task("aaaaaaab", "Build feature-x")];
+
+        assert_eq!(
+            render_text(&adopted, &tasks, None, false),
+            "HOST    STATUS   TASK      TITLE\n\
+             host-a  working  aaaaaaab  Build feature-x\n\
+             host-a  idle     adopted   Hand session\n"
+        );
+    }
 }
