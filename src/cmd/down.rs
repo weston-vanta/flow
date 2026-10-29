@@ -47,13 +47,10 @@ pub fn run(state: &StateDir, yes: bool) -> anyhow::Result<ExitCode> {
     if let Some(host) = &host {
         close_workspace(&herdr, host, &lock)?;
     }
-    supervisor::mark_stopped(state)?;
-    let kept = match &lock.claude_session {
-        Some(session) => format!(", keeping session {session} to resume"),
-        None => String::new(),
-    };
+    let marked = supervisor::mark_stopped(state)?;
     super::print(&format!(
-        "marked the supervisor stopped in state/supervisor/lock.json{kept}\n"
+        "{}\n",
+        stopped_line(marked, lock.claude_session.as_deref())
     ))?;
     for line in clear_watch_lock(state, &Proc)? {
         super::print(&format!("{line}\n"))?;
@@ -72,6 +69,19 @@ pub fn run(state: &StateDir, yes: bool) -> anyhow::Result<ExitCode> {
         "{open} open tasks keep running; flow up resumes the supervisor\n"
     ))?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// What marking the lock stopped did: `marked` is false when the lock was gone by then.
+fn stopped_line(marked: bool, session: Option<&str>) -> String {
+    if !marked {
+        return "state/supervisor/lock.json was removed meanwhile, so nothing was marked stopped \
+                and flow up starts a fresh supervisor session"
+            .to_owned();
+    }
+    let kept = session
+        .map(|session| format!(", keeping session {session} to resume"))
+        .unwrap_or_default();
+    format!("marked the supervisor stopped in state/supervisor/lock.json{kept}")
 }
 
 /// Whether stopping the server of the supervisor's herdr session may be offered: never the
@@ -184,6 +194,9 @@ fn close_workspace(herdr: &Herdr, host: &Host, lock: &Lock) -> anyhow::Result<()
 pub(crate) trait Processes {
     /// The command line of process `pid`, or `None` when it cannot be read.
     fn cmdline(&self, pid: u32) -> Option<Vec<String>>;
+    /// The processes `pid` started that still run, such as a watcher's herdr waits and ssh
+    /// connections.
+    fn children(&self, pid: u32) -> Vec<u32>;
     /// Sends SIGTERM to `pid`.
     fn terminate(&self, pid: u32) -> anyhow::Result<()>;
 }
@@ -200,6 +213,21 @@ impl Processes for Proc {
                 .map(|arg| String::from_utf8_lossy(arg).into_owned())
                 .collect(),
         )
+    }
+
+    fn children(&self, pid: u32) -> Vec<u32> {
+        let Ok(threads) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
+            return Vec::new();
+        };
+        threads
+            .filter_map(|thread| std::fs::read_to_string(thread.ok()?.path().join("children")).ok())
+            .flat_map(|children| {
+                children
+                    .split_whitespace()
+                    .filter_map(|child| child.parse().ok())
+                    .collect::<Vec<u32>>()
+            })
+            .collect()
     }
 
     fn terminate(&self, pid: u32) -> anyhow::Result<()> {
@@ -221,9 +249,9 @@ fn is_flow_watch(cmdline: &[String]) -> bool {
         && cmdline.get(1).is_some_and(|arg| arg == "watch")
 }
 
-/// Removes the watch lock, first stopping its holder when it runs on this machine, holds a
-/// fresh lock, and is a `flow watch`: an old lock's pid may name an unrelated process by now.
-/// Returns the lines to print.
+/// Removes the watch lock, first stopping its holder, and the processes it started, when it runs
+/// on this machine, holds a fresh lock, and is a `flow watch`: an old lock's pid may name an
+/// unrelated process by now. Returns the lines to print.
 fn clear_watch_lock(state: &StateDir, procs: &dyn Processes) -> anyhow::Result<Vec<String>> {
     let mut lines = Vec::new();
     let owner = watch_lock::owner(state)?;
@@ -245,8 +273,31 @@ fn clear_watch_lock(state: &StateDir, procs: &dyn Processes) -> anyhow::Result<V
                 "left pid {pid} running: it runs {runs}, not flow watch"
             ));
         } else {
+            // Read before the watcher ends, after which its children are no longer its own.
+            let children = procs.children(pid);
             match procs.terminate(pid) {
-                Ok(()) => lines.push(format!("stopped the watcher (pid {pid})")),
+                Ok(()) => {
+                    let stopped = children
+                        .iter()
+                        .filter(|child| match procs.terminate(**child) {
+                            Ok(()) => true,
+                            Err(err) => {
+                                eprintln!(
+                                    "could not stop pid {child}, which the watcher started: \
+                                     {err:#}"
+                                );
+                                false
+                            }
+                        })
+                        .count();
+                    lines.push(match stopped {
+                        0 => format!("stopped the watcher (pid {pid})"),
+                        1 => format!("stopped the watcher (pid {pid}) and the process it started"),
+                        n => format!(
+                            "stopped the watcher (pid {pid}) and the {n} processes it started"
+                        ),
+                    });
+                }
                 Err(err) => eprintln!("could not stop the watcher (pid {pid}): {err:#}"),
             }
         }
@@ -323,6 +374,7 @@ mod tests {
 
     struct FakeProcs {
         cmdline: Option<Vec<String>>,
+        children: Vec<u32>,
         terminated: RefCell<Vec<u32>>,
     }
 
@@ -330,6 +382,7 @@ mod tests {
         fn running(cmdline: Option<&[&str]>) -> FakeProcs {
             FakeProcs {
                 cmdline: cmdline.map(|words| words.iter().map(|w| (*w).to_owned()).collect()),
+                children: Vec::new(),
                 terminated: RefCell::new(Vec::new()),
             }
         }
@@ -338,6 +391,10 @@ mod tests {
     impl Processes for FakeProcs {
         fn cmdline(&self, _pid: u32) -> Option<Vec<String>> {
             self.cmdline.clone()
+        }
+
+        fn children(&self, _pid: u32) -> Vec<u32> {
+            self.children.clone()
         }
 
         fn terminate(&self, pid: u32) -> anyhow::Result<()> {
@@ -378,6 +435,41 @@ mod tests {
             ]
         );
         assert!(!lock_dir(&state).exists());
+    }
+
+    #[test]
+    fn stopping_the_watcher_also_stops_the_processes_it_started() {
+        let (_dir, state, pid) = held();
+        let procs = FakeProcs {
+            children: vec![7001, 7002],
+            ..FakeProcs::running(Some(WATCH))
+        };
+
+        let lines = clear_watch_lock(&state, &procs).unwrap();
+
+        assert_eq!(*procs.terminated.borrow(), [pid, 7001, 7002]);
+        assert_eq!(
+            lines[0],
+            format!("stopped the watcher (pid {pid}) and the 2 processes it started")
+        );
+    }
+
+    #[test]
+    fn the_stopped_line_says_when_the_lock_vanished_meanwhile() {
+        assert_eq!(
+            stopped_line(true, Some("s9")),
+            "marked the supervisor stopped in state/supervisor/lock.json, keeping session s9 to \
+             resume"
+        );
+        assert_eq!(
+            stopped_line(true, None),
+            "marked the supervisor stopped in state/supervisor/lock.json"
+        );
+        assert_eq!(
+            stopped_line(false, Some("s9")),
+            "state/supervisor/lock.json was removed meanwhile, so nothing was marked stopped and \
+             flow up starts a fresh supervisor session"
+        );
     }
 
     #[test]
@@ -431,6 +523,39 @@ mod tests {
             ]
         );
         assert!(!lock_dir(&state).exists());
+    }
+
+    #[test]
+    fn proc_reads_a_process_command_line_and_children() {
+        let mut parent = Command::new("sh")
+            .args(["-c", "sleep 30 & sleep 30 & wait"])
+            .spawn()
+            .unwrap();
+        let pid = parent.id();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut children = Proc.children(pid);
+        while children.len() < 2 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+            children = Proc.children(pid);
+        }
+
+        assert_eq!(children.len(), 2, "{children:?}");
+        assert_eq!(
+            Proc.cmdline(children[0]),
+            Some(vec!["sleep".to_owned(), "30".to_owned()])
+        );
+        assert_eq!(
+            Proc.cmdline(pid),
+            Some(vec![
+                "sh".to_owned(),
+                "-c".to_owned(),
+                "sleep 30 & sleep 30 & wait".to_owned()
+            ])
+        );
+        for child in children {
+            Proc.terminate(child).unwrap();
+        }
+        parent.wait().unwrap();
     }
 
     #[test]

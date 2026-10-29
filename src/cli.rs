@@ -129,10 +129,10 @@ pub enum Command {
     },
     /// Attach to the live supervisor session, or start one on this host and attach
     Up,
-    /// Stop the supervisor, leaving workers and tasks running; `flow up` starts a new one
+    /// Stop the supervisor, leaving workers and tasks running; `flow up` resumes it
     Down {
-        /// Stop the supervisor's herdr session's server, when it is not flow's own and has no
-        /// agents left, without asking
+        /// Stop the supervisor's herdr session's server, when it is neither flow's own nor
+        /// herdr's default and has no agents and no workspaces left, without asking
         #[arg(long)]
         yes: bool,
     },

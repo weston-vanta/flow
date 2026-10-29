@@ -1,10 +1,10 @@
-//! `flow task adopt`: the supervisor takes over a session the user started by hand as a task.
-//! The session keeps running where it is, in its own herdr session; flow records a task whose
-//! herdr target is its pane, writes it a brief, and tells it so through herdr. No hooks can be
-//! added to a running session, so an adopted task reports through its own `flow task` calls and
-//! herdr's view of it; `flow watch` logs its turn ends from herdr's `working` to `idle`. When
-//! the prompt finds the session working, adoption records that for the next watch run, so the
-//! end of that turn is logged too.
+//! `flow task adopt`: the supervisor takes over a session the user started by hand as a task. The
+//! session keeps running where it is, in the herdr session it was started in; flow records a task
+//! whose herdr target is its pane, writes it a brief, and tells it so through herdr. No hooks can
+//! be added to a running session, so an adopted task reports through its own `flow task` calls and
+//! herdr's view of it; `flow watch` logs its turn ends from herdr's `working` to `idle`. When the
+//! prompt finds the session working, adoption records that for the next watch run, so the end of
+//! that turn is logged too.
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -52,14 +52,14 @@ pub struct AdoptArgs {
     pub parent: Option<String>,
 }
 
-/// Creates a task for the hand session `args.session` names on `args.host`, briefs it, and
-/// prompts the session to read the brief, then prints `adopted <id> on <host> (<pane_id>)`,
-/// with a note when run outside the supervisor's session. The session is resolved as `flow
-/// follow` resolves it, among observed sessions only, and is removed from the follow list.
-/// Refuses a host that is gone, a pane a task or the supervisor holds, and an agent that is not
-/// Claude Code or has no known working directory, all before writing anything. A failure once the task exists leaves it
-/// `blocked` with a supervisor hold naming the failure and exits 1. When only the prompt cannot
-/// be delivered, the adopted line is still printed.
+/// Creates a task for the hand session `args.session` names on `args.host`, briefs it, and prompts
+/// the session to read the brief, then prints `adopted <id> on <host> (<pane_id>)`, with a note
+/// when run outside the supervisor's session. The session is resolved as `flow follow` resolves it,
+/// among observed sessions only, and is removed from the follow list. Refuses a host that is gone,
+/// a pane a task or the supervisor holds, and an agent that is not Claude Code or has no known
+/// working directory, all before writing anything. A failure once the task exists leaves it
+/// `blocked` with a supervisor hold naming the failure and exits 1. When only the prompt cannot be
+/// delivered, the adopted line is still printed.
 pub fn run(state: &StateDir, args: &AdoptArgs) -> anyhow::Result<ExitCode> {
     let state = &state
         .canonical()

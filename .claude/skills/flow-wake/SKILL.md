@@ -13,14 +13,14 @@ one reason; handle every row.
 
 ## 2. Handle each reason
 
-- `done: <id>`: `flow task show <id>`, and the full brief from the file it names (or
-  `flow task show <id> --json`); the `report` event in
-  `flow task events <id> --last 5 --json` gives the report's path; read it. Check it against the
-  brief's completion criteria. To look at the worker's files on another host, use
-  `flow run <host> -- <argv>`, never plain `ssh`. Met: tell the user the outcome with
-  links, then retire the worker's pane with `flow task close <id>`; its worktree and branch
-  stay. When it refuses because herdr lists that workspace under another label, or the pane
-  elsewhere, the workspace is no longer the task's: leave it, and tell the user. Not met: steer the worker to finish (`flow steer <id> "<what is missing>"`) and say so.
+- `done: <id>`: `flow task show <id>`, and the full brief from the file it names (or `flow task
+  show <id> --json`); the `report` event in `flow task events <id> --last 5 --json` gives the
+  report's path; read it. Check it against the brief's completion criteria. To look at the
+  worker's files on another host, use `flow run <host> -- <argv>`, never plain `ssh`. Met: tell
+  the user the outcome with links, then retire the worker's pane with `flow task close <id>`;
+  its worktree and branch stay. When it refuses because herdr lists that workspace under another
+  label, or the pane elsewhere, the workspace is no longer the task's: leave it, and tell the
+  user. Not met: steer the worker to finish (`flow steer <id> "<what is missing>"`) and say so.
 - `needs-decision: <id>` or `blocked: <id>`: `flow task show <id>` shows the worker's question
   as the hold. Follow the `flow-escalate` skill.
 - `agent-blocked: <id>`: the worker's harness waits at a prompt (a permission or dialog), not

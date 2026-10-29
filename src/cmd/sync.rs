@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 use std::process::ExitCode;
 
-use anyhow::bail;
+use anyhow::{Context, bail};
 use serde::Serialize;
 
 use super::{Consent, Refused};
@@ -50,9 +50,10 @@ pub struct Plan {
 
 /// The plan that gives every host of `inventories` but the local one and the gone ones a
 /// profile among `machines` labelled with its name, for its ssh alias and herdr session
-/// `session`, host by host in name order. A host's profiles that differ go before its new one
-/// is added; a gone host's profile with the target flow would have given it is removed, unless
-/// a live host has the same name.
+/// `session`, host by host in name order. A host's profiles that differ are removed, beside a
+/// current one too; when there is none they go before the new one is added, since herdr names
+/// each machine once. A gone host's profile with the target flow would have given it is
+/// removed, unless a live host has the same name.
 pub fn plan(
     inventories: &[HostInventory],
     local_env_id: Option<&str>,
@@ -82,17 +83,18 @@ pub fn plan(
         if host::is_local(&host, local_env_id) {
             continue;
         }
-        let current = labelled()
-            .any(|machine| machine.target == host.ssh_alias && machine.session == session);
-        if current {
-            continue;
-        }
-        if !(inv.reachable && inv.should_probe()) {
+        let (current, stale): (Vec<&Machine>, Vec<&Machine>) = labelled()
+            .partition(|machine| machine.target == host.ssh_alias && machine.session == session);
+        let replace = current.is_empty();
+        if replace && !(inv.reachable && inv.should_probe()) {
             plan.skipped.push(host.name.clone());
             continue;
         }
-        for machine in labelled() {
+        for machine in stale {
             plan.steps.push(remove(&host, machine, false));
+        }
+        if !replace {
+            continue;
         }
         plan.steps.push(Step::Add {
             host: host.name.clone(),
@@ -197,8 +199,15 @@ pub fn run(
         }
         return Ok(ExitCode::SUCCESS);
     }
+    let except = if plan.skipped.is_empty() {
+        ""
+    } else {
+        ", except for the hosts not added"
+    };
     if plan.steps.is_empty() {
-        super::print("herdr machines already match the inventory\n")?;
+        super::print(&format!(
+            "herdr machines already match the inventory{except}\n"
+        ))?;
         return Ok(ExitCode::SUCCESS);
     }
     let lines: String = plan.steps.iter().map(Step::line).collect();
@@ -206,7 +215,7 @@ pub fn run(
     match super::confirm(yes)? {
         Consent::Given => {
             apply(runner, here, &plan.steps, Out::Through)?;
-            super::print("herdr machines now match the inventory\n")?;
+            super::print(&format!("herdr machines now match the inventory{except}\n"))?;
             Ok(ExitCode::SUCCESS)
         }
         Consent::Declined => {
@@ -229,26 +238,50 @@ enum Out {
     Stderr,
 }
 
+/// Applies `steps` in order, stopping at the first that fails, and failing with what it was
+/// doing, how many steps were applied, and, when it was adding a host whose old profile was
+/// already removed, that the host is left without one.
 fn apply(runner: &dyn Runner, here: &Host, steps: &[Step], out: Out) -> anyhow::Result<()> {
     for (applied, step) in steps.iter().enumerate() {
         let argv = step.argv();
-        let output = runner.run(here, &argv, None)?;
+        let command = argv.join(" ");
+        let failed = || {
+            let mut failed = format!(
+                "{}; applied {applied} of {} steps before it",
+                step.doing(),
+                steps.len()
+            );
+            if let Some(host) = left_without_profile(&steps[..applied], step) {
+                failed.push_str(&format!(
+                    ", and host {host} is left without a herdr machine"
+                ));
+            }
+            failed
+        };
+        let output = runner
+            .run(here, &argv, None)
+            .with_context(|| format!("running `{command}` {}", failed()))?;
         match out {
             Out::Through => super::print(&output.stdout)?,
             Out::Stderr => eprint!("{}", output.stdout),
         }
         eprint!("{}", output.stderr);
         if output.status != 0 {
-            bail!(
-                "`{}` exited {} {}; applied {applied} of {} steps before it",
-                argv.join(" "),
-                output.status,
-                step.doing(),
-                steps.len()
-            );
+            bail!("`{command}` exited {} {}", output.status, failed());
         }
     }
     Ok(())
+}
+
+/// The host `step` adds when one of the `applied` steps removed its old profile.
+fn left_without_profile<'a>(applied: &[Step], step: &'a Step) -> Option<&'a str> {
+    let Step::Add { host, .. } = step else {
+        return None;
+    };
+    applied
+        .iter()
+        .any(|done| matches!(done, Step::Remove { host: removed, gone: false, .. } if removed == host))
+        .then_some(host.as_str())
 }
 
 #[cfg(test)]
@@ -360,6 +393,37 @@ mod tests {
                 add("host-f"),
             ]
         );
+    }
+
+    #[test]
+    fn plan_removes_stale_profiles_beside_a_current_one() {
+        let inventories = [
+            record("host-e", true, false),
+            record("host-c", false, false),
+        ];
+        let machines = [
+            machine("p1", "host-e", "host-e.example", "default"),
+            machine("p2", "host-e", "old-e.example", "default"),
+            machine("p3", "host-c", "host-c.example", "default"),
+            machine("p4", "host-c", "host-c.example", "flow"),
+        ];
+
+        let plan = plan(&inventories, None, "default", &machines);
+
+        let removed: Vec<&str> = plan
+            .steps
+            .iter()
+            .map(|step| match step {
+                Step::Remove {
+                    profile_id,
+                    gone: false,
+                    ..
+                } => profile_id.as_str(),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(removed, ["p4", "p2"]);
+        assert!(plan.skipped.is_empty());
     }
 
     #[test]

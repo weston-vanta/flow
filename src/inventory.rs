@@ -333,9 +333,9 @@ pub fn refresh(
     })
 }
 
-/// The agents in each of `sessions` on `host`, in session order. With `FlowServer::Start`,
-/// the server of the session it names is started when it is not running; any other session
-/// without a server has no agents. A session whose server cannot be asked is recorded in `error`, and asking
+/// The agents in each of `sessions` on `host`, in session order. With `FlowServer::Start`, the
+/// server of the session it names is started when it is not running; any other session without a
+/// server has no agents. A session whose server cannot be asked is recorded in `error`, and asking
 /// stops at the first session ssh cannot reach.
 pub fn herdr_agents(
     runner: &Arc<dyn Runner>,

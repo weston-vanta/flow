@@ -30,14 +30,14 @@
 //! Hand sessions are the herdr agents on live hosts, in any herdr session flow lists, as of the
 //! cached inventory, other than the supervisor and the agents tasks run (see `observe::task_runs`):
 //! sessions the user started by hand. One adopted as a task is waited on as that task's worker, in
-//! its own herdr session, and not as a hand session. A run first lists every live host's agents
-//! into that cache, in parallel, without starting any herdr server, and giving each host at most
-//! `Settings::list_timeout`. A host whose listing fails keeps its cached agents. The run waits on
-//! every hand session it then finds, except on hosts that ssh could not reach, that run no herdr
-//! server, or that did not answer in time: those wait for the next listing. A host whose earlier
-//! listing has still not returned is not asked again in the same run. Any hand session turning
-//! `blocked` wakes the supervisor; the ones in the follow list also wake it on `idle` and `done`.
-//! Whether a session is followed is read every cycle.
+//! the herdr session it was started in, and not as a hand session. A run first lists every live
+//! host's agents into that cache, in parallel, without starting any herdr server, and giving each
+//! host at most `Settings::list_timeout`. A host whose listing fails keeps its cached agents. The
+//! run waits on every hand session it then finds, except on hosts that ssh could not reach, that
+//! run no herdr server, or that did not answer in time: those wait for the next listing. A host
+//! whose earlier listing has still not returned is not asked again in the same run. Any hand
+//! session turning `blocked` wakes the supervisor; the ones in the follow list also wake it on
+//! `idle` and `done`. Whether a session is followed is read every cycle.
 //!
 //! A run with nothing to watch, no open task, followed session or hand session, ends after its
 //! first cycle rather than waiting for the heartbeat. A cycle that could not read the tasks or

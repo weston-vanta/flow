@@ -50,8 +50,8 @@ At the start of every session, fresh or resumed, before anything else:
    skill and acknowledge them.
 2. `flow status`: open tasks, their holds, dispatch requests from workers not yet handled
    (`flow-dispatch` skill), observed sessions.
-3. `flow sessions --summaries`: herdr agents on every host, matched to tasks or shown as
-   observed, with what each session is doing.
+3. `flow sessions --summaries`: herdr agents on every host, matched to tasks or to the
+   supervisor, or shown as observed, with what each session is doing.
 4. If `state/operator.md` exists, read it. It holds operator-specific conventions (the
    monorepo's workflow, preferred hosts) and is never committed.
 

@@ -25,6 +25,9 @@ Herdr:
 const SKIPPED: &str = "not adding host host-c: it did not answer the last refresh, and herdr \
      machine add has to reach it\n";
 
+/// The last line of an applied `PLAN`, which skips `host-c`.
+const NOW_MATCH: &str = "herdr machines now match the inventory, except for the hosts not added\n";
+
 struct Fixture {
     dir: tempfile::TempDir,
     state: PathBuf,
@@ -214,10 +217,7 @@ fn sync_with_yes_applies_the_plan_in_order_passing_herdr_output_through() {
 
     assert_eq!(
         String::from_utf8(out.stdout).unwrap(),
-        format!(
-            "{PLAN}saved host-b\nremoved host-d\nremoved host-f\nsaved host-f\n\
-             herdr machines now match the inventory\n"
-        )
+        format!("{PLAN}saved host-b\nremoved host-d\nremoved host-f\nsaved host-f\n{NOW_MATCH}")
     );
     assert_eq!(String::from_utf8(out.stderr).unwrap(), SKIPPED);
     assert_eq!(fx.argvs(), applying());
@@ -255,7 +255,7 @@ fn sync_asks_at_a_terminal_and_applies_only_on_yes() {
         .clone();
     assert_eq!(
         String::from_utf8(accepted.stdout).unwrap(),
-        format!("{PLAN}\nProceed? [y/N] herdr machines now match the inventory\n")
+        format!("{PLAN}\nProceed? [y/N] {NOW_MATCH}")
     );
     assert_eq!(fx.argvs(), applying());
 }
@@ -376,4 +376,79 @@ fn sync_refuses_on_a_machine_that_is_no_known_host() {
         .code(2)
         .stderr(predicates::str::contains("is not a known host"));
     assert!(fx.calls().is_empty());
+}
+
+#[test]
+fn sync_with_nothing_to_do_but_skipped_hosts_says_they_were_left_out() {
+    let fx = Fixture::new();
+    let matching = json!([{
+        "id": "0123456789abcdef0123456789abcdef", "label": "host-b",
+        "target": "host-b.example", "session": "default", "enabled": true, "selected": false,
+    }]);
+    for env in 4..=7 {
+        fs::remove_file(fx.state.join(format!("hosts/env-000{env}.json"))).unwrap();
+    }
+
+    let out = fx
+        .flow(&[ok(&matching.to_string())])
+        .args(["inventory", "--sync"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap(),
+        "herdr machines already match the inventory, except for the hosts not added\n"
+    );
+    assert_eq!(String::from_utf8(out.stderr).unwrap(), SKIPPED);
+}
+
+#[test]
+fn sync_says_when_a_failed_replacement_leaves_a_host_without_a_machine() {
+    let fx = Fixture::new();
+    let script = [
+        listed(),
+        ok("saved host-b\n"),
+        ok("removed host-d\n"),
+        ok("removed host-f\n"),
+        json!({"status": 1, "stdout": "", "stderr": "host-f.example: connection refused\n"}),
+    ];
+
+    let out = fx
+        .flow(&script)
+        .args(["inventory", "--sync", "--yes"])
+        .assert()
+        .code(1)
+        .get_output()
+        .clone();
+
+    assert_eq!(
+        String::from_utf8(out.stderr).unwrap(),
+        format!(
+            "{SKIPPED}host-f.example: connection refused\n\
+             `herdr machine add host-f.example --label host-f --remote-session default` exited 1 \
+             adding host host-f; applied 3 of 4 steps before it, and host host-f is left without \
+             a herdr machine\n"
+        )
+    );
+}
+
+#[test]
+fn sync_says_what_was_applied_when_a_step_cannot_run() {
+    let fx = Fixture::new();
+
+    let out = fx
+        .flow(&[listed(), ok("saved host-b\n")])
+        .args(["inventory", "--sync", "--yes"])
+        .assert()
+        .code(1)
+        .get_output()
+        .clone();
+
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("running `herdr machine remove 22222222222222222222222222222222` removing gone host host-d; applied 1 of 4 steps before it"),
+        "{stderr}"
+    );
 }
