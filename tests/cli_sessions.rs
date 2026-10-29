@@ -209,8 +209,8 @@ fn stdout_of(cmd: &mut Command) -> String {
 /// A cached inventory of `host-b` holding one hand session in pane `w5:p1`.
 fn host_b_cache() -> Value {
     json!({
-        "name": "host-b", "env_id": "env-0002", "seen": "2026-10-26T09:00:00Z",
-        "reachable": true, "load1": 0.5,
+        "name": "host-b", "env_id": "env-0002", "ssh_alias": "host-b.example",
+        "seen": "2026-10-26T09:00:00Z", "reachable": true, "load1": 0.5,
         "worktrees": [{"repo": "example-repo", "path": "/work/repo", "branch": "main", "busy": null, "dirty_files": null}],
         "agents": [{
             "pane_id": "w5:p1", "workspace_id": "w5", "agent": "claude", "status": "blocked",
@@ -371,8 +371,8 @@ fn sessions_update_only_agents_in_an_existing_cache() {
     let fx = Fixture::new();
     fx.single_host();
     let earlier = json!({
-        "name": "host-a", "env_id": "env-0001", "seen": "2026-10-26T09:00:00Z",
-        "reachable": true, "load1": 1.25,
+        "name": "host-a", "env_id": "env-0001", "ssh_alias": "host-a.example",
+        "seen": "2026-10-26T09:00:00Z", "reachable": true, "load1": 1.25,
         "worktrees": [{"repo": "example-repo", "path": "/work/repo", "branch": "main", "busy": null, "dirty_files": null}],
         "agents": [],
         "prs": [{"repo": "example-repo", "branch": "main", "number": 3, "url": "https://example.com/pull/3", "state": "OPEN"}],

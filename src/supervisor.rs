@@ -201,11 +201,11 @@ mod tests {
     }
 
     #[test]
-    fn a_lock_written_before_stops_were_recorded_reads_as_running() {
+    fn a_lock_without_a_stop_reads_as_running() {
         let lock: Lock = serde_json::from_str(
             r#"{"host_env_id": "env-0002", "herdr": {"host": "host-b", "workspace_id": "w1",
-                "pane_id": "w1:p1", "agent": "claude"}, "claude_session": "s9",
-                "since": "2026-10-26T12:00:00Z"}"#,
+                "pane_id": "w1:p1", "agent": "claude", "session": "default"},
+                "claude_session": "s9", "since": "2026-10-26T12:00:00Z"}"#,
         )
         .unwrap();
         assert_eq!(lock.stopped, None);

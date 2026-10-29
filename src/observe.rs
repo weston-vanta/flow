@@ -398,7 +398,7 @@ mod tests {
     const FIXTURE_SESSION_ID: &str = "00000000-0000-4000-8000-000000000001";
 
     #[test]
-    fn follow_list_written_before_titles_parses_untitled() {
+    fn an_untitled_follow_entry_parses() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("state");
         fs::create_dir_all(root.join("supervisor")).unwrap();

@@ -114,21 +114,8 @@ pub struct WorktreeTool {
     pub list: Vec<String>,
 }
 
-const HOSTS_ARRAY_MOVED: &str = "the [[hosts]] list is now [[hosts.static]] under [hosts] with \
-     source = \"static\"; remove it to discover hosts from Ona";
-
 fn parse(text: &str) -> anyhow::Result<Config> {
-    match toml::from_str(text) {
-        Ok(config) => Ok(config),
-        Err(err) => {
-            let hosts_is_array = toml::from_str::<toml::Table>(text)
-                .is_ok_and(|table| table.get("hosts").is_some_and(toml::Value::is_array));
-            if hosts_is_array {
-                bail!(HOSTS_ARRAY_MOVED);
-            }
-            Err(err.into())
-        }
-    }
+    Ok(toml::from_str(text)?)
 }
 
 fn default_herdr_session() -> String {
@@ -266,17 +253,6 @@ ssh_alias = "host-a.example"
         assert_eq!(config.hosts.exclude, ["env-0009"]);
         assert_eq!(config.hosts.names["env-0001"], "main-box");
         assert_eq!(config.hosts.static_hosts[0].ssh_alias, "host-a.example");
-
-        let err = super::parse(
-            r#"
-[[hosts]]
-name = "host-a"
-env_id = "env-0001"
-ssh_alias = "host-a.example"
-"#,
-        )
-        .unwrap_err();
-        assert!(format!("{err:#}").contains("[[hosts.static]]"), "{err:#}");
     }
 
     #[test]

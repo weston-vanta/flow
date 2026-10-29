@@ -764,25 +764,6 @@ fn close_closes_a_workspace_whose_task_pane_holds_no_agent() {
 }
 
 #[test]
-fn close_accepts_a_workspace_labelled_with_the_task_id_alone() {
-    let script = [
-        workspaces_with_w2(TASK),
-        agents(&[("w2:p1", "s-worker")]),
-        closed(),
-    ];
-    let (_repo, state, store, script) = setup_close(State::Done, &script);
-
-    let out = stdout(
-        flow(&state)
-            .env("FLOW_FAKE_RUNNER", &script)
-            .args(["task", "close", TASK]),
-    );
-
-    assert_eq!(out, format!("closed {TASK} (workspace w2 on host-a)\n"));
-    assert_eq!(store.task(TASK).unwrap().1.herdr, None);
-}
-
-#[test]
 fn close_refuses_an_open_task_unless_forced() {
     for open in [
         State::Working,

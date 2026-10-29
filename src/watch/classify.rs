@@ -48,13 +48,11 @@ pub enum Observation {
     },
     /// herdr reports an observed session's agent in `status`: an agent whose pane is neither a
     /// task's target nor the supervisor's.
-    #[serde(alias = "adopted-changed")]
     ObservedChanged {
         host: String,
         session: String,
         pane_id: String,
         /// herdr's title for the agent as of the cached inventory; empty when it has none.
-        #[serde(default)]
         title: String,
         status: AgentStatus,
     },
@@ -625,34 +623,6 @@ mod tests {
             Some("host-a/default/w1:p1")
         );
         assert_eq!(pane_key(&Observation::Heartbeat), None);
-    }
-
-    #[test]
-    fn observed_change_queued_before_titles_parses_untitled() {
-        let queued = serde_json::json!({
-            "type": "adopted-changed", "host": "host-a", "session": "default",
-            "pane_id": "w1:p1", "status": "blocked",
-        });
-        let mut untitled = observed("w1:p1", AgentStatus::Blocked);
-        if let Observation::ObservedChanged { title, .. } = &mut untitled {
-            title.clear();
-        }
-        assert_eq!(
-            serde_json::from_value::<Observation>(queued).unwrap(),
-            untitled
-        );
-    }
-
-    #[test]
-    fn observed_change_queued_under_its_old_name_parses_and_is_written_under_the_new_one() {
-        let blocked = observed("w1:p1", AgentStatus::Blocked);
-        let mut queued = serde_json::to_value(&blocked).unwrap();
-        assert_eq!(queued["type"], "observed-changed");
-        queued["type"] = "adopted-changed".into();
-        assert_eq!(
-            serde_json::from_value::<Observation>(queued).unwrap(),
-            blocked
-        );
     }
 
     #[test]

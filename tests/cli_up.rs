@@ -112,7 +112,8 @@ impl Fixture {
         fs::create_dir_all(&dir).unwrap();
         let lock = json!({
             "host_env_id": env_id,
-            "herdr": {"host": host, "workspace_id": "w1", "pane_id": pane, "agent": "claude"},
+            "herdr": {"host": host, "workspace_id": "w1", "pane_id": pane, "agent": "claude",
+                "session": "flow"},
             "claude_session": session,
             "since": "2026-10-26T12:00:00Z",
         });

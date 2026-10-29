@@ -434,15 +434,11 @@ fn push_repos(out: &mut String, inv: &HostInventory, repos: &[Repo]) {
         .map(|repo| repo.name.chars().count())
         .max()
         .unwrap_or(0);
-    let legacy_is_ours = repos.len() == 1;
-    let dirs: Vec<Option<PathBuf>> = repos
-        .iter()
-        .map(|repo| repo_dir(inv, repo, legacy_is_ours))
-        .collect();
+    let dirs: Vec<Option<PathBuf>> = repos.iter().map(|repo| repo_dir(inv, repo)).collect();
     let owners: Vec<Option<&Repo>> = inv
         .worktrees
         .iter()
-        .map(|wt| owning_repo(wt, repos, &dirs))
+        .map(|wt| repos.iter().find(|repo| repo.name == wt.repo))
         .collect();
     for (repo, dir) in repos.iter().zip(&dirs) {
         let (summary, rows) = if inv.missing_repos.contains(&repo.name) {
@@ -506,33 +502,13 @@ fn repo_summary<'a>(
 }
 
 /// `repo`'s worktrees dir on this host: the configured one, else the one inferred from the
-/// worktrees naming the repo, else the sibling default. Worktrees naming no repo, from an
-/// inventory cached before worktrees named theirs, count too when `legacy_is_ours`: with
-/// several repos they could be any repo's.
-fn repo_dir(inv: &HostInventory, repo: &Repo, legacy_is_ours: bool) -> Option<PathBuf> {
+/// worktrees naming the repo, else the sibling default.
+fn repo_dir(inv: &HostInventory, repo: &Repo) -> Option<PathBuf> {
     if repo.worktrees_dir.is_some() {
         return worktree::worktrees_dir(repo);
     }
-    let worktrees = inv
-        .worktrees
-        .iter()
-        .filter(|wt| wt.repo == repo.name || (legacy_is_ours && wt.repo.is_empty()));
+    let worktrees = inv.worktrees.iter().filter(|wt| wt.repo == repo.name);
     inferred_worktrees_dir(&repo.path, worktrees).or_else(|| worktree::worktrees_dir(repo))
-}
-
-/// The configured repo `wt` belongs to: the one it names, else, for an inventory cached before
-/// worktrees named their repo, the one whose checkout or worktrees dir (`dirs`, by repo) holds it.
-fn owning_repo<'a>(wt: &Worktree, repos: &'a [Repo], dirs: &[Option<PathBuf>]) -> Option<&'a Repo> {
-    repos.iter().find(|repo| repo.name == wt.repo).or_else(|| {
-        if !wt.repo.is_empty() {
-            return None;
-        }
-        repos.iter().zip(dirs).find_map(|(repo, dir)| {
-            let holds =
-                wt.path == repo.path || dir.as_deref().is_some_and(|dir| wt.path.starts_with(dir));
-            holds.then_some(repo)
-        })
-    })
 }
 
 /// Whether `wt` is the detached base checkout the worktree tool keeps: `<worktrees dir>/.base`,
@@ -986,72 +962,6 @@ host-a  reachable · seen 0s ago
       c  /work/elsewhere/c
     lib   unknown
     docs  unknown
-"
-        );
-    }
-
-    #[test]
-    fn render_files_unnamed_worktrees_under_the_repo_whose_inferred_dir_holds_them() {
-        let inventory = HostInventory {
-            worktrees: vec![
-                wt("", "/work/app", Some("main")),
-                wt("", "/work/app.wt/.base", None),
-                wt("", "/work/app.wt/a", Some("a")),
-            ],
-            prs: vec![pr("", "a", 3)],
-            ..host("host-a", 0)
-        };
-        let repos: Vec<Repo> = repos().into_iter().take(1).collect();
-        assert_eq!(
-            render_all(&[inventory], &repos, None, None, NOW.parse().unwrap()),
-            "\
-host-a  reachable · seen 0s ago
-  agents (0)
-  repos
-    app  on main · 1 worktree
-      a  PR #3 open
-"
-        );
-    }
-
-    #[test]
-    fn render_files_unnamed_worktrees_of_several_repos_under_their_own_repo() {
-        let repos = toml::from_str::<Config>(
-            r#"
-[[repos]]
-name = "app"
-path = "/work/app"
-default_branch = "main"
-
-[[repos]]
-name = "lib"
-path = "/work/lib"
-default_branch = "main"
-"#,
-        )
-        .unwrap()
-        .repos;
-        let inventory = HostInventory {
-            worktrees: vec![
-                wt("", "/work/app", Some("main")),
-                wt("", "/work/app-worktrees/.base", None),
-                wt("", "/work/app-worktrees/a", Some("a")),
-                wt("", "/work/lib", Some("main")),
-                wt("", "/work/lib-worktrees/.base", None),
-                wt("", "/work/lib-worktrees/b", Some("b")),
-            ],
-            ..host("host-a", 0)
-        };
-        assert_eq!(
-            render_all(&[inventory], &repos, None, None, NOW.parse().unwrap()),
-            "\
-host-a  reachable · seen 0s ago
-  agents (0)
-  repos
-    app  on main · 1 worktree
-      a
-    lib  on main · 1 worktree
-      b
 "
         );
     }

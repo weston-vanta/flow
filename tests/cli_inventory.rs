@@ -311,11 +311,11 @@ fn unreachable_host_is_recorded_not_fatal() {
     fx.write_cache(
         "env-0002",
         &json!({
-            "name": "host-b", "env_id": "env-0002", "seen": earlier, "reachable": true,
-            "load1": 1.5,
-            "worktrees": [{"path": "/workspaces/acme-worktrees/feature-y", "branch": "feature-y", "busy": false, "dirty_files": 0}],
+            "name": "host-b", "env_id": "env-0002", "ssh_alias": "host-b.example", "seen": earlier,
+            "reachable": true, "load1": 1.5,
+            "worktrees": [{"repo": "example-repo", "path": "/workspaces/acme-worktrees/feature-y", "branch": "feature-y", "busy": false, "dirty_files": 0}],
             "agents": [],
-            "prs": [{"branch": "feature-y", "number": 14, "url": "https://github.com/example/acme/pull/14", "state": "OPEN"}],
+            "prs": [{"repo": "example-repo", "branch": "feature-y", "number": 14, "url": "https://github.com/example/acme/pull/14", "state": "OPEN"}],
             "tool_error": null, "herdr_error": null,
         }),
     );
@@ -384,16 +384,16 @@ fn inventory_without_refresh_reads_cache() {
     fx.write_cache(
         "env-0001",
         &json!({
-            "name": "host-a", "env_id": "env-0001", "seen": seen.to_string(), "reachable": true,
-            "load1": 0.5,
+            "name": "host-a", "env_id": "env-0001", "ssh_alias": "host-a.example",
+            "seen": seen.to_string(), "reachable": true, "load1": 0.5,
             "worktrees": [
-                {"path": "/workspaces/acme-worktrees/feature-x", "branch": "feature-x", "busy": true, "dirty_files": 2},
+                {"repo": "example-repo", "path": "/workspaces/acme-worktrees/feature-x", "branch": "feature-x", "busy": true, "dirty_files": 2},
             ],
             "agents": [{
                 "pane_id": "w4:p1", "workspace_id": "w4", "agent": "claude", "status": "idle",
-                "cwd": "/workspaces/acme-worktrees/feature-x", "title": "",
+                "cwd": "/workspaces/acme-worktrees/feature-x", "title": "", "session": "flow",
             }],
-            "prs": [{"branch": "feature-x", "number": 12, "url": "https://github.com/example/acme/pull/12", "state": "OPEN"}],
+            "prs": [{"repo": "example-repo", "branch": "feature-x", "number": 12, "url": "https://github.com/example/acme/pull/12", "state": "OPEN"}],
             "tool_error": "wt: command not found",
             "herdr_error": null,
         }),
@@ -425,7 +425,7 @@ host-a  reachable · load 0.50 · seen 5m ago
 #[test]
 fn inventory_json_describes_each_host() {
     let fx = Fixture::new();
-    let mut host_a = bare_record("host-a", "env-0001", "");
+    let mut host_a = bare_record("host-a", "env-0001", "env-0001.ona.environment");
     host_a["ona_phase"] = json!("ENVIRONMENT_PHASE_RUNNING");
     fx.write_cache("env-0001", &host_a);
     let mut host_b = bare_record("host-b", "env-0002", "host-b.example");
@@ -488,7 +488,8 @@ fn gh_failure_is_recorded_in_cache_and_output() {
     with_cache.write_cache(
         "env-0001",
         &json!({
-            "name": "host-a", "env_id": "env-0001", "seen": days_ago(2),
+            "name": "host-a", "env_id": "env-0001", "ssh_alias": "host-a.example",
+            "seen": days_ago(2),
             "reachable": true, "load1": 0.5, "worktrees": [], "agents": [],
             "prs": [
                 {"repo": "example-repo", "branch": "feature-x", "number": 12, "url": "https://github.com/example/acme/pull/12", "state": "OPEN"},

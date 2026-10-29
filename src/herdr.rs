@@ -20,9 +20,6 @@ use crate::vars;
 /// herdr's main session, the one its window shows unless told otherwise: flow's own session
 /// unless `config.toml` names another.
 pub const DEFAULT_SESSION: &str = "default";
-/// The session flow ran its supervisor and workers in before its session was configurable;
-/// records written before they named a session were all in it.
-pub const LEGACY_SESSION: &str = "flow";
 /// The lowest herdr private protocol whose CLI output this module parses.
 pub const MIN_PROTOCOL: u32 = 22;
 
@@ -89,18 +86,11 @@ pub struct Agent {
     /// The terminal title without herdr's status glyph.
     pub title: String,
     /// The herdr session the agent's pane lives in. Pane ids are unique only within a session.
-    /// Inventories cached before sessions were recorded held only flow's own agents, all in its
-    /// legacy session.
-    #[serde(default = "legacy_session")]
     pub session: String,
     /// The id of the agent's own session, such as Claude Code's session id, as herdr reports
     /// it; `None` when herdr has not reported one.
     #[serde(default)]
     pub agent_session_id: Option<String>,
-}
-
-fn legacy_session() -> String {
-    LEGACY_SESSION.to_owned()
 }
 
 // Response shapes, pinned against `herdr api schema --json` at protocol 22. Every CLI command
@@ -205,14 +195,12 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    /// Whether the label names task `id`: `<title> · <id>` as dispatch labels a task's
-    /// workspace, or the id alone, as it once did.
+    /// Whether the label names task `id`: `<title> · <id>`, as dispatch labels a task's
+    /// workspace.
     pub fn names_task(&self, id: &str) -> bool {
-        self.label == id
-            || self
-                .label
-                .strip_suffix(id)
-                .is_some_and(|title| title.ends_with(TASK_LABEL_SEPARATOR))
+        self.label
+            .strip_suffix(id)
+            .is_some_and(|title| title.ends_with(TASK_LABEL_SEPARATOR))
     }
 }
 
@@ -1306,8 +1294,8 @@ mod tests {
         let label = task_workspace_label("Fix the login form", "aaaaaaab");
         assert_eq!(label, "Fix the login form · aaaaaaab");
         assert!(labelled(&label).names_task("aaaaaaab"));
-        assert!(labelled("aaaaaaab").names_task("aaaaaaab"));
         for other in [
+            "aaaaaaab",
             "Fix the login form",
             "Fix the login form · aaaaaaac",
             "Fix the login form aaaaaaab",

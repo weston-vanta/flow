@@ -48,9 +48,7 @@ const PR_LIST_ARGV: [&str; 11] = [
 pub struct HostInventory {
     pub name: String,
     pub env_id: String,
-    /// The ssh alias the host is reached by. Records cached before hosts were discovered leave
-    /// it empty, which means the Ona alias of `env_id`.
-    #[serde(default)]
+    /// The ssh alias the host is reached by.
     pub ssh_alias: String,
     /// The environment's free-text name in Ona, for a discovered host.
     #[serde(default)]
@@ -118,11 +116,7 @@ impl HostInventory {
         Host {
             name: self.name.clone(),
             env_id: self.env_id.clone(),
-            ssh_alias: if self.ssh_alias.is_empty() {
-                ona::ssh_alias(&self.env_id)
-            } else {
-                self.ssh_alias.clone()
-            },
+            ssh_alias: self.ssh_alias.clone(),
             local_marker_env: None,
         }
     }
@@ -136,9 +130,7 @@ impl HostInventory {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Worktree {
-    /// The configured repo this is a worktree of. Inventories cached before repos were named
-    /// leave it empty.
-    #[serde(default)]
+    /// The configured repo this is a worktree of.
     pub repo: String,
     pub path: PathBuf,
     /// `None` for a detached HEAD.
@@ -150,9 +142,7 @@ pub struct Worktree {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pr {
-    /// The configured repo the PR was listed in. Inventories cached before repos were named leave
-    /// it empty.
-    #[serde(default)]
+    /// The configured repo the PR was listed in.
     pub repo: String,
     /// The PR's head branch.
     pub branch: String,
