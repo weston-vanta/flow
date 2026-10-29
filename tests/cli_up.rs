@@ -474,6 +474,7 @@ fn up_attaches_when_lock_live() {
         fx.state.join("supervisor/watch.lock/owner.json").exists(),
         "a live supervisor's watcher keeps its lock"
     );
+    assert!(!fx.state.join("supervisor/watch-state.json").exists());
 }
 
 #[test]
@@ -585,6 +586,10 @@ fn up_starts_fresh_beside_an_open_tasks_worker_in_the_lock_pane() {
             stdout.ends_with(&format!("agent attach {NEW_PANE}\n")),
             "{stdout}"
         );
+        let watch_state = fx.state.join("supervisor/watch-state.json");
+        let seeded: Value =
+            serde_json::from_str(&fs::read_to_string(watch_state).unwrap()).unwrap();
+        assert_eq!(seeded["seen"][TASK]["state"], "pending", "{seeded}");
     }
 }
 #[test]

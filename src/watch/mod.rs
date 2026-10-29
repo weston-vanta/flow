@@ -9,19 +9,15 @@
 //!
 //! `state/supervisor/watch-state.json` carries what one run hands the next: how far each task's
 //! files were read, so a change made between runs still wakes the next one, and what earlier
-//! wakes reported, so a condition that persists wakes once rather than on every turn end. A
-//! reported worker status is news again once its task's event log grows, since herdr reports
-//! only the current status and a worker that went blocked, working, and blocked again between
-//! runs reads the same. A hand session has no event log, so the same gap remains for it: a
-//! session that left its reported status and came back to it entirely between runs reads the
-//! same. One that is still elsewhere when a run starts is seen leaving it, since a fresh wait
-//! on a reported pane ends on any other status first; a pane that reads gone forgets its hand
-//! session's report, so its next occupant is news. A task an earlier run never read is replayed
-//! from `pending` and an empty event log, so a worker that finished or asked something before
-//! the watcher first saw its task still wakes the supervisor; only the very first run, with no
-//! `watch-state.json` yet, takes every task as it is. That run writes the file once a cycle has
-//! listed the tasks. It also names the adopted tasks a wait last read `working`, which `flow
-//! task adopt` seeds too, so a turn that ends between runs is still seen ending.
+//! wakes reported, so a condition that persists wakes once rather than on every turn end. A wait
+//! on a pane whose status a wake reported ends only on another status first, so a session still
+//! elsewhere when a run starts is seen leaving it; one that left and came back between runs reads
+//! the same. A pane reported gone wakes once, and its next occupant is news. A task no run has
+//! read is replayed from `pending` and an empty event log, so a worker that finished or asked
+//! something before the watcher first saw its task still wakes the supervisor; `flow up` seeds
+//! the file with every existing task read, so the first run does not replay history. A file that
+//! does not parse is logged and replaced. An adopted task's turn that ends while no run is up is
+//! not logged.
 //!
 //! A worker that stops, blocked or done in herdr's terms, after its task reported
 //! `needs-decision` or `blocked` is absorbed: it stopped to wait on the hold that already woke
@@ -60,9 +56,8 @@ pub mod lock;
 mod panes;
 pub mod queue;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io;
-use std::path::Path;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -382,34 +377,6 @@ struct WatchState {
     /// Per task, how far its files have been read.
     #[serde(default)]
     seen: BTreeMap<String, Seen>,
-    /// The adopted tasks whose agent a wait last read `working`. A run starting after such a
-    /// turn ended starts that task's wait as if it had just read `working`, so the `idle` it
-    /// reads first still logs the turn's end.
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    working: BTreeSet<String>,
-}
-
-/// Records that adopted task `task`'s agent was just seen `working`, as `flow task adopt` sees
-/// it once its prompt is delivered, so the next watch run logs the end of that turn. Only an
-/// existing, readable `watch-state.json` is changed: creating one would end the very first
-/// run's special case. Nothing is written while a watch run holds the lock: the file is that
-/// run's to write, and the run waits on the new task itself.
-pub fn note_working(state: &StateDir, task: &str) -> anyhow::Result<()> {
-    if lock::held_live(state)? {
-        return Ok(());
-    }
-    let path = state.root().join(WATCH_STATE_FILE);
-    let bytes = match std::fs::read(&path) {
-        Ok(bytes) => bytes,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => return Err(err).with_context(|| format!("reading {}", path.display())),
-    };
-    let mut memory: WatchState =
-        serde_json::from_slice(&bytes).with_context(|| format!("parsing {}", path.display()))?;
-    if memory.working.insert(task.to_owned()) {
-        write_watch_state(state, &memory)?;
-    }
-    Ok(())
 }
 
 /// What handling an observation, absorbed or woken, moves forward.
@@ -435,13 +402,6 @@ struct Watcher<'a> {
     settings: Settings,
     memory: WatchState,
     saved: WatchState,
-    /// Whether a task this run has no `seen` entry for is replayed from `pending`, because an
-    /// earlier run saved state and so would have read it had it existed then.
-    replay_unseen: bool,
-    /// Whether `watch-state.json` exists for this run. The very first run writes it only after
-    /// a cycle that listed the tasks, so a first run that could not list them leaves the next
-    /// run a first run too, rather than one that replays every task it finds.
-    state_saved: bool,
     /// The hand sessions as of the last listing.
     hands: Vec<HandSession>,
     /// Whether the last cycle found anything to watch: an open task, a followed or hand
@@ -475,7 +435,7 @@ impl<'a> Watcher<'a> {
         let supervisor = state.root().join(SUPERVISOR_DIR);
         std::fs::create_dir_all(&supervisor)
             .with_context(|| format!("creating {}", supervisor.display()))?;
-        let (memory, replay_unseen) = load_watch_state(state)?;
+        let memory = load_watch_state(state)?;
         let hands = hand_sessions(state)?;
         Ok(Watcher {
             state,
@@ -486,8 +446,6 @@ impl<'a> Watcher<'a> {
             settings: settings.clone(),
             saved: memory.clone(),
             memory,
-            replay_unseen,
-            state_saved: replay_unseen,
             watching: true,
             beating: true,
             beating_since: None,
@@ -505,9 +463,7 @@ impl<'a> Watcher<'a> {
     /// One poll cycle: the wake reason when something woke the supervisor.
     fn cycle(&mut self) -> anyhow::Result<Option<String>> {
         let mut unread = false;
-        let listed = self.store.list_tasks();
-        let tasks_listed = listed.is_ok();
-        let tasks = listed.unwrap_or_else(|err| {
+        let tasks = self.store.list_tasks().unwrap_or_else(|err| {
             self.log(&format!("reading tasks: {err:#}"));
             unread = true;
             Vec::new()
@@ -535,16 +491,6 @@ impl<'a> Watcher<'a> {
             self.log(&format!(
                 "watching {n} hand session{plural} for blocked only; heartbeat off"
             ));
-        }
-        if tasks_listed {
-            self.memory.working.retain(|task| {
-                tasks.iter().any(|(rec, status)| {
-                    rec.id == *task
-                        && rec.origin == Origin::Adopted
-                        && status.state.is_open()
-                        && status.herdr.is_some()
-                })
-            });
         }
         let mut observed = self.read_task_files(&tasks);
         self.reconcile_waits(&tasks, &follow);
@@ -584,19 +530,14 @@ impl<'a> Watcher<'a> {
                 }
                 Verdict::Wake(reason) => {
                     self.advance(progress, true);
-                    if let Observation::AgentState { task, .. } | Observation::AgentGone { task } =
-                        &obs
-                    {
-                        self.record_report_events(task);
-                    }
                     queue::push(self.state, &reason, &obs)?;
                     self.log(&format!("wake {reason}"));
-                    self.save(tasks_listed)?;
+                    self.save()?;
                     return Ok(Some(reason));
                 }
             }
         }
-        self.save(tasks_listed)?;
+        self.save()?;
         Ok(None)
     }
 
@@ -721,18 +662,6 @@ impl<'a> Watcher<'a> {
         skipped
     }
 
-    /// Notes how long the task's event log was when a wake reported its worker, so new events
-    /// make the same status news again.
-    fn record_report_events(&mut self, task: &str) {
-        match self.store.task_dir(task) {
-            Ok(dir) => {
-                let events = file_len(&dir.join(EVENTS_FILE));
-                self.memory.reported.record_events(task, events);
-            }
-            Err(err) => self.log(&format!("{err:#}")),
-        }
-    }
-
     fn advance(&mut self, progress: Progress, woke: bool) {
         match progress {
             Progress::Nothing => {}
@@ -762,9 +691,8 @@ impl<'a> Watcher<'a> {
     }
 
     /// Status changes and appended events since each task's files were last read. A task
-    /// read for the first time is replayed from `pending` and an empty event log, unless this
-    /// is the very first run, which takes it as it is; a closed task whose closing was read is
-    /// passed over.
+    /// read for the first time is replayed from `pending` and an empty event log; a closed task
+    /// whose closing was read is passed over.
     fn read_task_files(&mut self, tasks: &[(TaskRecord, Status)]) -> Vec<(Observation, Progress)> {
         let mut observed = Vec::new();
         for (rec, status) in tasks {
@@ -779,25 +707,10 @@ impl<'a> Watcher<'a> {
                     continue;
                 }
             };
-            let mut seen = match seen {
-                Some(seen) => seen,
-                None if self.replay_unseen => {
-                    let replay = Seen {
-                        state: State::Pending,
-                        events: 0,
-                    };
-                    self.memory.seen.insert(rec.id.clone(), replay);
-                    replay
-                }
-                None => {
-                    let baseline = Seen {
-                        state: status.state,
-                        events: file_len(&events_path),
-                    };
-                    self.memory.seen.insert(rec.id.clone(), baseline);
-                    continue;
-                }
-            };
+            let mut seen = *self.memory.seen.entry(rec.id.clone()).or_insert(Seen {
+                state: State::Pending,
+                events: 0,
+            });
             if seen.state != status.state {
                 let obs = Observation::StatusChanged {
                     task: rec.id.clone(),
@@ -810,9 +723,6 @@ impl<'a> Watcher<'a> {
             }
             match new_events(&events_path, seen.events) {
                 Ok(NewEvents::Lines(lines)) => {
-                    if let Some((_, end)) = lines.last() {
-                        self.memory.reported.events_grew(&rec.id, *end);
-                    }
                     for (kind, end) in lines {
                         seen.events = end;
                         let task = rec.id.clone();
@@ -941,12 +851,7 @@ impl<'a> Watcher<'a> {
                 continue;
             };
             let herdr = Herdr::with_session(self.runner.clone(), &spec.session);
-            let adopted = matches!(spec.target, WaitTarget::Task { adopted: true, .. });
-            let reported = if adopted && self.memory.working.contains(&key) {
-                Some(herdr::AgentStatus::Working)
-            } else {
-                self.memory.reported.status(&key)
-            };
+            let reported = self.memory.reported.status(&key);
             let wait = PaneWait::new(spec, host.clone(), herdr, reported);
             self.waits.insert(key, wait);
         }
@@ -962,8 +867,6 @@ impl<'a> Watcher<'a> {
         let mut turn_ends = Vec::new();
         for wait in self.waits.values_mut() {
             let reported = &mut self.memory.reported;
-            let working = &mut self.memory.working;
-            let adopted = matches!(wait.spec.target, WaitTarget::Task { adopted: true, .. });
             let obs = match wait.poll(timeout_ms) {
                 Polled::Running => continue,
                 Polled::Reached(status) => {
@@ -971,11 +874,6 @@ impl<'a> Watcher<'a> {
                     reported.agent_seen(&wait.spec.key(), status);
                     if wait.turn_ended() {
                         turn_ends.push(wait.spec.key());
-                    }
-                    if adopted && status == herdr::AgentStatus::Working {
-                        working.insert(wait.spec.key());
-                    } else {
-                        working.remove(&wait.spec.key());
                     }
                     if !wait.spec.wake_statuses().contains(&status) {
                         notes.push(format!("{}: agent {}", wait.spec.key(), status.as_str()));
@@ -989,7 +887,6 @@ impl<'a> Watcher<'a> {
                 }
                 Polled::Gone => {
                     reported.reachable(&wait.host.name);
-                    working.remove(&wait.spec.key());
                     if matches!(wait.spec.target, WaitTarget::Observed { .. }) {
                         reported.agent_seen(&wait.spec.key(), herdr::AgentStatus::Unknown);
                     }
@@ -1140,18 +1037,13 @@ impl<'a> Watcher<'a> {
         (since_secs >= self.settings.quiet_secs).then_some(since_secs)
     }
 
-    /// Writes what changed since the last save; `tasks_listed` says whether this cycle read
-    /// the task list, without which a run that never saved writes nothing yet.
-    fn save(&mut self, tasks_listed: bool) -> anyhow::Result<()> {
-        if self.state_saved && self.memory == self.saved {
-            return Ok(());
-        }
-        if !self.state_saved && !tasks_listed {
+    /// Writes what changed since the last save.
+    fn save(&mut self) -> anyhow::Result<()> {
+        if self.memory == self.saved {
             return Ok(());
         }
         write_watch_state(self.state, &self.memory)?;
         self.saved = self.memory.clone();
-        self.state_saved = true;
         Ok(())
     }
 
@@ -1181,38 +1073,44 @@ fn write_watch_state(state: &StateDir, memory: &WatchState) -> anyhow::Result<()
     write_atomic(&path, &bytes).with_context(|| format!("writing {}", path.display()))
 }
 
-/// The state the last run saved and `true`, or the default and `false` when there is none. A
-/// file that does not parse is renamed aside as `watch-state.json.corrupt-<ts>`, reported on
-/// stderr, and replaced by the default, so one bad write cannot stop every later watch; it
-/// counts as no saved state, since replaying every task it no longer records would wake once
-/// per task ever closed.
-fn load_watch_state(state: &StateDir) -> anyhow::Result<(WatchState, bool)> {
+/// The state the last run saved, or an empty one when there is none. A file that does not
+/// parse is logged and replaced by an empty state.
+fn load_watch_state(state: &StateDir) -> anyhow::Result<WatchState> {
     let path = state.root().join(WATCH_STATE_FILE);
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            return Ok((WatchState::default(), false));
-        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(WatchState::default()),
         Err(err) => return Err(err).with_context(|| format!("reading {}", path.display())),
     };
-    match serde_json::from_slice(&bytes) {
-        Ok(memory) => Ok((memory, true)),
-        Err(err) => {
-            let mut aside = path.clone().into_os_string();
-            aside.push(format!(
-                ".corrupt-{}",
-                Timestamp::now().strftime("%Y%m%dT%H%M%SZ")
-            ));
-            std::fs::rename(&path, &aside)
-                .with_context(|| format!("moving {} aside", path.display()))?;
-            eprintln!(
-                "{} did not parse ({err}); moved it to {} and starting afresh",
-                path.display(),
-                Path::new(&aside).display()
-            );
-            Ok((WatchState::default(), false))
-        }
+    Ok(serde_json::from_slice(&bytes).unwrap_or_else(|err| {
+        append_log(
+            state,
+            &format!("{} did not parse ({err}); starting afresh", path.display()),
+        );
+        WatchState::default()
+    }))
+}
+
+/// Writes `watch-state.json` with every existing task marked read as it is now, unless the file
+/// exists, so the first watch run replays only what changes after this. `flow up` calls it when
+/// it starts a supervisor.
+pub fn seed(state: &StateDir) -> anyhow::Result<()> {
+    if state.root().join(WATCH_STATE_FILE).exists() {
+        return Ok(());
     }
+    let store = Store::open(state);
+    let mut memory = WatchState::default();
+    for (rec, status) in store.list_tasks()? {
+        let seen = Seen {
+            state: status.state,
+            events: file_len(&store.task_dir(&rec.id)?.join(EVENTS_FILE)),
+        };
+        memory.seen.insert(rec.id, seen);
+    }
+    let supervisor = state.root().join(SUPERVISOR_DIR);
+    std::fs::create_dir_all(&supervisor)
+        .with_context(|| format!("creating {}", supervisor.display()))?;
+    write_watch_state(state, &memory)
 }
 
 #[cfg(test)]
@@ -1626,7 +1524,7 @@ default_branch = "main"
     fn followed_session_wakes_once_then_waits_for_a_change() {
         let fx = Fixture::new();
         fx.follow();
-        let runner = fake(vec![answer(0, IDLE), answer(0, IDLE), answer(0, IDLE)]);
+        let runner = fake(vec![answer(0, IDLE), answer(0, WORKING)]);
         let mut first = fx.watcher(&runner, DEFAULT_QUIET_SECS);
         assert_eq!(
             two_cycles(&mut first).as_deref(),
@@ -1636,12 +1534,10 @@ default_branch = "main"
 
         let mut second = fx.watcher(&runner, DEFAULT_QUIET_SECS);
         assert_eq!(two_cycles(&mut second), None);
-        assert_eq!(second.cycle().unwrap(), None);
         assert_eq!(
             wait_untils(&runner),
             [
                 vec!["idle", "blocked", "done"],
-                vec!["working", "blocked", "done"],
                 vec!["working", "blocked", "done"],
             ]
         );
@@ -1653,7 +1549,6 @@ default_branch = "main"
         let fx = Fixture::new();
         fx.hand();
         let runner = fake(vec![
-            answer(0, BLOCKED),
             answer(0, BLOCKED),
             answer(0, WORKING),
             answer(0, BLOCKED),
@@ -1670,7 +1565,6 @@ default_branch = "main"
             wait_untils(&runner),
             [
                 vec!["blocked"],
-                vec!["idle", "working", "done"],
                 vec!["idle", "working", "done"],
                 vec!["idle", "blocked", "done"],
             ]
@@ -1721,6 +1615,7 @@ default_branch = "main"
             .set_status(TASK, |status| status.state = State::Done)
             .unwrap();
         let runner = fake(Vec::new());
+        seed(&fx.state).unwrap();
         let mut watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
 
         assert_eq!(watcher.cycle().unwrap(), None);
@@ -1746,6 +1641,7 @@ default_branch = "main"
                 repeat: true,
                 ..on("host-a", &["agent", "wait"], WORKING)
             }]);
+            seed(&fx.state).unwrap();
             let mut watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
 
             assert_eq!(watcher.cycle().unwrap(), None);
@@ -2020,58 +1916,8 @@ default_branch = "main"
         );
     }
 
-    fn watch_state(fx: &Fixture) -> serde_json::Value {
-        let path = fx.state.root().join(WATCH_STATE_FILE);
-        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
-    }
-
     #[test]
-    fn an_adopted_turn_that_ends_between_runs_is_logged_by_the_next_run() {
-        let fx = Fixture::new();
-        fx.adopted_task();
-        fx.agent("env-0001", "default", "w2:p1", "Other session");
-        let runner = fake(vec![
-            on("host-a", &["agent", "wait", "w1:p1"], WORKING),
-            on("host-a", &["agent", "wait", "w2:p1"], BLOCKED),
-        ]);
-        let mut first = fx.watcher(&runner, DEFAULT_QUIET_SECS);
-        assert_eq!(
-            two_cycles(&mut first).as_deref(),
-            Some(r#"observed-blocked: host-a w2:p1 "Other session""#)
-        );
-        drop(first);
-        assert_eq!(watch_state(&fx)["working"], serde_json::json!([TASK]));
-        assert!(!fx.events().iter().any(|ev| ev.kind == "turn.end"));
-
-        let runner = fake(vec![
-            on("host-a", &["agent", "wait", "w1:p1"], IDLE),
-            Scripted {
-                repeat: true,
-                ..on("host-a", &["agent", "wait", "w2:p1"], BLOCKED)
-            },
-        ]);
-        let mut second = fx.watcher(&runner, DEFAULT_QUIET_SECS);
-        assert_eq!(two_cycles(&mut second), None);
-
-        let turn_ends = fx
-            .events()
-            .iter()
-            .filter(|ev| ev.kind == "turn.end")
-            .count();
-        assert_eq!(turn_ends, 1);
-        let adopted_untils: Vec<Vec<String>> = wait_untils(&runner)
-            .into_iter()
-            .zip(runner.calls())
-            .filter(|(_, call)| call.argv.contains(&"w1:p1".to_owned()))
-            .map(|(until, _)| until)
-            .collect();
-        assert_eq!(adopted_untils, [vec!["idle", "blocked", "done"]]);
-        drop(second);
-        assert!(watch_state(&fx).get("working").is_none());
-    }
-
-    #[test]
-    fn an_adopted_task_first_read_idle_without_a_marker_logs_nothing() {
+    fn an_adopted_task_first_read_idle_logs_nothing() {
         let fx = Fixture::new();
         fx.adopted_task();
         let runner = fake(waits_answer(&[IDLE]));
@@ -2080,65 +1926,6 @@ default_branch = "main"
         assert_eq!(two_cycles(&mut watcher), None);
 
         assert!(!fx.events().iter().any(|ev| ev.kind == "turn.end"));
-    }
-
-    #[test]
-    fn a_working_marker_is_dropped_once_its_task_closes() {
-        let fx = Fixture::new();
-        fx.adopted_task();
-        let runner = fake(waits_answer(&[WORKING]));
-        let mut first = fx.watcher(&runner, DEFAULT_QUIET_SECS);
-        assert_eq!(two_cycles(&mut first), None);
-        drop(first);
-        assert_eq!(watch_state(&fx)["working"], serde_json::json!([TASK]));
-
-        Store::open(&fx.state)
-            .set_status(TASK, |status| {
-                status.state = State::Done;
-                status.herdr = None;
-            })
-            .unwrap();
-        let mut second = fx.watcher(&runner, DEFAULT_QUIET_SECS);
-        assert_eq!(second.cycle().unwrap().as_deref(), Some("done: aaaaaaab"));
-        drop(second);
-        assert!(watch_state(&fx).get("working").is_none());
-    }
-
-    #[test]
-    fn noting_an_adopted_task_working_leaves_a_live_runs_state_alone() {
-        let fx = Fixture::new();
-        fx.adopted_task();
-        let path = fx.state.root().join(WATCH_STATE_FILE);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "{}\n").unwrap();
-        let guard = lock::acquire(&fx.state, std::process::id())
-            .unwrap()
-            .unwrap();
-
-        note_working(&fx.state, TASK).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{}\n");
-
-        drop(guard);
-        note_working(&fx.state, TASK).unwrap();
-        assert_eq!(watch_state(&fx)["working"], serde_json::json!([TASK]));
-    }
-
-    #[test]
-    fn noting_an_adopted_task_working_seeds_an_existing_watch_state_only() {
-        let fx = Fixture::new();
-        fx.adopted_task();
-
-        note_working(&fx.state, TASK).unwrap();
-        assert!(!fx.state.root().join(WATCH_STATE_FILE).exists());
-
-        let runner = fake(vec![Scripted {
-            repeat: true,
-            ..on("host-a", &["agent", "wait"], WORKING)
-        }]);
-        let mut watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
-        assert_eq!(watcher.cycle().unwrap(), None);
-        note_working(&fx.state, TASK).unwrap();
-        assert_eq!(watch_state(&fx)["working"], serde_json::json!([TASK]));
     }
 
     #[test]
@@ -2461,7 +2248,11 @@ default_branch = "main"
     fn following_an_idle_hand_session_mid_run_restarts_its_wait_and_wakes_once() {
         let fx = Fixture::new();
         fx.hand();
-        let runner = fake(vec![answer(0, WORKING), answer(0, IDLE), answer(0, IDLE)]);
+        let runner = fake(vec![
+            answer(0, WORKING),
+            answer(0, IDLE),
+            answer(0, WORKING),
+        ]);
         let mut watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
         assert_eq!(watcher.cycle().unwrap(), None);
         fx.follow();
@@ -2583,14 +2374,10 @@ default_branch = "main"
     }
 
     #[test]
-    fn blocked_worker_wakes_again_once_its_task_logged_events() {
+    fn a_status_an_earlier_run_reported_is_waited_on_for_a_change() {
         let fx = Fixture::new();
         fx.task(true);
-        let runner = fake(vec![
-            answer(0, BLOCKED),
-            answer(0, BLOCKED),
-            answer(0, BLOCKED),
-        ]);
+        let runner = fake(vec![answer(0, BLOCKED), answer(0, IDLE)]);
         let mut first = fx.watcher(&runner, DEFAULT_QUIET_SECS);
         assert_eq!(
             two_cycles(&mut first).as_deref(),
@@ -2599,81 +2386,47 @@ default_branch = "main"
         drop(first);
         let mut second = fx.watcher(&runner, DEFAULT_QUIET_SECS);
         assert_eq!(two_cycles(&mut second), None);
-        drop(second);
-
-        let ev = Event {
-            ts: Timestamp::now(),
-            source: "cli".to_owned(),
-            kind: "status.report".to_owned(),
-            data: serde_json::json!({}),
-        };
-        Store::open(&fx.state).append_event(TASK, &ev).unwrap();
-        let mut third = fx.watcher(&runner, DEFAULT_QUIET_SECS);
         assert_eq!(
-            two_cycles(&mut third).as_deref(),
-            Some("agent-blocked: aaaaaaab")
+            wait_untils(&runner),
+            [vec!["blocked", "done"], vec!["idle", "working", "done"]]
         );
     }
 
     #[test]
-    fn task_first_seen_after_an_earlier_run_replays_its_status() {
+    fn a_task_first_seen_replays_its_status() {
         let fx = Fixture::new();
-        let runner = fake(Vec::new());
-        assert_eq!(
-            fx.watcher(&runner, DEFAULT_QUIET_SECS).cycle().unwrap(),
-            None
-        );
-        assert!(fx.state.root().join(WATCH_STATE_FILE).exists());
-
         fx.task(false);
         Store::open(&fx.state)
             .set_status(TASK, |status| status.state = State::Done)
             .unwrap();
+        let runner = fake(Vec::new());
+        let mut first = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+        assert_eq!(first.cycle().unwrap().as_deref(), Some("done: aaaaaaab"));
         let mut next = fx.watcher(&runner, DEFAULT_QUIET_SECS);
-        assert_eq!(next.cycle().unwrap().as_deref(), Some("done: aaaaaaab"));
-        let mut after = fx.watcher(&runner, DEFAULT_QUIET_SECS);
-        assert_eq!(after.cycle().unwrap(), None);
-    }
-
-    #[test]
-    fn first_run_ever_takes_tasks_as_they_are() {
-        let fx = Fixture::new();
-        fx.task(false);
-        Store::open(&fx.state)
-            .set_status(TASK, |status| status.state = State::Done)
-            .unwrap();
-        let runner = fake(Vec::new());
-        assert_eq!(
-            fx.watcher(&runner, DEFAULT_QUIET_SECS).cycle().unwrap(),
-            None
-        );
-    }
-
-    #[test]
-    fn first_run_whose_listing_fails_stays_a_first_run() {
-        let fx = Fixture::new();
-        fx.task(false);
-        let status = Store::open(&fx.state)
-            .task_dir(TASK)
-            .unwrap()
-            .join("status.json");
-        let good = std::fs::read(&status).unwrap();
-        std::fs::write(&status, "{not json").unwrap();
-        let runner = fake(Vec::new());
-        assert_eq!(
-            fx.watcher(&runner, DEFAULT_QUIET_SECS).cycle().unwrap(),
-            None
-        );
-        assert!(!fx.state.root().join(WATCH_STATE_FILE).exists());
-
-        std::fs::write(&status, good).unwrap();
-        Store::open(&fx.state)
-            .set_status(TASK, |status| status.state = State::Done)
-            .unwrap();
-        let mut next = fx.watcher(&runner, DEFAULT_QUIET_SECS);
-        assert!(!next.replay_unseen);
         assert_eq!(next.cycle().unwrap(), None);
-        assert!(fx.state.root().join(WATCH_STATE_FILE).exists());
+    }
+
+    #[test]
+    fn a_seeded_watch_state_takes_existing_tasks_as_they_are() {
+        let fx = Fixture::new();
+        fx.task(false);
+        Store::open(&fx.state)
+            .set_status(TASK, |status| status.state = State::Done)
+            .unwrap();
+        seed(&fx.state).unwrap();
+        let path = fx.state.root().join(WATCH_STATE_FILE);
+        let seeded = std::fs::read(&path).unwrap();
+        let runner = fake(Vec::new());
+        assert_eq!(
+            fx.watcher(&runner, DEFAULT_QUIET_SECS).cycle().unwrap(),
+            None
+        );
+
+        Store::open(&fx.state)
+            .set_status(TASK, |status| status.state = State::Working)
+            .unwrap();
+        seed(&fx.state).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), seeded);
     }
 
     #[test]
@@ -2705,6 +2458,7 @@ default_branch = "main"
             Store::open(&fx.state)
                 .set_status(TASK, |status| status.state = state)
                 .unwrap();
+            seed(&fx.state).unwrap();
             let runner = fake(vec![answer(0, answer_json), answer(0, answer_json)]);
             assert_eq!(
                 two_cycles(&mut fx.watcher(&runner, DEFAULT_QUIET_SECS)),
@@ -2809,28 +2563,19 @@ default_branch = "main"
     }
 
     #[test]
-    fn unparsable_watch_state_is_set_aside() {
+    fn unparsable_watch_state_is_logged_and_replaced() {
         let fx = Fixture::new();
+        fx.task(false);
         let supervisor = fx.state.root().join(SUPERVISOR_DIR);
         std::fs::create_dir_all(&supervisor).unwrap();
-        std::fs::write(fx.state.root().join(WATCH_STATE_FILE), "{not json").unwrap();
+        let path = fx.state.root().join(WATCH_STATE_FILE);
+        std::fs::write(&path, "{not json").unwrap();
         let mut watcher = fx.watcher(&fake(Vec::new()), DEFAULT_QUIET_SECS);
         assert_eq!(watcher.memory, WatchState::default());
-        assert!(!watcher.replay_unseen);
+        assert!(fx.log().contains("did not parse"), "{}", fx.log());
         assert_eq!(watcher.cycle().unwrap(), None);
-        let mut names: Vec<String> = std::fs::read_dir(&supervisor)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-            .collect();
-        names.sort();
-        assert_eq!(names.len(), 2, "{names:?}");
-        assert_eq!(names[0], "watch-state.json");
-        assert!(
-            names[1].starts_with("watch-state.json.corrupt-"),
-            "{names:?}"
-        );
-        let aside = std::fs::read_to_string(supervisor.join(&names[1])).unwrap();
-        assert_eq!(aside, "{not json");
+        let saved: WatchState = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(saved.seen.contains_key(TASK));
     }
 
     #[test]

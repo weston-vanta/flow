@@ -158,15 +158,12 @@ pub struct Reported {
 pub struct PaneReport {
     /// The agent's status, or `gone`.
     pub seen: String,
-    /// The length of the task's `events.jsonl` when the report was made; `None` for an observed
-    /// session, which has no event log.
-    #[serde(default)]
-    pub events: Option<u64>,
 }
 
 impl Reported {
-    /// `verdict` for `obs`, absorbed when an earlier wake already reported the same thing, and
-    /// recorded when it wakes.
+    /// `verdict` for `obs`, absorbed when an earlier wake already reported the same unreachable
+    /// host or gone pane, and recorded when it wakes. A status is not checked: the next wait on
+    /// its pane starts from it and ends only on another.
     pub fn review(&mut self, obs: &Observation, verdict: Verdict) -> Verdict {
         if verdict == Verdict::Absorb {
             return verdict;
@@ -182,15 +179,23 @@ impl Reported {
             | Observation::ObservedChanged { .. } => {
                 let key = pane_key(obs).expect("agent observations name a pane");
                 let seen = pane_report(obs).expect("agent observations report a pane");
-                if self
-                    .agents_reported
-                    .get(&key)
-                    .is_some_and(|report| report.seen == seen)
+                let gone = matches!(
+                    obs,
+                    Observation::AgentGone { .. }
+                        | Observation::ObservedChanged {
+                            status: AgentStatus::Unknown,
+                            ..
+                        }
+                );
+                if gone
+                    && self
+                        .agents_reported
+                        .get(&key)
+                        .is_some_and(|report| report.seen == seen)
                 {
                     return Verdict::Absorb;
                 }
-                self.agents_reported
-                    .insert(key, PaneReport { seen, events: None });
+                self.agents_reported.insert(key, PaneReport { seen });
             }
             _ => {}
         }
@@ -214,27 +219,6 @@ impl Reported {
     /// Forgets that `host` was reported unreachable, once it answers again.
     pub fn reachable(&mut self, host: &str) {
         self.unreachable.remove(host);
-    }
-
-    /// Records the length of the task's `events.jsonl` when its pane's status was reported.
-    pub fn record_events(&mut self, key: &str, events: u64) {
-        if let Some(report) = self.agents_reported.get_mut(key) {
-            report.events = Some(events);
-        }
-    }
-
-    /// Forgets the status reported for a task's pane once its `events.jsonl` grew past the
-    /// length recorded with the report: the worker did something since, so the same status is
-    /// news again.
-    pub fn events_grew(&mut self, key: &str, events: u64) {
-        if self
-            .agents_reported
-            .get(key)
-            .and_then(|report| report.events)
-            .is_some_and(|reported| events > reported)
-        {
-            self.agents_reported.remove(key);
-        }
     }
 
     /// Forgets the status reported for a pane once herdr reports another one.
@@ -555,57 +539,34 @@ mod tests {
     }
 
     #[test]
-    fn agent_status_wakes_once_until_it_changes() {
+    fn a_reported_status_is_kept_until_herdr_reports_another() {
         let mut reported = Reported::default();
         let blocked = agent(AgentStatus::Blocked);
         assert_eq!(
             reviewed(&mut reported, &blocked),
             wake("agent-blocked: aaaaaaab")
         );
-        assert_eq!(reviewed(&mut reported, &blocked), Verdict::Absorb);
+        reported.agent_seen(TASK, AgentStatus::Blocked);
+        assert_eq!(reported.status(TASK), Some(AgentStatus::Blocked));
         reported.agent_seen(TASK, AgentStatus::Working);
-        assert_eq!(
-            reviewed(&mut reported, &blocked),
-            wake("agent-blocked: aaaaaaab")
-        );
+        assert_eq!(reported.status(TASK), None);
     }
 
     #[test]
-    fn agent_status_wakes_again_after_task_events_grew() {
-        let mut reported = Reported::default();
-        let blocked = agent(AgentStatus::Blocked);
-        reviewed(&mut reported, &blocked);
-        reported.record_events(TASK, 120);
-        reported.events_grew(TASK, 120);
-        assert_eq!(reviewed(&mut reported, &blocked), Verdict::Absorb);
-        reported.events_grew(TASK, 180);
-        assert_eq!(
-            reviewed(&mut reported, &blocked),
-            wake("agent-blocked: aaaaaaab")
-        );
-    }
-
-    #[test]
-    fn observed_report_is_not_cleared_by_events() {
-        let mut reported = Reported::default();
-        let idle = observed("w1:p1", AgentStatus::Idle);
-        reported.review(&idle, wake("observed-idle: host-a w1:p1"));
-        let key = pane_key(&idle).unwrap();
-        reported.events_grew(&key, 1_000);
-        assert_eq!(
-            reported.review(&idle, wake("observed-idle: host-a w1:p1")),
-            Verdict::Absorb
-        );
-    }
-
-    #[test]
-    fn agent_gone_wakes_once() {
+    fn a_gone_pane_wakes_once() {
         let mut reported = Reported::default();
         let gone = Observation::AgentGone {
             task: TASK.to_owned(),
         };
         assert_eq!(reviewed(&mut reported, &gone), wake("agent-gone: aaaaaaab"));
         assert_eq!(reviewed(&mut reported, &gone), Verdict::Absorb);
+
+        let followed = following("default");
+        let gone = observed("w1:p1", AgentStatus::Unknown);
+        let verdict = || classify(&gone, &followed);
+        let woke = wake(r#"observed-unknown: host-a w1:p1 "Tidy docs""#);
+        assert_eq!(reported.review(&gone, verdict()), woke);
+        assert_eq!(reported.review(&gone, verdict()), Verdict::Absorb);
     }
 
     #[test]

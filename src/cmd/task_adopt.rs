@@ -2,9 +2,7 @@
 //! session keeps running where it is, in the herdr session it was started in; flow records a task
 //! whose herdr target is its pane, writes it a brief, and tells it so through herdr. No hooks can
 //! be added to a running session, so an adopted task reports through its own `flow task` calls and
-//! herdr's view of it; `flow watch` logs its turn ends from herdr's `working` to `idle`. When the
-//! prompt finds the session working, adoption records that for the next watch run, so the end of
-//! that turn is logged too.
+//! herdr's view of it; `flow watch` logs its turn ends from herdr's `working` to `idle`.
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -18,7 +16,7 @@ use super::Refused;
 use super::dispatch::BriefSource;
 use super::steer;
 use crate::harness::brief;
-use crate::herdr::{Agent, AgentStatus, Herdr};
+use crate::herdr::{Agent, Herdr};
 use crate::host;
 use crate::inventory;
 use crate::observe::{self, FollowList};
@@ -32,7 +30,6 @@ use crate::state::task::{
 };
 use crate::state::{Store, ids};
 use crate::supervisor;
-use crate::watch;
 
 const EVENT_SOURCE: &str = "cli";
 const OWNER: &str = "supervisor";
@@ -132,17 +129,12 @@ pub fn run(state: &StateDir, args: &AdoptArgs) -> anyhow::Result<ExitCode> {
         Ok((message, prompted))
     });
     let code = match taken {
-        Ok((message, Ok(reached))) => {
+        Ok((message, Ok(_))) => {
             if let Err(err) = store.append_event(
                 id,
                 &event(steer::EVENT_SOURCE, "steer", json!({ "text": message })),
             ) {
                 return Err(fail(&store, id, err));
-            }
-            if reached == AgentStatus::Working
-                && let Err(err) = watch::note_working(state, id)
-            {
-                eprintln!("could not tell the watcher task {id} is working: {err:#}");
             }
             ExitCode::SUCCESS
         }
@@ -303,6 +295,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::herdr::AgentStatus;
 
     fn agent(kind: &str, cwd: &str, session_id: Option<&str>) -> Agent {
         Agent {

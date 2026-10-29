@@ -59,7 +59,8 @@ one reason; handle every row.
   never `observed-`. It has no hooks; the watcher logs a `turn.end` event whenever herdr sees
   it go from working to idle. A `quiet:` wake for it means it ended a turn, or reported, that
   long ago without reporting since and without writing in its working directory: it may have
-  finished, or stopped to ask the user something in its own terminal.
+  finished, or stopped to ask the user something in its own terminal. A turn that ended while
+  no watcher ran is not logged, so the wake may come early; look before acting on it.
 - `heartbeat`: nothing happened. Glance at `flow status`; report only real changes.
 - `watch-failed: <error>`: the watcher hit an error. Each distinct error wakes you once;
   the watcher started at your next turn end keeps retrying it in the background and resumes

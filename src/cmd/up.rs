@@ -2,7 +2,8 @@
 //! live supervisor is the agent on the lock's host, in the herdr session the lock records, that
 //! herdr reports the lock's Claude Code session for. A new one starts in the configured session,
 //! resuming that Claude Code session, and is not started beside an agent in the lock's pane that
-//! herdr reports no session for, since a second supervisor would resume the same session.
+//! herdr reports no session for, since a second supervisor would resume the same session. With
+//! no `watch-state.json` yet, it first writes one marking every existing task read.
 
 use std::os::unix::process::CommandExt;
 use std::path::Path;
@@ -23,7 +24,7 @@ use crate::state::Store;
 use crate::state::config::{Config, Host};
 use crate::state::task::{HerdrTarget, Status, TaskRecord};
 use crate::supervisor::{self, Lock, SUPERVISOR_CWD, SUPERVISOR_ENV, SUPERVISOR_NAME};
-use crate::watch::lock as watch_lock;
+use crate::watch::{self, lock as watch_lock};
 
 const AGENT_KIND: &str = "claude";
 /// The supervisor's first prompt, fresh or resumed: its first turn runs the start procedure,
@@ -53,6 +54,7 @@ pub fn run(state: &StateDir) -> anyhow::Result<()> {
     if watch_lock::clear(state)? {
         eprintln!("removed state/supervisor/watch.lock left by the previous supervisor");
     }
+    watch::seed(state)?;
     // The launch line names the state path, since herdr hands panes the environment of
     // whoever started its server, which may hold another FLOW_STATE.
     let state_root = state

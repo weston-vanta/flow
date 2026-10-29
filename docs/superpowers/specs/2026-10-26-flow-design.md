@@ -169,9 +169,9 @@ designer's call.
    where it is, so it gets no hooks: it reports through its own `flow task` calls and
    herdr's state. In place of the Stop hook, `flow watch` logs a `turn.end` event when herdr
    sees it go from `working` to `idle`, so the quiet check counts from its last turn's end
-   as it does for a dispatched worker. A turn seen starting in one watch run, or at
-   adoption, is remembered in `watch-state.json`, so its end is logged even when the next
-   run reads it. Closing an adopted task leaves its workspace open, since the user owns it.
+   as it does for a dispatched worker. A turn that ends while no watch run is up is not
+   logged, so such a task may be reported quiet once early. Closing an adopted task leaves
+   its workspace open, since the user owns it.
    The ladder, then: observed (seen, wakes on `blocked`), followed (also wakes on `idle` and
    `done`), adopted (a worker).
 
@@ -328,7 +328,8 @@ Task ids are short, time-ordered, and never reused.
 
 **Start or attach.** `flow up` on any CDE reads `state/supervisor/`. If herdr reports the
 recorded supervisor session for an agent on the lock's CDE, it attaches to it through ssh and
-herdr. If not, it removes any watch lock the previous supervisor's watcher left, opens a herdr
+herdr. If not, it removes any watch lock the previous supervisor's watcher left, writes
+`watch-state.json` with every task marked read when there is none yet, opens a herdr
 workspace on this CDE, in the configured herdr session, running the harness from
 `/workspaces/flow` with `--resume` of the recorded supervisor session when one exists and a
 first prompt to run the session start procedure (whose turn end arms `flow watch`), takes the
@@ -380,7 +381,7 @@ given. Commands that take `--json` print raw JSON instead of the compact view.
 Operator:
 
 - `flow init [--force]`: write `state/config.toml` from what this machine can tell, then refresh the inventory; `--force` replaces an existing file.
-- `flow up`: attach to the live supervisor session, or start one on this host and attach. The live supervisor is the agent on the lock's host that herdr reports the lock's Claude Code session for, wherever herdr moved it. When stdout is not a terminal, it prints the command to attach with instead of attaching. When no supervisor runs but the lock's pane holds an agent herdr reports no session for, it starts nothing and exits 1, since a second supervisor would resume the same session: if that is the user's own session, `flow down --forget` marks the supervisor stopped and leaves the pane alone; if it is the supervisor, exit it and run `flow down`; then `flow up`.
+- `flow up`: attach to the live supervisor session, or start one on this host and attach. The live supervisor is the agent on the lock's host that herdr reports the lock's Claude Code session for, wherever herdr moved it. When stdout is not a terminal, it prints the command to attach with instead of attaching. Starting one first writes `state/supervisor/watch-state.json` with every existing task marked read when that file does not exist, so the first `flow watch` wakes only on what changes after. When no supervisor runs but the lock's pane holds an agent herdr reports no session for, it starts nothing and exits 1, since a second supervisor would resume the same session: if that is the user's own session, `flow down --forget` marks the supervisor stopped and leaves the pane alone; if it is the supervisor, exit it and run `flow down`; then `flow up`.
 - `flow down [--forget]`: stop the supervisor, leaving every worker and task running. It closes the pane herdr shows the supervisor's Claude Code session in, marks the lock stopped keeping that session for the next `flow up` to resume, removes the watch lock, which ends the watcher at its next cycle, and says how many open tasks keep running. It fails, changing nothing, when the supervisor's host cannot be reached, and refuses beside an agent in the supervisor's pane that herdr reports no session for; `--forget` marks the supervisor stopped and closes nothing.
 - `flow status [--all] [--json]`: open tasks, their holds, pending dispatch requests from workers (`req-id  from-task  host  title`), and observed sessions; `--all` includes done and orphaned tasks.
 - `flow inventory [--refresh] [--json]`: worktrees, agents, and PRs per host; `--refresh` first discovers hosts from Ona (or the static list), probes each running one, and lists open PRs. `--json` gives each host its ssh alias, whether it is the host flow runs on (`local`), its Ona phase, when it was last seen, and whether it is reachable or gone.

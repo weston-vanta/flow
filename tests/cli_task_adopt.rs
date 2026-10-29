@@ -379,27 +379,6 @@ fn adopt_takes_over_a_hand_session_as_a_task() {
 }
 
 #[test]
-fn adopt_tells_the_next_watch_run_the_session_is_working() {
-    let fx = Fixture::new();
-    let state_file = fx.state.join("supervisor/watch-state.json");
-    let script = || adopting(&[hand("w5:p2", "Fix links")], on("host-b", PROMPTED));
-
-    stdout_of(fx.flow(&script()).args(adopt_args("Fix links", &[])));
-    assert!(
-        !state_file.exists(),
-        "a first watch run keeps its special case"
-    );
-
-    fs::write(&state_file, "{}").unwrap();
-    fs::remove_dir_all(fx.state.join("tasks")).unwrap();
-    stdout_of(fx.flow(&script()).args(adopt_args("Fix links", &[])));
-
-    let (record, _) = fx.only_adopted();
-    let saved: Value = serde_json::from_str(&fs::read_to_string(&state_file).unwrap()).unwrap();
-    assert_eq!(saved["working"], json!([record.id]), "{saved}");
-}
-
-#[test]
 fn adopt_without_a_brief_continues_the_work_under_way() {
     let fx = Fixture::new();
     fx.task_in(SESSION, "w5:p9");
