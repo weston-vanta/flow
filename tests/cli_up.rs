@@ -1077,3 +1077,34 @@ fn hook_supervisor_outside_supervisor_needs_no_state_dir() {
         .stdout("")
         .stderr("");
 }
+
+#[test]
+fn up_after_down_resumes_the_stopped_supervisor_here_without_probing_its_pane() {
+    let fx = Fixture::new();
+    fx.write_lock("env-0002", "host-b", LIVE_PANE, Some("s9"));
+    let path = fx.state.join("supervisor/lock.json");
+    let mut lock: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    lock["stopped"] = json!("2026-10-27T08:00:00Z");
+    fs::write(&path, lock.to_string()).unwrap();
+
+    let (_, stderr) = output_of(fx.flow(&fresh_start()).arg("up"));
+
+    let calls = fx.calls();
+    assert!(calls.iter().all(|(host, _)| host == "host-a"), "{calls:?}");
+    assert!(!has_subcommand(&calls, &["agent", "list"]), "{calls:?}");
+    let line = pane_run_line(&calls);
+    assert!(
+        line.contains("claude --name flow-supervisor --resume s9"),
+        "{line}"
+    );
+    assert!(
+        stderr.contains(&format!(
+            "resumed supervisor session s9 on host-a (pane {NEW_PANE})"
+        )),
+        "{stderr}"
+    );
+    let lock = fx.lock().unwrap();
+    assert_eq!(lock.stopped, None);
+    assert_eq!(lock.claude_session.as_deref(), Some("s9"));
+    assert_eq!(lock.host_env_id, "env-0001");
+}

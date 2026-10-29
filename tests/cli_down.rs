@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, Command as StdCommand};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -25,7 +25,9 @@ const NO_AGENTS: &str = r#"{"id":"cli:agent:list","result":{"agents":[],"type":"
 const AGENT_LIST: &str = include_str!("fixtures/herdr/agent_list.json");
 const SERVER_NOT_RUNNING: &str = include_str!("fixtures/herdr/agent_list_server_not_running.json");
 const UNREACHABLE: &str = "ssh: connect to host host-b.example port 22: Connection timed out";
-const NOTE: &str = "1 open tasks keep running; flow up starts a new supervisor\n";
+const NOTE: &str = "1 open tasks keep running; flow up resumes the supervisor\n";
+const KEPT: &str =
+    "marked the supervisor stopped in state/supervisor/lock.json, keeping session s9 to resume\n";
 
 struct Fixture {
     dir: tempfile::TempDir,
@@ -105,6 +107,14 @@ impl Fixture {
         fs::create_dir_all(&dir).unwrap();
         let owner = json!({"pid": pid, "host": env_id, "started": "2026-10-26T12:00:00Z"});
         fs::write(dir.join("owner.json"), owner.to_string()).unwrap();
+    }
+
+    /// Asserts the lock is kept, marked stopped, with its session to resume.
+    fn assert_stopped(&self) {
+        let lock: Value =
+            serde_json::from_str(&fs::read_to_string(self.lock_path()).unwrap()).unwrap();
+        assert!(lock["stopped"].is_string(), "{lock}");
+        assert_eq!(lock["claude_session"], "s9", "{lock}");
     }
 
     fn lock_path(&self) -> PathBuf {
@@ -204,7 +214,24 @@ fn down_without_a_lock_has_nothing_to_stop() {
 }
 
 #[test]
-fn down_closes_the_supervisors_workspace_and_removes_the_lock() {
+fn down_of_a_stopped_supervisor_has_nothing_to_stop() {
+    let fx = Fixture::new();
+    fx.write_lock("env-0001", "host-a", Some("default"));
+    stdout_of(fx.flow(&[ok(WORKSPACE_LIST)]).arg("down"));
+    let before = fs::read_to_string(fx.lock_path()).unwrap();
+
+    let stdout = stdout_of(fx.flow(&[]).arg("down"));
+
+    assert_eq!(
+        stdout,
+        "the supervisor is already stopped; nothing to stop\n"
+    );
+    assert!(fx.argvs().is_empty());
+    assert_eq!(fs::read_to_string(fx.lock_path()).unwrap(), before);
+}
+
+#[test]
+fn down_closes_the_supervisors_workspace_and_marks_the_lock_stopped() {
     let fx = Fixture::new();
     fx.write_lock("env-0001", "host-a", Some("default"));
 
@@ -217,7 +244,7 @@ fn down_closes_the_supervisors_workspace_and_removes_the_lock() {
         stdout,
         format!(
             "closed the supervisor's workspace w1 on host-a (herdr session default)\n\
-             removed state/supervisor/lock.json\n{NOTE}"
+             {KEPT}{NOTE}"
         )
     );
     assert_eq!(
@@ -227,7 +254,7 @@ fn down_closes_the_supervisors_workspace_and_removes_the_lock() {
             words(&["herdr", "--session", "default", "workspace", "close", "w1"]),
         ]
     );
-    assert!(!fx.lock_path().exists());
+    fx.assert_stopped();
     let (_, status) = fx.store().task("aaaaaaab").unwrap();
     assert_eq!(status.state, State::Working);
 }
@@ -243,11 +270,11 @@ fn down_notes_a_supervisor_workspace_already_gone() {
         stdout,
         format!(
             "the supervisor's pane w1:p1 on host-b is already gone\n\
-             removed state/supervisor/lock.json\n{NOTE}"
+             {KEPT}{NOTE}"
         )
     );
     assert_eq!(fx.argvs().len(), 1);
-    assert!(!fx.lock_path().exists());
+    fx.assert_stopped();
 
     fx.write_lock("env-0002", "host-b", Some("default"));
     let script = [json!({
@@ -268,7 +295,7 @@ fn down_notes_a_supervisor_workspace_already_gone() {
             .starts_with("the supervisor's pane w1:p1 on host-b is already gone: host-b is gone\n"),
         "{stdout}"
     );
-    assert!(!fx.lock_path().exists());
+    fx.assert_stopped();
 }
 
 #[test]
@@ -285,7 +312,7 @@ fn down_stops_a_live_local_watcher_and_clears_its_lock() {
         stdout,
         format!(
             "the supervisor's pane w1:p1 on host-a is already gone\n\
-             removed state/supervisor/lock.json\n\
+             {KEPT}\
              stopped the watcher (pid {})\n\
              removed state/supervisor/watch.lock\n{NOTE}",
             watcher.id()
@@ -332,7 +359,7 @@ fn down_offers_to_stop_an_emptied_session_that_is_not_flows_own() {
         stdout,
         format!(
             "closed the supervisor's workspace w1 on host-a (herdr session flow)\n\
-             removed state/supervisor/lock.json\n\
+             {KEPT}\
              Herdr:\n \
              - stop the server of herdr session flow on host-a, which has no agents left.\n\
              stopping\n\
@@ -434,5 +461,5 @@ fn down_needs_no_runner_call_for_an_unknown_host() {
         "{stdout}"
     );
     assert!(fx.argvs().is_empty());
-    assert!(!Path::new(&fx.lock_path()).exists());
+    fx.assert_stopped();
 }

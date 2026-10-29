@@ -19,7 +19,7 @@ use crate::render;
 use crate::runner::{self, Runner};
 use crate::state::Store;
 use crate::state::config::{Config, Host};
-use crate::state::task::{HerdrTarget, Status, TaskRecord};
+use crate::state::task::{Status, TaskRecord};
 use crate::supervisor;
 
 const OBSERVED: &str = "observed";
@@ -37,7 +37,7 @@ pub fn run(state: &StateDir, json: bool, summaries: bool) -> anyhow::Result<()> 
     let hosts = inventory::live_hosts(state)?;
     let inventories = live_inventories(state, &runner, &config, &hosts, Timestamp::now())?;
     let tasks = Store::open(state).list_tasks()?;
-    let supervisor = supervisor_pane(state)?;
+    let supervisor = supervisor::running_pane(state)?;
     let claude_home = observe::claude_home()?;
     let registry = observe::registry_sessions(&claude_home)?;
     let mut matched = observe::match_agents(
@@ -71,7 +71,7 @@ pub fn count_observed(state: &StateDir, tasks: &[(TaskRecord, Status)]) -> anyho
         .into_iter()
         .filter(|inv| !inv.gone)
         .collect();
-    let supervisor = supervisor_pane(state)?;
+    let supervisor = supervisor::running_pane(state)?;
     let matched = observe::match_agents(
         &agents_by_host(&inventories),
         tasks,
@@ -79,11 +79,6 @@ pub fn count_observed(state: &StateDir, tasks: &[(TaskRecord, Status)]) -> anyho
         &[],
     );
     Ok(matched.iter().filter(|entry| entry.is_observed()).count())
-}
-
-/// The supervisor's pane, as its lock records it.
-pub(super) fn supervisor_pane(state: &StateDir) -> anyhow::Result<Option<HerdrTarget>> {
-    Ok(supervisor::load(state)?.map(|lock| lock.herdr))
 }
 
 fn agents_by_host(inventories: &[HostInventory]) -> Vec<(&str, &[Agent])> {
@@ -213,7 +208,7 @@ pub(super) fn host_agents(
         }
     };
     let tasks = Store::open(state).list_tasks()?;
-    let supervisor = supervisor_pane(state)?;
+    let supervisor = supervisor::running_pane(state)?;
     let mut split = HostAgents::default();
     for agent in agents {
         let holder = observe::holder(

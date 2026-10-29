@@ -1,8 +1,9 @@
 //! `flow down`: stops the supervisor and leaves every worker and task as it is. It closes the
-//! supervisor's herdr workspace where its lock says it runs, removes the lock, and clears the
-//! watch lock, stopping a watcher still running on this machine; a watcher on another host ends
-//! on its own at its next cycle once its lock is gone. The next `flow up` starts a new
-//! supervisor. When the supervisor ran in a herdr session other than the configured one and
+//! supervisor's herdr workspace where its lock says it runs, marks the lock stopped, keeping the
+//! Claude Code session to resume, and clears the watch lock, stopping a watcher still running on
+//! this machine; a watcher on another host ends on its own at its next cycle once its lock is
+//! gone. The next `flow up` starts the supervisor again on the host it runs on, resuming that
+//! session. When the supervisor ran in a herdr session other than the configured one and
 //! that session has no agents left, it offers to stop that session's server; it never stops
 //! the configured session's.
 
@@ -30,6 +31,10 @@ pub fn run(state: &StateDir, yes: bool) -> anyhow::Result<ExitCode> {
         super::print("no supervisor recorded; nothing to stop\n")?;
         return Ok(ExitCode::SUCCESS);
     };
+    if lock.stopped.is_some() {
+        super::print("the supervisor is already stopped; nothing to stop\n")?;
+        return Ok(ExitCode::SUCCESS);
+    }
     let config = Config::load(state)?;
     let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
     let herdr = Herdr::with_session(runner, &lock.herdr.session);
@@ -37,8 +42,14 @@ pub fn run(state: &StateDir, yes: bool) -> anyhow::Result<ExitCode> {
     if let Some(host) = &host {
         close_workspace(&herdr, host, &lock)?;
     }
-    supervisor::remove(state)?;
-    super::print("removed state/supervisor/lock.json\n")?;
+    supervisor::mark_stopped(state)?;
+    let kept = match &lock.claude_session {
+        Some(session) => format!(", keeping session {session} to resume"),
+        None => String::new(),
+    };
+    super::print(&format!(
+        "marked the supervisor stopped in state/supervisor/lock.json{kept}\n"
+    ))?;
     clear_watch_lock(state)?;
     if let Some(host) = &host
         && lock.herdr.session != config.herdr_session
@@ -51,7 +62,7 @@ pub fn run(state: &StateDir, yes: bool) -> anyhow::Result<ExitCode> {
         .filter(|(_, status)| status.state.is_open())
         .count();
     super::print(&format!(
-        "{open} open tasks keep running; flow up starts a new supervisor\n"
+        "{open} open tasks keep running; flow up resumes the supervisor\n"
     ))?;
     Ok(ExitCode::SUCCESS)
 }

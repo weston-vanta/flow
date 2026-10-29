@@ -167,7 +167,7 @@ struct HandSession {
 }
 
 fn hand_sessions(state: &StateDir) -> anyhow::Result<Vec<HandSession>> {
-    let supervisor = supervisor::load(state)?.map(|lock| lock.herdr);
+    let supervisor = supervisor::running_pane(state)?;
     let mut hands = Vec::new();
     for inv in inventory::load_all(state)?
         .into_iter()
@@ -1677,6 +1677,20 @@ default_branch = "main"
             })
             .collect();
         assert_eq!(waited, ["w2:p1", "w3:p1"]);
+    }
+
+    #[test]
+    fn a_stopped_supervisors_pane_is_a_hand_session() {
+        let fx = Fixture::new();
+        fx.agent("env-0001", "flow", "w1:p1", "Tidy docs");
+        fx.supervisor_in("flow", "w1:p1");
+        supervisor::mark_stopped(&fx.state).unwrap();
+        let runner = fake(Vec::new());
+
+        let watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+
+        let hands: Vec<&str> = watcher.hands.iter().map(|h| h.pane_id.as_str()).collect();
+        assert_eq!(hands, ["w1:p1"]);
     }
 
     #[test]

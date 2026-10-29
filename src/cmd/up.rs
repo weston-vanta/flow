@@ -1,6 +1,7 @@
 //! `flow up`: attaches to the live supervisor, or starts one on this host and attaches to it.
 //! A live supervisor is found in the herdr session its lock records, whatever the configured
-//! one; a new one starts in the configured session.
+//! one; a new one starts in the configured session. One `flow down` stopped is not looked for:
+//! a new one starts here at once, resuming its Claude Code session.
 
 use std::os::unix::process::CommandExt;
 use std::path::Path;
@@ -30,7 +31,7 @@ pub fn run(state: &StateDir) -> anyhow::Result<()> {
     let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
     let hosts = inventory::hosts(state)?;
     let live = inventory::live_hosts(state)?;
-    if let Some(lock) = supervisor::load(state)? {
+    if let Some(lock) = supervisor::load(state)?.filter(|lock| lock.stopped.is_none()) {
         let herdr = Herdr::with_session(runner.clone(), &lock.herdr.session);
         if let Some(host) = live_host(&hosts, &live, &herdr, &lock)? {
             eprintln!(

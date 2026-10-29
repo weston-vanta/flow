@@ -1,5 +1,7 @@
 //! The supervisor session's lock, `state/supervisor/lock.json`: which host and herdr pane run
-//! the supervisor, and the Claude Code session to resume when it has to be started again.
+//! the supervisor, and the Claude Code session to resume when it has to be started again. `flow
+//! down` marks it stopped rather than removing it, so the next `flow up` resumes that session;
+//! a stopped lock names no running supervisor pane.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -38,6 +40,9 @@ pub struct Lock {
     pub herdr: HerdrTarget,
     pub claude_session: Option<String>,
     pub since: Timestamp,
+    /// When `flow down` stopped the supervisor; `None` while it runs, or ran until it died.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped: Option<Timestamp>,
 }
 
 impl Lock {
@@ -73,6 +78,7 @@ pub fn take(state: &StateDir, host_env_id: &str, herdr: HerdrTarget) -> anyhow::
             herdr,
             claude_session,
             since: Timestamp::now(),
+            stopped: None,
         };
         write(&path, &lock)?;
         Ok(lock)
@@ -80,14 +86,29 @@ pub fn take(state: &StateDir, host_env_id: &str, herdr: HerdrTarget) -> anyhow::
     .with_context(|| format!("writing {}", path.display()))
 }
 
-/// Removes the lock, returning whether there was one.
-pub fn remove(state: &StateDir) -> anyhow::Result<bool> {
+/// Marks the supervisor stopped now, keeping the Claude Code session to resume. Returns
+/// `false`, changing nothing, when there is no lock.
+pub fn mark_stopped(state: &StateDir) -> anyhow::Result<bool> {
     let path = lock_path(state);
-    match std::fs::remove_file(&path) {
-        Ok(()) => Ok(true),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(err) => Err(err).with_context(|| format!("removing {}", path.display())),
+    if !path.exists() {
+        return Ok(false);
     }
+    with_lock(&path, || {
+        let Some(mut lock) = read(&path).map_err(io::Error::other)? else {
+            return Ok(false);
+        };
+        lock.stopped = Some(Timestamp::now());
+        write(&path, &lock)?;
+        Ok(true)
+    })
+    .with_context(|| format!("updating {}", path.display()))
+}
+
+/// The pane of the supervisor the lock records, unless it was stopped.
+pub fn running_pane(state: &StateDir) -> anyhow::Result<Option<HerdrTarget>> {
+    Ok(load(state)?
+        .filter(|lock| lock.stopped.is_none())
+        .map(|lock| lock.herdr))
 }
 
 /// Sets the supervisor's Claude Code session to resume, or clears it with `None`. Returns
@@ -154,6 +175,7 @@ mod tests {
             },
             claude_session: None,
             since: "2026-10-26T12:00:00Z".parse().unwrap(),
+            stopped: None,
         }
     }
 
@@ -168,6 +190,46 @@ mod tests {
 
     fn words(items: &[&str]) -> Vec<String> {
         items.iter().map(|word| (*word).to_owned()).collect()
+    }
+
+    fn state() -> (tempfile::TempDir, StateDir) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("state")).unwrap();
+        let state = StateDir::resolve(dir.path()).unwrap();
+        (dir, state)
+    }
+
+    #[test]
+    fn a_lock_written_before_stops_were_recorded_reads_as_running() {
+        let lock: Lock = serde_json::from_str(
+            r#"{"host_env_id": "env-0002", "herdr": {"host": "host-b", "workspace_id": "w1",
+                "pane_id": "w1:p1", "agent": "claude"}, "claude_session": "s9",
+                "since": "2026-10-26T12:00:00Z"}"#,
+        )
+        .unwrap();
+        assert_eq!(lock.stopped, None);
+        let json = serde_json::to_value(&lock).unwrap();
+        assert!(json.get("stopped").is_none(), "{json}");
+    }
+
+    #[test]
+    fn a_stopped_lock_keeps_its_session_and_names_no_running_pane() {
+        let (_dir, state) = state();
+        assert!(!mark_stopped(&state).unwrap());
+        assert_eq!(running_pane(&state).unwrap(), None);
+        take(&state, "env-0002", lock().herdr).unwrap();
+        set_session(&state, Some("s9")).unwrap();
+        assert_eq!(running_pane(&state).unwrap(), Some(lock().herdr));
+
+        assert!(mark_stopped(&state).unwrap());
+
+        let stopped = load(&state).unwrap().unwrap();
+        assert!(stopped.stopped.is_some());
+        assert_eq!(stopped.claude_session.as_deref(), Some("s9"));
+        assert_eq!(running_pane(&state).unwrap(), None);
+        let resumed = take(&state, "env-0001", lock().herdr).unwrap();
+        assert_eq!(resumed.stopped, None);
+        assert_eq!(resumed.claude_session.as_deref(), Some("s9"));
     }
 
     #[test]
