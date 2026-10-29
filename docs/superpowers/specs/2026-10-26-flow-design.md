@@ -158,8 +158,9 @@ designer's call.
    adopt`: an adopted session is a task in every way flow can manage, with a brief, a record
    whose herdr target names the pane in the user's herdr session, and the same watching as a
    dispatched worker. It keeps running where it is, so it gets no hooks: it reports through
-   its own `flow task` calls and herdr's state, and the quiet check leans on herdr `working`
-   and writes in its working directory. Closing an adopted task leaves its workspace open,
+   its own `flow task` calls and herdr's state. In place of the Stop hook, `flow watch` logs a
+   `turn.end` event when herdr sees it go from `working` to `idle`, so the quiet check counts
+   from its last turn's end as it does for a dispatched worker. Closing an adopted task leaves its workspace open,
    since the user owns it. The ladder, then: observed (seen, wakes on `blocked`), followed
    (also wakes on `idle` and `done`), adopted (a worker).
 

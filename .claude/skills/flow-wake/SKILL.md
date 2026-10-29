@@ -49,9 +49,10 @@ one reason; handle every row.
   `flow sessions --summaries`. A summary whose `matched_by` is `cwd` in `flow sessions --json`
   is a guess by directory; say so. `flow unfollow <host> <title>` once they no longer need it.
 - A session taken over with `flow task adopt` is a task: its wakes are the task reasons above,
-  never `observed-`. It has no hooks, so its event log holds only its own `flow task` reports
-  and what flow logged, and a `quiet:` wake for it means herdr did not see it working and its
-  working directory has no recent writes.
+  never `observed-`. It has no hooks; the watcher logs a `turn.end` event whenever herdr sees
+  it go from working to idle. A `quiet:` wake for it means it ended a turn, or reported, that
+  long ago without reporting since and without writing in its working directory: it may have
+  finished, or stopped to ask the user something in its own terminal.
 - `heartbeat`: nothing happened. Glance at `flow status`; report only real changes.
 - `watch-failed: <error>`: the watcher hit an error. Each distinct error wakes you once;
   the watcher started at your next turn end keeps retrying it in the background and resumes

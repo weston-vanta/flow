@@ -3,7 +3,9 @@
 //! for, which for a hand session the user does not follow is `blocked` alone; once one of those
 //! was read, the next wait ends on any other status instead, so a status already observed does
 //! not answer again at once. After `working` the next wait also ends on any other status, so a
-//! worker known to be working is known to stop, idle included. A wait started on a pane whose
+//! worker known to be working is known to stop, idle included. An adopted task's wait also ends
+//! on `working` when it has no change to wait for, so the `idle` that ends each of its turns is
+//! seen, standing in for the turn-end hook such a session lacks. A wait started on a pane whose
 //! status an earlier wake reported starts as if it had just read that status: it ends on any
 //! other one first, so a change made while no wait ran still reaches the watcher.
 
@@ -19,6 +21,13 @@ use crate::state::config::Host;
 const RETRY_AFTER: Duration = Duration::from_secs(30);
 /// The worker statuses worth waking for.
 const TASK_WAKE_STATUSES: &[AgentStatus] = &[AgentStatus::Blocked, AgentStatus::Done];
+/// What an adopted task's wait ends on when it has no change to wait for: the wake statuses,
+/// and `working`, so the `idle` that ends a turn is seen after it.
+const ADOPTED_TASK_STATUSES: &[AgentStatus] = &[
+    AgentStatus::Working,
+    AgentStatus::Blocked,
+    AgentStatus::Done,
+];
 /// The followed hand-session statuses worth waking for.
 const FOLLOWED_WAKE_STATUSES: &[AgentStatus] =
     &[AgentStatus::Idle, AgentStatus::Blocked, AgentStatus::Done];
@@ -32,11 +41,11 @@ const WAITABLE_STATUSES: &[AgentStatus] = &[
     AgentStatus::Done,
 ];
 
-/// Whose agent a wait watches: a task's worker or a hand session, with whether the user follows
-/// it and its title as of the cached inventory.
+/// Whose agent a wait watches: a task's worker, with whether it was adopted, or a hand session,
+/// with whether the user follows it and its title as of the cached inventory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum WaitTarget {
-    Task(String),
+    Task { id: String, adopted: bool },
     Observed { followed: bool, title: String },
 }
 
@@ -52,7 +61,7 @@ impl WaitSpec {
     /// The key `classify::pane_key` gives this pane's observations.
     pub(super) fn key(&self) -> String {
         match &self.target {
-            WaitTarget::Task(task) => task.clone(),
+            WaitTarget::Task { id, .. } => id.clone(),
             WaitTarget::Observed { .. } => {
                 format!("{}/{}/{}", self.host, self.session, self.pane_id)
             }
@@ -61,11 +70,19 @@ impl WaitSpec {
 
     pub(super) fn wake_statuses(&self) -> &'static [AgentStatus] {
         match self.target {
-            WaitTarget::Task(_) => TASK_WAKE_STATUSES,
+            WaitTarget::Task { .. } => TASK_WAKE_STATUSES,
             WaitTarget::Observed { followed: true, .. } => FOLLOWED_WAKE_STATUSES,
             WaitTarget::Observed {
                 followed: false, ..
             } => HAND_WAKE_STATUSES,
+        }
+    }
+
+    /// What the wait ends on when it has no change to wait for.
+    fn base_statuses(&self) -> &'static [AgentStatus] {
+        match self.target {
+            WaitTarget::Task { adopted: true, .. } => ADOPTED_TASK_STATUSES,
+            _ => self.wake_statuses(),
         }
     }
 
@@ -82,8 +99,8 @@ impl WaitSpec {
 
     pub(super) fn observe(&self, status: AgentStatus) -> Observation {
         match &self.target {
-            WaitTarget::Task(task) => Observation::AgentState {
-                task: task.clone(),
+            WaitTarget::Task { id, .. } => Observation::AgentState {
+                task: id.clone(),
                 status,
             },
             WaitTarget::Observed { title, .. } => self.observed(title, status),
@@ -93,7 +110,7 @@ impl WaitSpec {
     /// herdr no longer knows the pane. A hand session's agent then reads as `unknown`.
     pub(super) fn gone(&self) -> Observation {
         match &self.target {
-            WaitTarget::Task(task) => Observation::AgentGone { task: task.clone() },
+            WaitTarget::Task { id, .. } => Observation::AgentGone { task: id.clone() },
             WaitTarget::Observed { title, .. } => self.observed(title, AgentStatus::Unknown),
         }
     }
@@ -118,6 +135,8 @@ pub(super) struct PaneWait {
     /// The status the last wait ended on; the next one waits for a change from it when it is
     /// one worth waking for, since that was already observed, or `working`.
     settled: Option<AgentStatus>,
+    /// `settled` before the last wait ended.
+    previous: Option<AgentStatus>,
     /// The agent's status as of the last wait that ended, `None` once a wait could not tell.
     known: Option<AgentStatus>,
     retry_at: Option<Instant>,
@@ -148,6 +167,7 @@ impl PaneWait {
             herdr,
             child: None,
             settled: reported,
+            previous: None,
             known: None,
             retry_at: None,
             gone: false,
@@ -157,6 +177,14 @@ impl PaneWait {
     /// Whether herdr last reported the agent `working` and no wait since ended otherwise.
     pub(super) fn working(&self) -> bool {
         self.known == Some(AgentStatus::Working)
+    }
+
+    /// Whether the wait that just ended saw an adopted task's agent go from `working` to `idle`:
+    /// the end of a turn, which a dispatched worker's hooks report themselves.
+    pub(super) fn turn_ended(&self) -> bool {
+        matches!(self.spec.target, WaitTarget::Task { adopted: true, .. })
+            && self.previous == Some(AgentStatus::Working)
+            && self.settled == Some(AgentStatus::Idle)
     }
 
     /// The statuses the next wait ends on.
@@ -170,7 +198,7 @@ impl PaneWait {
                     .filter(|status| *status != settled)
                     .collect()
             }
-            _ => wake.to_vec(),
+            _ => self.spec.base_statuses().to_vec(),
         }
     }
 
@@ -210,6 +238,7 @@ impl PaneWait {
         self.child = None;
         match herdr::wait_end(exit.code(), &stdout) {
             WaitEnd::Reached(status) => {
+                self.previous = self.settled;
                 self.settled = Some(status);
                 self.known = Some(status);
                 Polled::Reached(status)
@@ -255,6 +284,7 @@ mod tests {
 
     const WORKING: &str = r#"{"id":"cli:agent:wait","result":{"agent":{"agent":"claude","agent_status":"working","pane_id":"w1:p1","workspace_id":"w1"},"type":"agent_info"}}"#;
     const BLOCKED: &str = r#"{"id":"cli:agent:wait","result":{"agent":{"agent":"claude","agent_status":"blocked","pane_id":"w1:p1","workspace_id":"w1"},"type":"agent_info"}}"#;
+    const IDLE: &str = r#"{"id":"cli:agent:wait","result":{"agent":{"agent":"claude","agent_status":"idle","pane_id":"w1:p1","workspace_id":"w1"},"type":"agent_info"}}"#;
     const NOT_FOUND: &str = r#"{"error":{"code":"agent_not_found","message":"agent target w1:p1 not found"},"id":"cli:agent:wait"}"#;
 
     fn answer(status: i32, stdout: &str) -> Scripted {
@@ -266,7 +296,11 @@ mod tests {
     }
 
     fn task_wait(script: Vec<Scripted>) -> (PaneWait, Arc<FakeRunner>) {
-        wait_on(WaitTarget::Task("aaaaaaab".to_owned()), script)
+        let target = WaitTarget::Task {
+            id: "aaaaaaab".to_owned(),
+            adopted: false,
+        };
+        wait_on(target, script)
     }
 
     fn hand_wait(followed: bool) -> PaneWait {
@@ -280,7 +314,7 @@ mod tests {
     fn wait_on(target: WaitTarget, script: Vec<Scripted>) -> (PaneWait, Arc<FakeRunner>) {
         let fake = Arc::new(FakeRunner::new(script));
         let session = match target {
-            WaitTarget::Task(_) => herdr::SESSION,
+            WaitTarget::Task { .. } => herdr::SESSION,
             WaitTarget::Observed { .. } => "default",
         };
         let spec = WaitSpec {
@@ -381,6 +415,60 @@ mod tests {
             wait.until(),
             [AgentStatus::Idle, AgentStatus::Blocked, AgentStatus::Done]
         );
+    }
+
+    #[test]
+    fn adopted_task_waits_see_working_and_the_idle_after_it() {
+        let target = WaitTarget::Task {
+            id: "aaaaaaab".to_owned(),
+            adopted: true,
+        };
+        let (mut wait, _) = wait_on(target, vec![answer(0, WORKING), answer(0, IDLE)]);
+        assert_eq!(
+            wait.until(),
+            [
+                AgentStatus::Working,
+                AgentStatus::Blocked,
+                AgentStatus::Done
+            ]
+        );
+        assert!(matches!(
+            run_once(&mut wait),
+            Polled::Reached(AgentStatus::Working)
+        ));
+        assert!(!wait.turn_ended());
+        assert_eq!(
+            wait.until(),
+            [AgentStatus::Idle, AgentStatus::Blocked, AgentStatus::Done]
+        );
+        assert!(matches!(
+            run_once(&mut wait),
+            Polled::Reached(AgentStatus::Idle)
+        ));
+        assert!(wait.turn_ended());
+        assert_eq!(
+            wait.until(),
+            [
+                AgentStatus::Working,
+                AgentStatus::Blocked,
+                AgentStatus::Done
+            ]
+        );
+    }
+
+    #[test]
+    fn dispatched_task_waits_never_report_a_turn_end() {
+        let (mut wait, _) = task_wait(vec![answer(0, WORKING), answer(0, IDLE)]);
+        assert!(matches!(
+            run_once(&mut wait),
+            Polled::Reached(AgentStatus::Working)
+        ));
+        assert!(matches!(
+            run_once(&mut wait),
+            Polled::Reached(AgentStatus::Idle)
+        ));
+        assert!(!wait.turn_ended());
+        assert_eq!(wait.until(), [AgentStatus::Blocked, AgentStatus::Done]);
     }
 
     #[test]

@@ -1,8 +1,8 @@
 //! `flow task adopt`: the supervisor takes over a session the user started by hand as a task.
 //! The session keeps running where it is, in its own herdr session; flow records a task whose
 //! herdr target is its pane, writes it a brief, and tells it so through herdr. No hooks can be
-//! added to a running session, so an adopted task reports only through its own `flow task`
-//! calls and herdr's view of it: it has no turn-end events.
+//! added to a running session, so an adopted task reports through its own `flow task` calls
+//! and herdr's view of it; `flow watch` logs its turn ends from herdr's `working` to `idle`.
 
 use std::process::ExitCode;
 use std::sync::Arc;

@@ -2,7 +2,10 @@
 //! Each poll cycle reads every task's `status.json` and `events.jsonl`, reads the herdr waits
 //! it keeps running per worker and hand session, checks tasks gone quiet, and classifies what
 //! it saw. Absorbed observations go to `state/supervisor/watch.log`; the first wake is queued
-//! and returned. Nothing here changes a task: the supervisor acts on what watch reports.
+//! and returned. Nothing here changes a task's state: the supervisor acts on what watch
+//! reports. The one write is a `turn.end` event for an adopted task whose agent goes from
+//! `working` to `idle`, standing in for the Stop hook a session started by hand lacks, so its
+//! quiet check counts from the end of its last turn as a dispatched worker's does.
 //!
 //! `state/supervisor/watch-state.json` carries what one run hands the next: how far each task's
 //! files were read, so a change made between runs still wakes the next one, and what earlier
@@ -23,16 +26,16 @@
 //! `needs-decision` or `blocked` is absorbed: it stopped to wait on the hold that already woke
 //! the supervisor. A task whose worker herdr last reported `working` does not count as quiet.
 //!
-//! Hand sessions are the herdr agents outside flow's herdr session on live hosts, as of the
-//! cached inventory: sessions the user started by hand. One adopted as a task is waited on as
-//! that task's worker, in its own herdr session, and not as a hand session. A run first lists every live host's
-//! agents into that cache, in parallel, without starting any herdr server, and giving each host
-//! at most `Settings::list_timeout`. A host whose listing fails keeps its cached agents. The
-//! run waits on every hand session it then finds, except on hosts that ssh could not reach,
-//! that run no herdr server, or that did not answer in time: those wait for the next listing.
-//! A host whose earlier listing has still not returned is not asked again in the same run.
-//! Any hand session turning `blocked` wakes the supervisor; the ones in the follow list also
-//! wake it on `idle` and `done`. Whether a session is followed is read every cycle.
+//! Hand sessions are the herdr agents outside flow's herdr session on live hosts, as of the cached
+//! inventory: sessions the user started by hand. One adopted as a task is waited on as that task's
+//! worker, in its own herdr session, and not as a hand session. A run first lists every live host's
+//! agents into that cache, in parallel, without starting any herdr server, and giving each host at
+//! most `Settings::list_timeout`. A host whose listing fails keeps its cached agents. The run waits
+//! on every hand session it then finds, except on hosts that ssh could not reach, that run no herdr
+//! server, or that did not answer in time: those wait for the next listing. A host whose earlier
+//! listing has still not returned is not asked again in the same run. Any hand session turning
+//! `blocked` wakes the supervisor; the ones in the follow list also wake it on `idle` and `done`.
+//! Whether a session is followed is read every cycle.
 //!
 //! A run with nothing to watch, no open task, followed session or hand session, ends after its
 //! first cycle rather than waiting for the heartbeat. A cycle that could not read the tasks or
@@ -70,9 +73,9 @@ use crate::paths::StateDir;
 use crate::runner::Runner;
 use crate::state::Store;
 use crate::state::config::{Config, Host};
-use crate::state::events::EVENTS_FILE;
+use crate::state::events::{EVENTS_FILE, Event};
 use crate::state::fs::{append_line, write_atomic};
-use crate::state::task::{State, Status, TaskRecord};
+use crate::state::task::{Origin, State, Status, TaskRecord};
 use classify::{Observation, Reported, Thresholds, Verdict, classify};
 use files::{Checked, NewEvents, Seen, WorktreeCheck, file_len, new_events};
 use lock::Guard;
@@ -81,6 +84,10 @@ use panes::{PaneWait, Polled, WaitSpec, WaitTarget};
 const SUPERVISOR_DIR: &str = "supervisor";
 const WATCH_STATE_FILE: &str = "supervisor/watch-state.json";
 const WATCH_LOG_FILE: &str = "supervisor/watch.log";
+/// The source of the events the watcher appends.
+const EVENT_SOURCE: &str = "watch";
+/// The event the watcher appends when an adopted task's turn ends.
+const TURN_END: &str = "turn.end";
 /// How often one quiet task's working directory is searched for writes.
 const WORKTREE_CHECK_INTERVAL: Duration = Duration::from_secs(10 * 60);
 /// `--once` runs this many cycles, one poll interval apart, so the herdr waits the first
@@ -749,7 +756,10 @@ impl<'a> Watcher<'a> {
             wanted.insert(
                 rec.id.clone(),
                 WaitSpec {
-                    target: WaitTarget::Task(rec.id.clone()),
+                    target: WaitTarget::Task {
+                        id: rec.id.clone(),
+                        adopted: rec.origin == Origin::Adopted,
+                    },
                     host: target.host.clone(),
                     session: target.session.clone(),
                     pane_id: target.pane_id.clone(),
@@ -816,6 +826,7 @@ impl<'a> Watcher<'a> {
         let timeout_ms = u64::try_from(self.settings.heartbeat.as_millis()).unwrap_or(u64::MAX);
         let mut observed = Vec::new();
         let mut notes = Vec::new();
+        let mut turn_ends = Vec::new();
         for wait in self.waits.values_mut() {
             let reported = &mut self.memory.reported;
             let obs = match wait.poll(timeout_ms) {
@@ -823,6 +834,9 @@ impl<'a> Watcher<'a> {
                 Polled::Reached(status) => {
                     reported.reachable(&wait.host.name);
                     reported.agent_seen(&wait.spec.key(), status);
+                    if wait.turn_ended() {
+                        turn_ends.push(wait.spec.key());
+                    }
                     if !wait.spec.wake_statuses().contains(&status) {
                         notes.push(format!("{}: agent {}", wait.spec.key(), status.as_str()));
                         continue;
@@ -861,7 +875,24 @@ impl<'a> Watcher<'a> {
         for note in notes {
             self.log(&note);
         }
+        for task in turn_ends {
+            self.log_turn_end(&task);
+        }
         observed
+    }
+
+    /// Appends a `turn.end` event to an adopted task whose agent went from `working` to `idle`,
+    /// as a dispatched worker's Stop hook would, so its quiet clock starts from the turn's end.
+    fn log_turn_end(&mut self, task: &str) {
+        let ev = Event {
+            ts: Timestamp::now(),
+            source: EVENT_SOURCE.to_owned(),
+            kind: TURN_END.to_owned(),
+            data: serde_json::json!({ "status": herdr::AgentStatus::Idle.as_str() }),
+        };
+        if let Err(err) = self.store.append_event(task, &ev) {
+            self.log(&format!("{task}: logging the turn end: {err:#}"));
+        }
     }
 
     /// `Quiet` observations for working or pending tasks without a hold whose last event is
@@ -1051,7 +1082,7 @@ mod tests {
     use crate::inventory::HostInventory;
     use crate::runner::{FakeRunner, Scripted};
     use crate::state::events::Event;
-    use crate::state::task::{Harness, HerdrTarget, Origin};
+    use crate::state::task::{Harness, HerdrTarget};
     use classify::DEFAULT_QUIET_SECS;
 
     const CONFIG: &str = r#"
@@ -1120,6 +1151,42 @@ default_branch = "main"
                     });
                 })
                 .unwrap();
+        }
+
+        /// The working task `TASK` adopted from the hand session in `default`'s pane `w1:p1` on
+        /// `host-a`.
+        fn adopted_task(&self) {
+            let store = Store::open(&self.state);
+            let rec = TaskRecord {
+                id: TASK.to_owned(),
+                parent: None,
+                title: "Tidy docs".to_owned(),
+                host: "host-a".to_owned(),
+                cwd: PathBuf::from("/work/repo"),
+                repo: None,
+                harness: Harness::Claude,
+                created: Timestamp::now(),
+                owner: "supervisor".to_owned(),
+                origin: Origin::Adopted,
+            };
+            store.create_task(rec, "brief").unwrap();
+            store
+                .set_status(TASK, |status| {
+                    status.state = State::Working;
+                    status.herdr = Some(HerdrTarget {
+                        host: "host-a".to_owned(),
+                        workspace_id: "w1".to_owned(),
+                        pane_id: "w1:p1".to_owned(),
+                        agent: "claude".to_owned(),
+                        session: "default".to_owned(),
+                    });
+                })
+                .unwrap();
+        }
+
+        fn events(&self) -> Vec<Event> {
+            crate::state::events::read_all(&Store::open(&self.state).task_dir(TASK).unwrap())
+                .unwrap()
         }
 
         fn host_b(&self) -> Host {
@@ -1449,6 +1516,93 @@ default_branch = "main"
                 .windows(2)
                 .any(|pair| pair == ["--session", "default"]),
             "{calls:?}"
+        );
+    }
+
+    fn waits_answer(statuses: &[&str]) -> Vec<Scripted> {
+        statuses
+            .iter()
+            .map(|stdout| on("host-a", &["agent", "wait"], stdout))
+            .collect()
+    }
+
+    #[test]
+    fn an_adopted_task_going_idle_after_working_logs_a_turn_end_without_waking() {
+        let fx = Fixture::new();
+        fx.adopted_task();
+        let runner = fake(waits_answer(&[WORKING, IDLE, WORKING]));
+        let mut watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+
+        assert_eq!(cycles(&mut watcher, 4), None);
+
+        let turn_ends: Vec<Event> = fx
+            .events()
+            .into_iter()
+            .filter(|ev| ev.kind == "turn.end")
+            .collect();
+        assert_eq!(turn_ends.len(), 1, "{turn_ends:?}");
+        assert_eq!(turn_ends[0].source, "watch");
+        assert_eq!(turn_ends[0].data, serde_json::json!({"status": "idle"}));
+        assert_eq!(
+            wait_untils(&runner),
+            [
+                vec!["working", "blocked", "done"],
+                vec!["idle", "blocked", "done"]
+            ]
+        );
+        assert_eq!(cycles(&mut watcher, 1), None);
+        assert!(
+            fx.log()
+                .lines()
+                .any(|line| line.contains("absorb") && line.contains(r#""kind":"turn.end""#)),
+            "{}",
+            fx.log()
+        );
+    }
+
+    #[test]
+    fn an_adopted_task_quiet_after_its_turn_ended_wakes() {
+        let fx = Fixture::new();
+        fx.adopted_task();
+        let runner = fake(waits_answer(&[WORKING, IDLE]));
+        let mut first = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+        assert_eq!(cycles(&mut first, 4), None);
+        drop(first);
+        let turn_end = fx
+            .events()
+            .into_iter()
+            .find(|ev| ev.kind == "turn.end")
+            .unwrap();
+
+        let mut script = waits_answer(&[IDLE]);
+        script.push(on("host-a", &["find"], ""));
+        let runner = fake(script);
+        let mut second = fx.watcher(&runner, 0);
+
+        let reason = two_cycles(&mut second).unwrap();
+        assert!(reason.starts_with("quiet: aaaaaaab "), "{reason}");
+        let find = runner
+            .calls()
+            .into_iter()
+            .find(|call| call.argv.contains(&"find".to_owned()))
+            .unwrap();
+        let since = turn_end.ts.strftime("%Y-%m-%dT%H:%M:%SZ").to_string();
+        assert!(find.argv.contains(&since), "{:?}", find.argv);
+    }
+
+    #[test]
+    fn a_dispatched_task_going_idle_logs_nothing() {
+        let fx = Fixture::new();
+        fx.task(true);
+        let runner = fake(waits_answer(&[WORKING, IDLE]));
+        let mut watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+
+        assert_eq!(cycles(&mut watcher, 4), None);
+
+        assert!(!fx.events().iter().any(|ev| ev.kind == "turn.end"));
+        assert_eq!(
+            wait_untils(&runner),
+            [vec!["blocked", "done"], vec!["idle", "blocked", "done"]]
         );
     }
 

@@ -97,7 +97,7 @@ Supervisor:
 - `flow task orphan <id> --reason <text>`: mark the task orphaned: its work will not finish.
 - `flow task close <id> [--force]`: close the task's herdr workspace, keeping its record, working directory and branch; `--force` closes it while the task is still open (working, pending, blocked or needs-decision). An adopted task's workspace belongs to whoever started the session, so it stays open: flow only stops treating the pane as the task's and prints `closed <id> (pane left to its owner)`.
 
-An adopted task keeps running in the session that was started by hand, so flow cannot add hooks to it. It reports through its own `flow task` calls and herdr's view of it. It has no turn-end events, so the check for a quiet task relies on herdr reporting it `working` and on writes in its working directory.
+An adopted task keeps running in the session that was started by hand, so flow cannot add hooks to it. It reports through its own `flow task` calls and herdr's view of it. In place of the Stop hook, the watcher logs a `turn.end` event on the task whenever herdr sees the session go from `working` to `idle`, so a session that stops without reporting wakes the supervisor as `quiet` once the quiet threshold passes, as a dispatched worker would. It does not wake on `idle` at once, since the user may still be typing in that session.
 
 Worker:
 
