@@ -13,7 +13,7 @@ use super::Refused;
 use crate::adopt::{self, Adopted, FollowList, Followed};
 use crate::herdr::{self, Agent, AgentStatus};
 use crate::host;
-use crate::inventory::{self, HostInventory};
+use crate::inventory::{self, FlowServer, HostInventory};
 use crate::paths::StateDir;
 use crate::render;
 use crate::runner::{self, Runner};
@@ -135,6 +135,7 @@ fn hand_sessions(state: &StateDir, host: &str) -> anyhow::Result<Vec<Agent>> {
         state,
         &runner,
         &config.herdr_sessions,
+        FlowServer::Start,
         &host,
         Timestamp::now(),
     );
@@ -213,7 +214,8 @@ fn live_inventories(
     hosts: &[Host],
     now: Timestamp,
 ) -> anyhow::Result<Vec<HostInventory>> {
-    inventory::list_agents_on(state, runner, &config.herdr_sessions, hosts, now)
+    let sessions = &config.herdr_sessions;
+    inventory::list_agents_on(state, runner, sessions, FlowServer::Start, hosts, now)
         .into_iter()
         .map(|listed| {
             let listed = listed?;

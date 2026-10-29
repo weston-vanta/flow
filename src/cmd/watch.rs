@@ -2,8 +2,10 @@
 //! is actionable, then prints the reason on stdout and stderr and exits 2, which Claude Code
 //! delivers to the supervisor as hook feedback. Exits 0 silently when another watch holds the
 //! lock, under `--once` when nothing woke, when there is nothing to watch, and when only hand
-//! sessions were watched for a heartbeat interval. Each run first lists every live host's agents
-//! once, retries included, to find the hand sessions to watch. Once the lock is
+//! sessions nobody follows were watched for a day (`FLOW_WATCH_HAND_MAX_MS`): the heartbeat is
+//! off for them, so one blocked overnight still wakes the supervisor without hourly wakes.
+//! Each run first lists every live host's agents once, retries included, without starting
+//! any herdr server, to find the hand sessions to watch. Once the lock is
 //! held, an error wakes the supervisor as `watch-failed: <error>` rather than failing the hook,
 //! which would leave no watcher and nobody told. Each distinct error wakes once: a watch that
 //! hits the error the newest wake already reported keeps the lock and retries in the
@@ -29,6 +31,9 @@ const DEFAULT_POLL: Duration = Duration::from_secs(2);
 /// Overrides the delay before a failed watch first retries, in milliseconds.
 const RETRY_VAR: &str = "FLOW_WATCH_RETRY_MS";
 const DEFAULT_RETRY: Duration = Duration::from_secs(30);
+/// Overrides how long a run watching only hand sessions nobody follows lasts, in milliseconds.
+const HAND_MAX_VAR: &str = "FLOW_WATCH_HAND_MAX_MS";
+const DEFAULT_HAND_MAX: Duration = Duration::from_secs(24 * 60 * 60);
 const DEFAULT_HEARTBEAT_SECS: u64 = 3600;
 const WAKE_EXIT: u8 = 2;
 
@@ -75,6 +80,7 @@ fn watch_holding(
         once,
         quiet_secs: DEFAULT_QUIET_SECS,
         list_agents,
+        hand_max: env_millis(HAND_MAX_VAR, DEFAULT_HAND_MAX)?,
     };
     watch::run(state, runner, &settings, lock)
 }

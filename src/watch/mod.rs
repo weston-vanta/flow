@@ -22,17 +22,18 @@
 //!
 //! Hand sessions are the herdr agents outside flow's herdr session on live hosts, as of the
 //! cached inventory: sessions the user started by hand. A run first lists every live host's
-//! agents into that cache, once, keeping a host's cached agents when its listing fails, and
-//! waits on every hand session it then finds. Any of them turning `blocked` wakes the
-//! supervisor; the ones in the follow list also wake it on `idle` and `done`. Whether a session
-//! is followed is read every cycle.
+//! agents into that cache, once and without starting any herdr server. A host whose listing
+//! fails, or where no herdr server runs, keeps its cached agents; the run waits on every hand
+//! session it then finds, except on hosts where no herdr server runs. Any of them turning
+//! `blocked` wakes the supervisor; the ones in the follow list also wake it on `idle` and
+//! `done`. Whether a session is followed is read every cycle.
 //!
 //! A run with nothing to watch, no open task, followed session or hand session, ends after its
 //! first cycle rather than waiting for the heartbeat. A cycle that could not read the tasks or
 //! the follow list counts as having something to watch. The heartbeat fires only for open
-//! tasks, followed sessions or what could not be read: a run watching hand sessions alone ends
-//! without waking once the heartbeat interval has passed, rather than waking the supervisor
-//! hourly or outliving the Stop hook's timeout.
+//! tasks, followed sessions or what could not be read. A run watching hand sessions alone ends
+//! without waking after `Settings::hand_max`, a day by default, rather than waking the
+//! supervisor hourly; the Stop hook's timeout is set longer than that.
 //!
 //! An error after the lock is taken wakes the supervisor as `watch-failed` once per distinct
 //! error; `run_retrying` keeps retrying a repeat of it in the background, holding the lock.
@@ -56,7 +57,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::adopt::{FollowList, Followed};
 use crate::herdr::{self, Herdr};
-use crate::inventory;
+use crate::inventory::{self, FlowServer};
 use crate::paths::StateDir;
 use crate::runner::Runner;
 use crate::state::Store;
@@ -86,6 +87,9 @@ pub struct Settings {
     pub quiet_secs: u64,
     /// Whether the run first lists every live host's agents into the cached inventory.
     pub list_agents: bool,
+    /// How long a run watching only hand sessions nobody follows lasts before it ends without
+    /// waking, in place of the heartbeat.
+    pub hand_max: Duration,
 }
 
 /// Watches until something wakes the supervisor and returns the reason, already queued; with
@@ -96,10 +100,13 @@ pub fn run(
     settings: &Settings,
     lock: &Guard,
 ) -> anyhow::Result<Option<String>> {
-    if settings.list_agents {
-        list_agents(state, &runner);
-    }
+    let no_server = if settings.list_agents {
+        list_agents(state, &runner)
+    } else {
+        Vec::new()
+    };
     let mut watcher = Watcher::new(state, runner, settings)?;
+    watcher.hands.retain(|hand| !no_server.contains(&hand.host));
     let mut cycles = 0;
     loop {
         lock.touch()?;
@@ -110,8 +117,8 @@ pub fn run(
             watcher.log("nothing to watch: no open tasks, followed or hand sessions; exiting");
             return Ok(None);
         }
-        if !watcher.beating && watcher.started.elapsed() >= settings.heartbeat {
-            watcher.log("heartbeat interval passed with only hand sessions watched; exiting");
+        if !watcher.beating && watcher.started.elapsed() >= settings.hand_max {
+            watcher.log("only hand sessions watched for the hand maximum; exiting");
             return Ok(None);
         }
         cycles += 1;
@@ -123,26 +130,33 @@ pub fn run(
 }
 
 /// Refreshes every live host's cached agents with one herdr listing each, the way
-/// `flow sessions` does. A host whose listing fails keeps its cached agents; failures are
-/// logged and never end the run.
-fn list_agents(state: &StateDir, runner: &Arc<dyn Runner>) {
+/// `flow sessions` does but never starting a herdr server, and returns the hosts where no
+/// herdr server runs. Such a host, and one whose listing fails, keeps its cached agents;
+/// failures are logged and never end the run.
+fn list_agents(state: &StateDir, runner: &Arc<dyn Runner>) -> Vec<String> {
     let found = Config::load(state).and_then(|config| Ok((config, inventory::live_hosts(state)?)));
     let (config, hosts) = match found {
         Ok(found) => found,
         Err(err) => {
             append_log(state, &format!("listing agents: {err:#}"));
-            return;
+            return Vec::new();
         }
     };
     let listed = inventory::list_agents_on(
         state,
         runner,
         &config.herdr_sessions,
+        FlowServer::LeaveStopped,
         &hosts,
         Timestamp::now(),
     );
+    let mut no_server = Vec::new();
     for (host, listed) in hosts.iter().zip(listed) {
         let problem = match listed {
+            Ok(listed) if listed.no_server => {
+                no_server.push(host.name.clone());
+                Some("no herdr server runs; not watching its sessions".to_owned())
+            }
             Ok(listed) => listed.error,
             Err(err) => Some(format!("{err:#}")),
         };
@@ -153,6 +167,7 @@ fn list_agents(state: &StateDir, runner: &Arc<dyn Runner>) {
             );
         }
     }
+    no_server
 }
 
 /// A herdr agent outside flow's herdr session on a live host, as of the cached inventory.
@@ -929,9 +944,6 @@ default_branch = "main"
     const WORKING: &str = r#"{"id":"cli:agent:wait","result":{"agent":{"agent":"claude","agent_status":"working","pane_id":"w1:p1","workspace_id":"w1"},"type":"agent_info"}}"#;
     const DONE: &str = r#"{"id":"cli:agent:wait","result":{"agent":{"agent":"claude","agent_status":"done","pane_id":"w1:p1","workspace_id":"w1"},"type":"agent_info"}}"#;
     const NOT_FOUND: &str = r#"{"error":{"code":"agent_not_found","message":"agent target w1:p1 not found"},"id":"cli:agent:wait"}"#;
-    const SERVER_RUNNING: &str = "status: running\nversion: 0.9.5\nendpoint_compatible: yes\n\
-         private_protocol: 22\nprivate_protocol_compatible: yes\n\
-         socket: /home/dev/.config/herdr/sessions/flow/herdr.sock\n";
     const NO_AGENTS: &str = r#"{"id":"cli:agent:list","result":{"agents":[],"type":"agent_list"}}"#;
     const DEFAULT_AGENTS: &str = r#"{"id":"cli:agent:list","result":{"agents":[{"agent":"claude","agent_status":"idle","cwd":"/work/repo","pane_id":"w1:p1","terminal_title":"✳ Tidy docs","terminal_title_stripped":"Tidy docs","workspace_id":"w1"}],"type":"agent_list"}}"#;
     const TIDY_DOCS_BLOCKED: &str = r#"adopted-blocked: host-a w1:p1 "Tidy docs""#;
@@ -1049,6 +1061,16 @@ default_branch = "main"
             once: false,
             quiet_secs: DEFAULT_QUIET_SECS,
             list_agents: false,
+            hand_max: Duration::from_secs(86_400),
+        }
+    }
+
+    fn no_server(host: &str, session: &str) -> Scripted {
+        Scripted {
+            status: 1,
+            stderr: include_str!("../../tests/fixtures/herdr/agent_list_server_not_running.json")
+                .to_owned(),
+            ..on(host, &["--session", session, "agent", "list"], "")
         }
     }
 
@@ -1276,8 +1298,21 @@ default_branch = "main"
         let lock = lock::acquire(&fx.state, std::process::id())
             .unwrap()
             .unwrap();
+        let past_heartbeat = Settings {
+            once: true,
+            ..settings(Duration::ZERO)
+        };
         assert_eq!(
-            run(&fx.state, runner.clone(), &settings(Duration::ZERO), &lock).unwrap(),
+            run(&fx.state, runner.clone(), &past_heartbeat, &lock).unwrap(),
+            None
+        );
+        assert!(!fx.log().contains("exiting"), "{}", fx.log());
+        let past_hand_max = Settings {
+            hand_max: Duration::ZERO,
+            ..settings(Duration::ZERO)
+        };
+        assert_eq!(
+            run(&fx.state, runner.clone(), &past_hand_max, &lock).unwrap(),
             None
         );
         drop(lock);
@@ -1285,10 +1320,15 @@ default_branch = "main"
         assert_eq!(
             log.matches("watching 1 hand session for blocked only; heartbeat off")
                 .count(),
-            2,
+            3,
             "{log}"
         );
-        assert!(log.contains("only hand sessions watched"), "{log}");
+        assert_eq!(
+            log.matches("only hand sessions watched for the hand maximum; exiting")
+                .count(),
+            1,
+            "{log}"
+        );
         assert!(queue::latest(&fx.state).unwrap().is_none());
 
         fx.task(true);
@@ -1315,6 +1355,42 @@ default_branch = "main"
     }
 
     #[test]
+    fn listing_never_starts_herdr_and_skips_a_host_without_a_server() {
+        let fx = Fixture::new();
+        fx.hand();
+        let before = std::fs::read(fx.state.root().join("hosts/env-0001.json")).unwrap();
+        let runner = fake(vec![
+            no_server("host-a", herdr::SESSION),
+            no_server("host-a", "default"),
+        ]);
+        let lock = lock::acquire(&fx.state, std::process::id())
+            .unwrap()
+            .unwrap();
+        let listing = Settings {
+            once: true,
+            list_agents: true,
+            ..settings(Duration::from_secs(3600))
+        };
+
+        assert_eq!(
+            run(&fx.state, runner.clone(), &listing, &lock).unwrap(),
+            None
+        );
+
+        let argvs: Vec<Vec<String>> = runner.calls().into_iter().map(|call| call.argv).collect();
+        assert_eq!(
+            argvs,
+            [
+                ["herdr", "--session", "flow", "agent", "list"].map(str::to_owned),
+                ["herdr", "--session", "default", "agent", "list"].map(str::to_owned),
+            ]
+        );
+        let after = std::fs::read(fx.state.root().join("hosts/env-0001.json")).unwrap();
+        assert_eq!(after, before);
+        assert!(fx.log().contains("nothing to watch"), "{}", fx.log());
+    }
+
+    #[test]
     fn listing_keeps_an_unreachable_hosts_cached_agents_and_the_run() {
         let fx = Fixture::new();
         inventory::save(
@@ -1326,11 +1402,6 @@ default_branch = "main"
         let host_b_before = inventory::load(&fx.state, "env-0002").unwrap();
         let runner = fake(vec![
             host_b_unreachable(),
-            on(
-                "host-a",
-                &["--session", "flow", "status", "server"],
-                SERVER_RUNNING,
-            ),
             on("host-a", &["--session", "flow", "agent", "list"], NO_AGENTS),
             on(
                 "host-a",
@@ -1368,6 +1439,7 @@ default_branch = "main"
         let listings = runner
             .calls()
             .iter()
+            .filter(|call| call.host == "host-a")
             .filter(|call| call.argv.windows(2).any(|w| w == ["agent", "list"]))
             .count();
         assert_eq!(listings, 2);

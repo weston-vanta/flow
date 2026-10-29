@@ -99,7 +99,7 @@ Worker:
 Hooks and plumbing, run by Claude Code and the supervisor rather than by hand, and left out of `flow --help`:
 
 - `flow guard`: Stop hook that blocks ending a turn while work is unwatched.
-- `flow watch [--heartbeat <secs>] [--once]`: watch tasks and exit 2 with a reason when the supervisor should wake. Every session started by hand, outside flow's herdr session, wakes the supervisor when it turns `blocked`; `flow follow` adds `idle` and `done` for that session.
+- `flow watch [--heartbeat <secs>] [--once]`: watch tasks and exit 2 with a reason when the supervisor should wake. Every session started by hand, outside flow's herdr session, wakes the supervisor when it turns `blocked`; `flow follow` adds `idle` and `done` for that session. While only such unfollowed sessions are watched there is no hourly heartbeat, and the watch ends quietly after a day.
 - `flow wake drain`: print the queued wakes not yet acknowledged.
 - `flow wake ack --through <N>`: acknowledge every queued wake up to and including N.
 - `flow hook claude --task <id>`: record a worker's Claude Code hook event read as JSON from stdin.

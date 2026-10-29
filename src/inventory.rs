@@ -170,6 +170,15 @@ pub struct HerdrAgents {
     pub error: Option<String>,
     /// ssh could not reach the host, so the sessions after the failing one were not asked.
     pub unreachable: bool,
+    /// Some session's herdr server answered with its agents.
+    pub answered: bool,
+}
+
+/// Whether asking herdr for agents starts flow's own herdr server when it is not running.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlowServer {
+    Start,
+    LeaveStopped,
 }
 
 /// The host did not answer: ssh itself failed, or no probe could run at all.
@@ -307,7 +316,7 @@ pub fn refresh(
         agents,
         error: herdr_error,
         ..
-    } = herdr_agents(runner, host, herdr_sessions);
+    } = herdr_agents(runner, host, herdr_sessions, FlowServer::Start);
 
     Ok(HostInventory {
         reachable: true,
@@ -321,26 +330,38 @@ pub fn refresh(
     })
 }
 
-/// The agents in each of `sessions` on `host`, in session order. flow's own session is started
-/// when it is not running; another session without a server has no agents. A session whose
-/// server cannot be asked is recorded in `error`, and asking stops at the first session ssh
-/// cannot reach.
-pub fn herdr_agents(runner: &Arc<dyn Runner>, host: &Host, sessions: &[String]) -> HerdrAgents {
+/// The agents in each of `sessions` on `host`, in session order. With `FlowServer::Start`,
+/// flow's own session is started when it is not running; any other session without a server
+/// has no agents. A session whose server cannot be asked is recorded in `error`, and asking
+/// stops at the first session ssh cannot reach.
+pub fn herdr_agents(
+    runner: &Arc<dyn Runner>,
+    host: &Host,
+    sessions: &[String],
+    flow_server: FlowServer,
+) -> HerdrAgents {
     let mut agents = Vec::new();
     let mut errors = Vec::new();
     let mut unreachable = false;
+    let mut answered = false;
     for session in sessions {
         let herdr = Herdr::with_session(runner.clone(), session);
-        let found = if session == herdr::SESSION {
-            herdr.ensure_server(host).and_then(|()| herdr.agents(host))
+        let found = if session == herdr::SESSION && flow_server == FlowServer::Start {
+            herdr
+                .ensure_server(host)
+                .and_then(|()| herdr.agents(host))
+                .map(Some)
         } else {
             herdr
                 .agents_if_running(host)
-                .map(Option::unwrap_or_default)
                 .with_context(|| format!("herdr session {session}"))
         };
         match found {
-            Ok(found) => agents.extend(found),
+            Ok(Some(found)) => {
+                answered = true;
+                agents.extend(found);
+            }
+            Ok(None) => {}
             Err(err) => {
                 errors.push(format!("{err:#}"));
                 if herdr::is_unreachable(&err) {
@@ -354,6 +375,7 @@ pub fn herdr_agents(runner: &Arc<dyn Runner>, host: &Host, sessions: &[String]) 
         agents,
         error: (!errors.is_empty()).then(|| errors.join("; ")),
         unreachable,
+        answered,
     }
 }
 
@@ -363,27 +385,41 @@ pub fn herdr_agents(runner: &Arc<dyn Runner>, host: &Host, sessions: &[String]) 
 pub struct Listed {
     pub inventory: HostInventory,
     pub error: Option<String>,
+    /// herdr runs no server for any of the sessions asked on the host, so `inventory` is the
+    /// cached one as is.
+    pub no_server: bool,
 }
 
 /// `host`'s cached inventory with the agents and herdr error herdr reports now in `sessions`,
-/// saved; or, when the host does not answer, its cached inventory as is.
+/// saved. When the host does not answer, or no herdr server runs there and nothing failed, the
+/// cached inventory as is: nothing was learned.
 pub fn list_agents(
     state: &StateDir,
     runner: &Arc<dyn Runner>,
     sessions: &[String],
+    flow_server: FlowServer,
     host: &Host,
     now: Timestamp,
 ) -> anyhow::Result<Listed> {
     let cached = load(state, &host.env_id)?;
-    let found = herdr_agents(runner, host, sessions);
+    let found = herdr_agents(runner, host, sessions, flow_server);
     let error = found.error.clone();
-    if found.unreachable {
+    let no_server = !found.unreachable && !found.answered && error.is_none();
+    if found.unreachable || no_server {
         let inventory = cached.unwrap_or_else(|| unreachable(host, None, now));
-        return Ok(Listed { inventory, error });
+        return Ok(Listed {
+            inventory,
+            error,
+            no_server,
+        });
     }
     let inventory = with_agents(host, cached, found, now);
     save(state, &inventory)?;
-    Ok(Listed { inventory, error })
+    Ok(Listed {
+        inventory,
+        error,
+        no_server,
+    })
 }
 
 /// `list_agents` for each of `hosts`, asked in parallel, in the order given.
@@ -391,13 +427,16 @@ pub fn list_agents_on(
     state: &StateDir,
     runner: &Arc<dyn Runner>,
     sessions: &[String],
+    flow_server: FlowServer,
     hosts: &[Host],
     now: Timestamp,
 ) -> Vec<anyhow::Result<Listed>> {
     std::thread::scope(|scope| {
         let handles: Vec<_> = hosts
             .iter()
-            .map(|host| scope.spawn(move || list_agents(state, runner, sessions, host, now)))
+            .map(|host| {
+                scope.spawn(move || list_agents(state, runner, sessions, flow_server, host, now))
+            })
             .collect();
         handles
             .into_iter()
@@ -782,7 +821,7 @@ detached
 
     fn herdr_agents_with(script: Vec<Scripted>) -> HerdrAgents {
         let runner: Arc<dyn Runner> = Arc::new(FakeRunner::new(script));
-        herdr_agents(&runner, &host(), &sessions())
+        herdr_agents(&runner, &host(), &sessions(), FlowServer::Start)
     }
 
     #[test]
