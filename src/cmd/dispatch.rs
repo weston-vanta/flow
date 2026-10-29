@@ -14,7 +14,7 @@ use serde_json::json;
 use super::Refused;
 use crate::harness::handshake::{self, AgentStart};
 use crate::harness::{ClaudeAdapter, HarnessAdapter, brief};
-use crate::herdr::{self, Agent, Herdr};
+use crate::herdr::{Agent, Herdr};
 use crate::host;
 use crate::inventory;
 use crate::paths::{STATE_ENV, StateDir};
@@ -125,7 +125,7 @@ pub fn run(state: &StateDir, args: &DispatchArgs) -> anyhow::Result<ExitCode> {
         }
         WorkDir::Task => store.task_dir(&id)?.join(WORK_DIR),
     };
-    let herdr = Herdr::new(runner);
+    let herdr = Herdr::with_session(runner, &config.herdr_session);
     herdr.ensure_server(host)?;
     if !args.allow_shared_dir {
         refuse_shared_dir(&herdr.agents(host)?, host, &cwd)?;
@@ -354,7 +354,7 @@ fn start_worker(
     );
     argv.extend(launch.argv);
 
-    let (workspace_id, pane_id) = herdr.create_workspace(host, &rec.cwd, &rec.id)?;
+    let (workspace_id, pane_id) = herdr.create_workspace(host, &rec.cwd, &rec.title)?;
     store.set_status(&rec.id, |status| {
         status.state = State::Working;
         status.herdr = Some(HerdrTarget {
@@ -362,7 +362,7 @@ fn start_worker(
             workspace_id: workspace_id.clone(),
             pane_id: pane_id.clone(),
             agent: adapter.kind().to_owned(),
-            session: herdr::SESSION.to_owned(),
+            session: herdr.session().to_owned(),
         });
     })?;
     append_event(

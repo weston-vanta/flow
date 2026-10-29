@@ -1,4 +1,6 @@
 //! `flow up`: attaches to the live supervisor, or starts one on this host and attaches to it.
+//! A live supervisor is found in the herdr session its lock records, whatever the configured
+//! one; a new one starts in the configured session.
 
 use std::io::{self, IsTerminal};
 use std::os::unix::process::CommandExt;
@@ -14,7 +16,7 @@ use crate::host;
 use crate::inventory;
 use crate::paths::{STATE_ENV, StateDir};
 use crate::runner::{self, Runner};
-use crate::state::config::Host;
+use crate::state::config::{Config, Host};
 use crate::state::task::HerdrTarget;
 use crate::supervisor::{self, Lock, SUPERVISOR_CWD, SUPERVISOR_ENV, SUPERVISOR_NAME};
 use crate::watch::lock as watch_lock;
@@ -25,19 +27,21 @@ const AGENT_KIND: &str = "claude";
 const START_PROMPT: &str = "Run the session start procedure in CLAUDE.md.";
 
 pub fn run(state: &StateDir) -> anyhow::Result<()> {
+    let config = Config::load(state)?;
     let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
-    let herdr = Herdr::new(runner);
     let hosts = inventory::hosts(state)?;
     let live = inventory::live_hosts(state)?;
-    if let Some(lock) = supervisor::load(state)?
-        && let Some(host) = live_host(&hosts, &live, &herdr, &lock)?
-    {
-        eprintln!(
-            "attaching to the supervisor on {} (pane {})",
-            host.name, lock.herdr.pane_id
-        );
-        return attach(&lock, host);
+    if let Some(lock) = supervisor::load(state)? {
+        let herdr = Herdr::with_session(runner.clone(), &lock.herdr.session);
+        if let Some(host) = live_host(&hosts, &live, &herdr, &lock)? {
+            eprintln!(
+                "attaching to the supervisor on {} (pane {})",
+                host.name, lock.herdr.pane_id
+            );
+            return attach(&lock, host);
+        }
     }
+    let herdr = Herdr::with_session(runner, &config.herdr_session);
     let here = local_host(&live)?;
     // No supervisor is live, so whatever holds the watch lock is a watcher that outlived its
     // supervisor, possibly on another host where it cannot be seen to be dead.
@@ -226,7 +230,7 @@ fn launch(
             workspace_id: workspace_id.clone(),
             pane_id: pane_id.clone(),
             agent: AGENT_KIND.to_owned(),
-            session: herdr::SESSION.to_owned(),
+            session: herdr.session().to_owned(),
         },
     )?;
     herdr.pane_run(

@@ -2,7 +2,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
-use flow::herdr::SESSION;
 use flow::paths::StateDir;
 use flow::state::Store;
 use flow::state::events::{self, Event};
@@ -12,12 +11,18 @@ use flow::state::task::{
 use jiff::Timestamp;
 use serde_json::{Value, json};
 
+/// flow in its own herdr session, `flow`, listing herdr's `default` session too.
 const CONFIG: &str = r#"
+herdr_session = "flow"
+herdr_sessions = ["flow", "default"]
+
 [[repos]]
 name = "example-repo"
 path = "/work/repo"
 default_branch = "main"
 "#;
+/// flow's own herdr session in `CONFIG`.
+const SESSION: &str = "flow";
 
 const SERVER_RUNNING: &str = "status: running\nversion: 0.9.5\nendpoint_compatible: yes\n\
      private_protocol: 22\nprivate_protocol_compatible: yes\n\

@@ -2,14 +2,17 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
-use flow::herdr::SESSION;
 use flow::paths::StateDir;
 use flow::state::Store;
 use flow::state::task::{ClaudeSession, Harness, HerdrTarget, Origin, State, TaskRecord};
 use jiff::Timestamp;
 use serde_json::{Value, json};
 
+/// flow in its own herdr session, `flow`, listing herdr's `default` session too.
 const CONFIG: &str = r#"
+herdr_session = "flow"
+herdr_sessions = ["flow", "default"]
+
 [[repos]]
 name = "example-repo"
 path = "/work/repo"
@@ -17,6 +20,8 @@ default_branch = "main"
 worktree_tool = { create = ["wt", "create", "{branch}"] }
 
 "#;
+/// flow's own herdr session in `CONFIG`.
+const SESSION: &str = "flow";
 
 /// Writes cached records of `host-a` (env `env-0001`) and `host-b` (env `env-0002`), the hosts
 /// discovery would have found.
@@ -608,11 +613,19 @@ fn follow_refuses_a_title_several_sessions_share() {
 }
 
 #[test]
-fn follow_refuses_what_names_no_hand_session() {
+fn follow_refuses_what_names_no_observed_session() {
     let fx = Fixture::new();
     fx.single_host();
 
-    for target in ["Nothing here", "aaaaaaab", "w1:p1"] {
+    let worker = "pane w1:p1 on host-a is already task aaaaaaab\n";
+    for (target, refusal) in [
+        (
+            "Nothing here",
+            "no hand session titled or in pane Nothing here on host-a; run flow sessions\n",
+        ),
+        ("aaaaaaab", worker),
+        ("w1:p1", worker),
+    ] {
         let script = [
             on("host-a", SERVER_RUNNING),
             on("host-a", FLOW_AGENTS),
@@ -622,10 +635,9 @@ fn follow_refuses_what_names_no_hand_session() {
             .args(["follow", "host-a", target])
             .assert()
             .code(2)
-            .stderr(format!(
-                "no hand session titled or in pane {target} on host-a; run flow sessions\n"
-            ));
+            .stderr(refusal);
     }
+    assert!(!fx.state.join("supervisor/follow.json").exists());
 }
 
 #[test]
@@ -760,4 +772,122 @@ fn sessions_mark_a_followed_hand_session() {
         .map(|entry| &entry["followed"])
         .collect();
     assert_eq!(marks, [&json!(false), &json!(true)], "{json_out}");
+}
+
+/// `default`'s agents on `host-a` when flow runs there too: the supervisor in `w1:p1`, task
+/// `aaaaaaab`'s worker in `w2:p1`, a hand session in `w3:p1`, and one adopted as task
+/// `aaaaaaac` in `w4:p1`.
+const SHARED_SESSION_AGENTS: &str = r#"{"id":"cli:agent:list","result":{"agents":[
+{"agent":"claude","agent_status":"idle","cwd":"/workspaces/flow","pane_id":"w1:p1","terminal_title_stripped":"flow-supervisor","workspace_id":"w1"},
+{"agent":"claude","agent_status":"working","cwd":"/work/repo.wt/feature","pane_id":"w2:p1","terminal_title_stripped":"aaaaaaab","workspace_id":"w2"},
+{"agent":"claude","agent_status":"idle","cwd":"/work/other","pane_id":"w3:p1","terminal_title_stripped":"Tidy docs","workspace_id":"w3"},
+{"agent":"claude","agent_status":"idle","cwd":"/work/app","pane_id":"w4:p1","terminal_title_stripped":"Fix links","workspace_id":"w4"}
+],"type":"agent_list"}}"#;
+
+impl Fixture {
+    /// flow in herdr's `default` session alone: the supervisor, task `TASK`'s worker and task
+    /// `aaaaaaac`, adopted, all in it on `host-a`, as `SHARED_SESSION_AGENTS` lists them.
+    fn sharing_default(&self) {
+        fs::write(
+            self.state.join("config.toml"),
+            CONFIG.replace(
+                "herdr_session = \"flow\"\nherdr_sessions = [\"flow\", \"default\"]\n",
+                "",
+            ),
+        )
+        .unwrap();
+        let store = Store::open(&StateDir::resolve(self.dir.path()).unwrap());
+        let target = |pane_id: &str| HerdrTarget {
+            host: "host-a".to_owned(),
+            workspace_id: pane_id.split(':').next().unwrap().to_owned(),
+            pane_id: pane_id.to_owned(),
+            agent: "claude".to_owned(),
+            session: "default".to_owned(),
+        };
+        store
+            .set_status(TASK_ID, |status| status.herdr = Some(target("w2:p1")))
+            .unwrap();
+        let (mut adopted, _) = store.task(TASK_ID).unwrap();
+        adopted.id = "aaaaaaac".to_owned();
+        adopted.title = "Fix the links".to_owned();
+        adopted.origin = Origin::Adopted;
+        store.create_task(adopted, "brief").unwrap();
+        store
+            .set_status("aaaaaaac", |status| {
+                status.state = State::Working;
+                status.herdr = Some(target("w4:p1"));
+            })
+            .unwrap();
+        flow::supervisor::take(
+            &StateDir::resolve(self.dir.path()).unwrap(),
+            "env-0001",
+            target("w1:p1"),
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn workers_the_supervisor_and_hand_sessions_share_herdrs_default_session() {
+    let fx = Fixture::new();
+    fx.single_host();
+    fx.sharing_default();
+    let script = [
+        on("host-a", SERVER_RUNNING),
+        on("host-a", SHARED_SESSION_AGENTS),
+    ];
+
+    let stdout = stdout_of(fx.flow(&script).arg("sessions"));
+
+    assert_eq!(
+        stdout,
+        "HOST    STATUS   TASK        TITLE\n\
+         host-a  working  aaaaaaab    Build feature\n\
+         host-a  idle     aaaaaaac    Fix the links\n\
+         host-a  idle     observed    Tidy docs\n\
+         host-a  idle     supervisor  flow-supervisor\n"
+    );
+    let argvs: Vec<Vec<String>> = fx.calls().into_iter().map(|(_, argv)| argv).collect();
+    assert_eq!(
+        argvs,
+        [
+            words(&["herdr", "--session", "default", "status", "server"]),
+            words(&["herdr", "--session", "default", "agent", "list"]),
+        ]
+    );
+    let json_out = stdout_of(fx.flow(&script).args(["sessions", "--json"]));
+    let parsed: Value = serde_json::from_str(&json_out).unwrap();
+    let supervisor: Vec<bool> = parsed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["supervisor"].as_bool().unwrap())
+        .collect();
+    assert_eq!(supervisor, [true, false, false, false]);
+
+    let status = stdout_of(fx.flow(&[]).arg("status"));
+    assert_eq!(
+        status.lines().last(),
+        Some("observed: 1 sessions"),
+        "{status}"
+    );
+
+    for (target, refusal) in [
+        (
+            "flow-supervisor",
+            "pane w1:p1 on host-a is the supervisor's\n",
+        ),
+        ("w4:p1", "pane w4:p1 on host-a is already task aaaaaaac\n"),
+    ] {
+        fx.flow(&script)
+            .args(["follow", "host-a", target])
+            .assert()
+            .code(2)
+            .stderr(refusal);
+    }
+    stdout_of(fx.flow(&script).args(["follow", "host-a", "Tidy docs"]));
+    assert_eq!(
+        fx.follow_list(),
+        json!({"follow": [{"host": "host-a", "pane_id": "w3:p1", "session": "default", "title": "Tidy docs"}]})
+    );
 }

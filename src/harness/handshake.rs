@@ -349,7 +349,7 @@ mod tests {
             ok(""),
             wait_reports("idle"),
         ]));
-        let herdr = Herdr::new(fake.clone());
+        let herdr = Herdr::with_session(fake.clone(), "flow");
 
         let start = await_start_with(&herdr, &host(), "w3", PANE, None, &fast()).unwrap();
 
@@ -375,7 +375,7 @@ mod tests {
     #[test]
     fn await_start_gives_up_when_the_agent_never_appears() {
         let fake = Arc::new(FakeRunner::new(vec![not_found(true)]));
-        let herdr = Herdr::new(fake.clone());
+        let herdr = Herdr::with_session(fake.clone(), "flow");
         let timing = fast();
 
         let started = std::time::Instant::now();
@@ -398,7 +398,7 @@ mod tests {
             not_found(false),
             ok("$ claude --resume s9\nNo conversation found with session ID: s9\n$ "),
         ]));
-        let herdr = Herdr::new(fake.clone());
+        let herdr = Herdr::with_session(fake.clone(), "flow");
         let timing = Timing {
             timeout: Duration::from_secs(60),
             poll: Duration::from_secs(60),
@@ -436,7 +436,7 @@ mod tests {
                     .to_owned(),
             ..Scripted::default()
         }]));
-        let herdr = Herdr::new(fake.clone());
+        let herdr = Herdr::with_session(fake.clone(), "flow");
 
         let err = await_start_with(&herdr, &host(), "w3", PANE, None, &fast()).unwrap_err();
 
@@ -451,7 +451,7 @@ mod tests {
             ..Scripted::default()
         };
         let fake = Arc::new(FakeRunner::new(vec![silent, wait_reports("idle")]));
-        let herdr = Herdr::new(fake.clone());
+        let herdr = Herdr::with_session(fake.clone(), "flow");
 
         let start = await_start_with(&herdr, &host(), "w3", PANE, None, &fast()).unwrap();
 
@@ -466,7 +466,7 @@ mod tests {
             repeat: true,
             ..Scripted::default()
         }]));
-        let herdr = Herdr::new(fake.clone());
+        let herdr = Herdr::with_session(fake.clone(), "flow");
 
         let err = await_start_with(&herdr, &host(), "w3", PANE, None, &fast()).unwrap_err();
 
@@ -485,7 +485,7 @@ mod tests {
             stderr: "herdr: socket closed\n".to_owned(),
             ..Scripted::default()
         }]));
-        let herdr = Herdr::new(fake.clone());
+        let herdr = Herdr::with_session(fake.clone(), "flow");
 
         let err = await_start_with(&herdr, &host(), "w3", PANE, None, &fast()).unwrap_err();
 

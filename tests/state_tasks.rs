@@ -159,5 +159,6 @@ ssh_alias = "host-b.example"
         repo.worktree_tool.as_ref().map(|tool| tool.create.clone()),
         Some(["wt", "create", "{branch}"].map(str::to_owned).to_vec())
     );
-    assert_eq!(config.herdr_sessions, ["flow", "default"]);
+    assert_eq!(config.herdr_session, "default");
+    assert_eq!(config.herdr_sessions, ["default"]);
 }

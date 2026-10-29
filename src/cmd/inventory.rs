@@ -8,7 +8,7 @@ use anyhow::{Context, bail};
 use jiff::Timestamp;
 use serde_json::Value;
 
-use crate::herdr::{self, Agent};
+use crate::herdr::Agent;
 use crate::host;
 use crate::inventory::{self, HostInventory, Unreachable, Worktree, discovery};
 use crate::paths::StateDir;
@@ -49,6 +49,7 @@ pub fn run(state: &StateDir, refresh: bool, json: bool) -> anyhow::Result<()> {
         super::print(&render_all(
             &inventories,
             &config.repos,
+            tagged_session(&config),
             local.as_deref(),
             Timestamp::now(),
         ))?;
@@ -221,7 +222,15 @@ fn refresh_one(
     record: &HostInventory,
     now: Timestamp,
 ) -> anyhow::Result<HostInventory> {
-    match inventory::refresh(runner, host, &config.repos, &config.herdr_sessions, now) {
+    let sessions = &config.herdr_sessions;
+    match inventory::refresh(
+        runner,
+        host,
+        &config.repos,
+        sessions,
+        &config.herdr_session,
+        now,
+    ) {
         Ok(fresh) => Ok(HostInventory {
             ssh_alias: record.ssh_alias.clone(),
             ona_name: record.ona_name.clone(),
@@ -275,10 +284,17 @@ fn list_prs(
         .collect()
 }
 
-/// Each host's block, separated by blank lines: the local host first, then by name.
+/// flow's own herdr session when flow lists others too, so its agents are tagged with it.
+fn tagged_session(config: &Config) -> Option<&str> {
+    (config.herdr_sessions.len() > 1).then_some(config.herdr_session.as_str())
+}
+
+/// Each host's block, separated by blank lines: the local host first, then by name. Agents in
+/// herdr session `tagged` are tagged with it.
 fn render_all(
     inventories: &[HostInventory],
     repos: &[Repo],
+    tagged: Option<&str>,
     local_env_id: Option<&str>,
     now: Timestamp,
 ) -> String {
@@ -291,14 +307,20 @@ fn render_all(
         .unwrap_or(0);
     sorted
         .iter()
-        .map(|inv| render_block(inv, repos, name_width, now))
+        .map(|inv| render_block(inv, repos, tagged, name_width, now))
         .collect::<Vec<_>>()
         .join("\n")
 }
 
 /// The host's header, its recorded errors, then its agents and repos. A gone or never-probed
 /// host has only the header.
-fn render_block(inv: &HostInventory, repos: &[Repo], name_width: usize, now: Timestamp) -> String {
+fn render_block(
+    inv: &HostInventory,
+    repos: &[Repo],
+    tagged: Option<&str>,
+    name_width: usize,
+    now: Timestamp,
+) -> String {
     let mut out = format!("{:<name_width$}  {}\n", inv.name, host_state(inv, now));
     if inv.gone || never_probed(inv) {
         return out;
@@ -320,7 +342,10 @@ fn render_block(inv: &HostInventory, repos: &[Repo], name_width: usize, now: Tim
     push_indented(
         &mut out,
         "    ",
-        &inv.agents.iter().map(agent_row).collect::<Vec<_>>(),
+        &inv.agents
+            .iter()
+            .map(|agent| agent_row(agent, tagged))
+            .collect::<Vec<_>>(),
     );
     out.push_str("  repos\n");
     push_repos(&mut out, inv, repos);
@@ -359,12 +384,12 @@ fn never_probed(inv: &HostInventory) -> bool {
         && inv.pr_error.is_none()
 }
 
-/// `<status>[ [flow]]  <title, or pane id when untitled>  <cwd>`; agents in flow's own herdr
-/// session are tagged to tell them from the user's.
-fn agent_row(agent: &Agent) -> Vec<String> {
+/// `<status>[ [<session>]]  <title, or pane id when untitled>  <cwd>`; agents in herdr session
+/// `tagged`, flow's own when it lists others, are tagged to tell them from the user's.
+fn agent_row(agent: &Agent, tagged: Option<&str>) -> Vec<String> {
     let mut status = agent.status.as_str().to_owned();
-    if agent.session == herdr::SESSION {
-        status.push_str(&format!(" [{}]", herdr::SESSION));
+    if tagged == Some(agent.session.as_str()) {
+        status.push_str(&format!(" [{}]", agent.session));
     }
     let title = if agent.title.is_empty() {
         &agent.pane_id
@@ -771,9 +796,20 @@ default_branch = "main"
         render_all(
             inventories,
             &repos(),
+            Some("flow"),
             Some("env-host-b"),
             NOW.parse().unwrap(),
         )
+    }
+
+    #[test]
+    fn only_flows_own_session_is_tagged_and_only_beside_others() {
+        let alone = config();
+        assert_eq!(tagged_session(&alone), None);
+        let isolated: Config =
+            toml::from_str("herdr_session = \"flow\"\nherdr_sessions = [\"flow\", \"default\"]\n")
+                .unwrap();
+        assert_eq!(tagged_session(&isolated), Some("flow"));
     }
 
     #[test]
@@ -941,7 +977,7 @@ host-a  reachable · seen 0s ago
         };
         let repos: Vec<Repo> = repos().into_iter().take(1).collect();
         assert_eq!(
-            render_all(&[inventory], &repos, None, NOW.parse().unwrap()),
+            render_all(&[inventory], &repos, None, None, NOW.parse().unwrap()),
             "\
 host-a  reachable · seen 0s ago
   agents (0)
@@ -981,7 +1017,7 @@ default_branch = "main"
             ..host("host-a", 0)
         };
         assert_eq!(
-            render_all(&[inventory], &repos, None, NOW.parse().unwrap()),
+            render_all(&[inventory], &repos, None, None, NOW.parse().unwrap()),
             "\
 host-a  reachable · seen 0s ago
   agents (0)

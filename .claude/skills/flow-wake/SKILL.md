@@ -25,9 +25,8 @@ one reason; handle every row.
 - `agent-blocked: <id>`: the worker's harness waits at a prompt (a permission or dialog), not
   a question the worker asked through flow. Check `flow task events <id>`; if you cannot tell
   what it waits on, `flow task hold <id> --on user --what "..."` and tell the user which pane
-  to attach to: `flow task show <id>` names it as `<herdr session>/<pane>`. Name the herdr
-  session too when it is not `flow`, as for an adopted task, since the same pane id can exist
-  in both.
+  to attach to: `flow task show <id>` names it as `<herdr session>/<pane>`. Always name the
+  herdr session, since the same pane id can exist in several.
 - `agent-done: <id>`: the worker's session stopped while its task still reads `working` or
   `pending`, without reporting through flow. Check `flow task events <id>`, then steer it to
   continue or to report its status. A worker that stops after reporting `needs-decision` or

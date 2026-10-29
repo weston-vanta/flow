@@ -5,22 +5,52 @@ use std::path::PathBuf;
 use anyhow::{Context, anyhow, bail};
 use serde::Deserialize;
 
+use crate::herdr;
 use crate::paths::StateDir;
 
 /// Operator configuration from `state/config.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(from = "RawConfig")]
 pub struct Config {
     /// Where the host set comes from, and overrides for discovered hosts. The hosts themselves
     /// are the cached records in `state/hosts/`.
-    #[serde(default)]
     pub hosts: HostsConfig,
     /// The repositories tasks can get worktrees of, checked out at the same path on every host.
-    #[serde(default)]
     pub repos: Vec<Repo>,
-    /// The herdr sessions whose agents flow lists: its own session, where workers run, and the
-    /// sessions the user starts sessions in by hand.
-    #[serde(default = "default_herdr_sessions")]
+    /// flow's own herdr session, where the supervisor and workers run: herdr's `default`, the
+    /// one the user's herdr window shows, unless set.
+    pub herdr_session: String,
+    /// The herdr sessions whose agents flow lists, `herdr_session` always among them: first when
+    /// the configured list leaves it out, and alone when none is configured.
     pub herdr_sessions: Vec<String>,
+}
+
+/// `config.toml` as written, before `herdr_sessions` is made to hold `herdr_session`.
+#[derive(Deserialize)]
+struct RawConfig {
+    #[serde(default)]
+    hosts: HostsConfig,
+    #[serde(default)]
+    repos: Vec<Repo>,
+    #[serde(default = "default_herdr_session")]
+    herdr_session: String,
+    #[serde(default)]
+    herdr_sessions: Vec<String>,
+}
+
+impl From<RawConfig> for Config {
+    fn from(raw: RawConfig) -> Config {
+        let mut herdr_sessions = raw.herdr_sessions;
+        if !herdr_sessions.contains(&raw.herdr_session) {
+            herdr_sessions.insert(0, raw.herdr_session.clone());
+        }
+        Config {
+            hosts: raw.hosts,
+            repos: raw.repos,
+            herdr_session: raw.herdr_session,
+            herdr_sessions,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -101,8 +131,8 @@ fn parse(text: &str) -> anyhow::Result<Config> {
     }
 }
 
-fn default_herdr_sessions() -> Vec<String> {
-    ["flow", "default"].map(str::to_owned).to_vec()
+fn default_herdr_session() -> String {
+    herdr::DEFAULT_SESSION.to_owned()
 }
 
 fn default_list() -> Vec<String> {
@@ -247,5 +277,25 @@ ssh_alias = "host-a.example"
         )
         .unwrap_err();
         assert!(format!("{err:#}").contains("[[hosts.static]]"), "{err:#}");
+    }
+
+    #[test]
+    fn config_herdr_session_defaults_to_herdrs_default_and_is_always_listed() {
+        let config = parse("");
+        assert_eq!(config.herdr_session, "default");
+        assert_eq!(config.herdr_sessions, ["default"]);
+
+        let config = parse("herdr_session = \"flow\"\n");
+        assert_eq!(config.herdr_session, "flow");
+        assert_eq!(config.herdr_sessions, ["flow"]);
+
+        let config = parse("herdr_session = \"flow\"\nherdr_sessions = [\"default\", \"work\"]\n");
+        assert_eq!(config.herdr_sessions, ["flow", "default", "work"]);
+
+        let config = parse("herdr_sessions = [\"work\", \"default\"]\n");
+        assert_eq!(config.herdr_sessions, ["work", "default"]);
+
+        let config = parse("herdr_sessions = []\n");
+        assert_eq!(config.herdr_sessions, ["default"]);
     }
 }

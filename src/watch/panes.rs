@@ -1,13 +1,13 @@
-//! The herdr `agent wait` `flow watch` keeps running per watched pane: a task's worker or a
-//! hand session, an agent outside flow's herdr session. A wait ends on the statuses worth waking
-//! for, which for a hand session the user does not follow is `blocked` alone; once one of those
-//! was read, the next wait ends on any other status instead, so a status already observed does
-//! not answer again at once. After `working` the next wait also ends on any other status, so a
-//! worker known to be working is known to stop, idle included. An adopted task's wait also ends
-//! on `working` when it has no change to wait for, so the `idle` that ends each of its turns is
-//! seen, standing in for the turn-end hook such a session lacks. A wait started on a pane whose
-//! status an earlier wake reported starts as if it had just read that status: it ends on any
-//! other one first, so a change made while no wait ran still reaches the watcher.
+//! The herdr `agent wait` `flow watch` keeps running per watched pane: a task's worker or a hand
+//! session, an agent in neither a task's nor the supervisor's pane. A wait ends on the statuses
+//! worth waking for, which for a hand session the user does not follow is `blocked` alone; once one
+//! of those was read, the next wait ends on any other status instead, so a status already observed
+//! does not answer again at once. After `working` the next wait also ends on any other status, so a
+//! worker known to be working is known to stop, idle included. An adopted task's wait also ends on
+//! `working` when it has no change to wait for, so the `idle` that ends each of its turns is seen,
+//! standing in for the turn-end hook such a session lacks. A wait started on a pane whose status an
+//! earlier wake reported starts as if it had just read that status: it ends on any other one first,
+//! so a change made while no wait ran still reaches the watcher.
 
 use std::io::Read;
 use std::process::Child;
@@ -313,14 +313,10 @@ mod tests {
 
     fn wait_on(target: WaitTarget, script: Vec<Scripted>) -> (PaneWait, Arc<FakeRunner>) {
         let fake = Arc::new(FakeRunner::new(script));
-        let session = match target {
-            WaitTarget::Task { .. } => herdr::SESSION,
-            WaitTarget::Observed { .. } => "default",
-        };
         let spec = WaitSpec {
             target,
             host: "host-a".to_owned(),
-            session: session.to_owned(),
+            session: "default".to_owned(),
             pane_id: "w1:p1".to_owned(),
         };
         let host = Host {
@@ -329,7 +325,8 @@ mod tests {
             ssh_alias: "host-a.example".to_owned(),
             local_marker_env: None,
         };
-        let wait = PaneWait::new(spec, host, Herdr::new(fake.clone()), None);
+        let herdr = Herdr::with_session(fake.clone(), &spec.session);
+        let wait = PaneWait::new(spec, host, herdr, None);
         (wait, fake)
     }
 
@@ -398,7 +395,7 @@ mod tests {
         let seeded = PaneWait::new(
             wait.spec.clone(),
             wait.host.clone(),
-            Herdr::new(Arc::new(FakeRunner::new(Vec::new()))),
+            Herdr::with_session(Arc::new(FakeRunner::new(Vec::new())), "default"),
             Some(AgentStatus::Blocked),
         );
         assert_eq!(

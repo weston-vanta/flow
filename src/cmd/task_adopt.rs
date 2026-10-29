@@ -55,9 +55,9 @@ pub struct AdoptArgs {
 /// Creates a task for the hand session `args.session` names on `args.host`, briefs it, and
 /// prompts the session to read the brief, then prints `adopted <id> on <host> (<pane_id>)`,
 /// with a note when run outside the supervisor's session. The session is resolved as `flow
-/// follow` resolves it, and is removed from the follow list. Refuses a host that is gone, an
-/// agent that is not Claude Code or has no known working directory, and a pane an open task
-/// already runs in, all before writing anything. A failure once the task exists leaves it
+/// follow` resolves it, among observed sessions only, and is removed from the follow list.
+/// Refuses a host that is gone, a pane a task or the supervisor holds, and an agent that is not
+/// Claude Code or has no known working directory, all before writing anything. A failure once the task exists leaves it
 /// `blocked` with a supervisor hold naming the failure and exits 1. When only the prompt cannot
 /// be delivered, the adopted line is still printed.
 pub fn run(state: &StateDir, args: &AdoptArgs) -> anyhow::Result<ExitCode> {
@@ -88,9 +88,9 @@ pub fn run(state: &StateDir, args: &AdoptArgs) -> anyhow::Result<ExitCode> {
     };
 
     let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
-    let hands = super::sessions::hand_sessions(state, &runner, &host.name)?;
-    let agent = super::sessions::resolve(&hands, &host.name, &args.session)?;
-    refuse_unadoptable(&store, host, agent)?;
+    let listed = super::sessions::host_agents(state, &runner, &host.name)?;
+    let agent = super::sessions::resolve(&listed, &host.name, &args.session)?;
+    refuse_unadoptable(host, agent)?;
 
     let flow = flow_command(
         state,
@@ -221,9 +221,9 @@ fn fail(store: &Store, id: &str, err: anyhow::Error) -> anyhow::Error {
     err.context(format!("adopting the session as task {id}"))
 }
 
-/// Fails with `Refused` for an agent that is not Claude Code, whose working directory herdr
-/// does not know, or whose pane an open task already runs in.
-fn refuse_unadoptable(store: &Store, host: &Host, agent: &Agent) -> anyhow::Result<()> {
+/// Fails with `Refused` for an agent that is not Claude Code or whose working directory herdr
+/// does not know.
+fn refuse_unadoptable(host: &Host, agent: &Agent) -> anyhow::Result<()> {
     if agent.agent != CLAUDE {
         let kind = if agent.agent.is_empty() {
             "not identified by herdr"
@@ -239,16 +239,6 @@ fn refuse_unadoptable(store: &Store, host: &Host, agent: &Agent) -> anyhow::Resu
         return Err(Refused(format!(
             "herdr reports no working directory for pane {} on {}",
             agent.pane_id, host.name
-        ))
-        .into());
-    }
-    let tasks = store.list_tasks()?;
-    if let Some(task) =
-        observe::open_task_in_pane(&tasks, &host.name, &agent.session, &agent.pane_id)
-    {
-        return Err(Refused(format!(
-            "pane {} on {} is already task {}",
-            agent.pane_id, host.name, task.id
         ))
         .into());
     }

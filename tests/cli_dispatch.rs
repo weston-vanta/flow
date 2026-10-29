@@ -2,7 +2,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
-use flow::herdr::SESSION;
 use flow::paths::StateDir;
 use flow::state::Store;
 use flow::state::events::{self, Event};
@@ -336,6 +335,30 @@ fn dispatch_allows_shared_dir_when_asked() {
 }
 
 #[test]
+fn dispatch_starts_the_worker_in_the_configured_herdr_session() {
+    let fx = Fixture::new();
+    fs::write(
+        fx.state.join("config.toml"),
+        format!("herdr_session = \"flow\"\n{CONFIG}"),
+    )
+    .unwrap();
+
+    fx.flow(&starts_working(Vec::new()))
+        .args(dispatch_args(&["--dir", WORKTREE]))
+        .assert()
+        .success();
+
+    for argv in &fx.calls() {
+        assert_eq!(argv[..3], ["herdr", "--session", "flow"], "{argv:?}");
+    }
+    let (_, status) = fx.store().task(&fx.only_task()).unwrap();
+    assert_eq!(
+        status.herdr.map(|target| target.session).as_deref(),
+        Some("flow")
+    );
+}
+
+#[test]
 fn dispatch_creates_task_and_starts_agent() {
     let fx = Fixture::new();
 
@@ -354,20 +377,20 @@ fn dispatch_creates_task_and_starts_agent() {
     );
     let calls = fx.calls();
     for argv in &calls {
-        assert_eq!(argv[..3], ["herdr", "--session", "flow"], "{argv:?}");
+        assert_eq!(argv[..3], ["herdr", "--session", "default"], "{argv:?}");
     }
     assert_eq!(
         *herdr_calls(&calls, &["workspace", "create"])[0],
         [
             "herdr",
             "--session",
-            "flow",
+            "default",
             "workspace",
             "create",
             "--cwd",
             WORKTREE,
             "--label",
-            &id,
+            "Rebuild the search index",
             "--no-focus"
         ]
     );
@@ -420,7 +443,7 @@ fn dispatch_creates_task_and_starts_agent() {
             workspace_id: WORKSPACE.to_owned(),
             pane_id: PANE.to_owned(),
             agent: "claude".to_owned(),
-            session: SESSION.to_owned(),
+            session: "default".to_owned(),
         })
     );
     let brief = store.brief(&id).unwrap();

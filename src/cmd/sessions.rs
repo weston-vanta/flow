@@ -1,8 +1,8 @@
 //! `flow sessions`, `flow follow`, `flow unfollow`: herdr agents across hosts, matched to tasks or
-//! shown as observed, and the hand-started sessions the supervisor follows. Any hand-started
-//! session wakes the supervisor when it turns blocked; a followed one also when it goes idle or
-//! done. `follow` and `unfollow` name a session by its title as `flow sessions` shows it, or by
-//! its pane id.
+//! the supervisor or shown as observed, and the hand-started sessions the supervisor follows. Any
+//! observed session wakes the supervisor when it turns blocked; a followed one also when it goes
+//! idle or done. `follow` and `unfollow` name an observed session by its title as `flow sessions`
+//! shows it, or by its pane id, in any herdr session flow lists.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -10,19 +10,21 @@ use std::sync::Arc;
 use jiff::Timestamp;
 
 use super::Refused;
-use crate::herdr::{self, Agent, AgentStatus};
+use crate::herdr::{Agent, AgentStatus};
 use crate::host;
 use crate::inventory::{self, FlowServer, HostInventory};
-use crate::observe::{self, FollowList, Followed, MatchedAgent};
+use crate::observe::{self, FollowList, Followed, Holder, MatchedAgent};
 use crate::paths::StateDir;
 use crate::render;
 use crate::runner::{self, Runner};
 use crate::state::Store;
 use crate::state::config::{Config, Host};
-use crate::state::task::{Status, TaskRecord};
+use crate::state::task::{HerdrTarget, Status, TaskRecord};
+use crate::supervisor;
 
 const OBSERVED: &str = "observed";
 const FOLLOWED: &str = "followed";
+const SUPERVISOR: &str = "supervisor";
 const HEADER: [&str; 4] = ["HOST", "STATUS", "TASK", "TITLE"];
 const SUMMARY_WIDTH: usize = 100;
 
@@ -35,9 +37,15 @@ pub fn run(state: &StateDir, json: bool, summaries: bool) -> anyhow::Result<()> 
     let hosts = inventory::live_hosts(state)?;
     let inventories = live_inventories(state, &runner, &config, &hosts, Timestamp::now())?;
     let tasks = Store::open(state).list_tasks()?;
+    let supervisor = supervisor_pane(state)?;
     let claude_home = observe::claude_home()?;
     let registry = observe::registry_sessions(&claude_home)?;
-    let mut matched = observe::match_agents(&agents_by_host(&inventories), &tasks, &registry);
+    let mut matched = observe::match_agents(
+        &agents_by_host(&inventories),
+        &tasks,
+        supervisor.as_ref(),
+        &registry,
+    );
     mark_followed(&mut matched, &FollowList::load(state)?.follow);
     if json || summaries {
         add_summaries(&mut matched, &claude_home);
@@ -56,14 +64,26 @@ pub fn run(state: &StateDir, json: bool, summaries: bool) -> anyhow::Result<()> 
     }
 }
 
-/// How many cached agents run no task: the observed sessions as of each host's last inventory.
+/// How many cached agents run neither a task nor the supervisor: the observed sessions as of
+/// each host's last inventory.
 pub fn count_observed(state: &StateDir, tasks: &[(TaskRecord, Status)]) -> anyhow::Result<usize> {
     let inventories: Vec<HostInventory> = inventory::load_all(state)?
         .into_iter()
         .filter(|inv| !inv.gone)
         .collect();
-    let matched = observe::match_agents(&agents_by_host(&inventories), tasks, &[]);
-    Ok(matched.iter().filter(|entry| entry.task.is_none()).count())
+    let supervisor = supervisor_pane(state)?;
+    let matched = observe::match_agents(
+        &agents_by_host(&inventories),
+        tasks,
+        supervisor.as_ref(),
+        &[],
+    );
+    Ok(matched.iter().filter(|entry| entry.is_observed()).count())
+}
+
+/// The supervisor's pane, as its lock records it.
+pub(super) fn supervisor_pane(state: &StateDir) -> anyhow::Result<Option<HerdrTarget>> {
+    Ok(supervisor::load(state)?.map(|lock| lock.herdr))
 }
 
 fn agents_by_host(inventories: &[HostInventory]) -> Vec<(&str, &[Agent])> {
@@ -76,8 +96,8 @@ fn agents_by_host(inventories: &[HostInventory]) -> Vec<(&str, &[Agent])> {
 /// Adds the hand session `target` names on `host` to the follow list, recording its title.
 pub fn run_follow(state: &StateDir, host: &str, target: &str) -> anyhow::Result<()> {
     let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
-    let hands = hand_sessions(state, &runner, host)?;
-    let agent = resolve(&hands, host, target)?;
+    let listed = host_agents(state, &runner, host)?;
+    let agent = resolve(&listed, host, target)?;
     let followed = Followed {
         host: host.to_owned(),
         pane_id: agent.pane_id.clone(),
@@ -101,8 +121,8 @@ pub fn run_follow(state: &StateDir, host: &str, target: &str) -> anyhow::Result<
 /// more; a pane id the list holds in several herdr sessions is refused.
 pub fn run_unfollow(state: &StateDir, host: &str, target: &str) -> anyhow::Result<()> {
     let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
-    let hands = hand_sessions(state, &runner, host)?;
-    let (session, pane_id) = match resolve(&hands, host, target) {
+    let listed = host_agents(state, &runner, host)?;
+    let (session, pane_id) = match resolve(&listed, host, target) {
         Ok(agent) => (agent.session.clone(), agent.pane_id.clone()),
         Err(refused) => {
             let follow = FollowList::load(state)?.follow;
@@ -135,26 +155,35 @@ pub fn run_unfollow(state: &StateDir, host: &str, target: &str) -> anyhow::Resul
     Ok(())
 }
 
-/// The hand sessions on `host`: its agents outside flow's herdr session, after one listing of
-/// the host refreshed its cached inventory. When the listing fails, the cached agents, saying
-/// so on stderr; none when `host` is not a live host.
-pub(super) fn hand_sessions(
+/// A host's herdr agents in every listed herdr session, split into the observed sessions and
+/// the agents a task or the supervisor holds.
+#[derive(Debug, Default)]
+pub(super) struct HostAgents {
+    pub observed: Vec<Agent>,
+    /// Each agent whose pane a task or the supervisor holds, with what holds it, as `is <...>`
+    /// reads.
+    pub held: Vec<(Agent, String)>,
+}
+
+/// The agents on `host`, after one listing of the host refreshed its cached inventory. When the
+/// listing fails, the cached agents, saying so on stderr; none when `host` is not a live host.
+pub(super) fn host_agents(
     state: &StateDir,
     runner: &Arc<dyn Runner>,
     host: &str,
-) -> anyhow::Result<Vec<Agent>> {
+) -> anyhow::Result<HostAgents> {
     let Some(host) = inventory::live_hosts(state)?
         .into_iter()
         .find(|known| known.name == host)
     else {
-        return Ok(Vec::new());
+        return Ok(HostAgents::default());
     };
     let config = Config::load(state)?;
     let listed = inventory::list_agents(
         state,
         runner,
         &config.herdr_sessions,
-        FlowServer::Start,
+        FlowServer::Start(&config.herdr_session),
         &host,
         Timestamp::now(),
     );
@@ -183,20 +212,39 @@ pub(super) fn hand_sessions(
                 .unwrap_or_default()
         }
     };
-    Ok(agents
-        .into_iter()
-        .filter(|agent| agent.session != herdr::SESSION)
-        .collect())
+    let tasks = Store::open(state).list_tasks()?;
+    let supervisor = supervisor_pane(state)?;
+    let mut split = HostAgents::default();
+    for agent in agents {
+        let holder = observe::holder(
+            &tasks,
+            supervisor.as_ref(),
+            &host.name,
+            &agent.session,
+            &agent.pane_id,
+        );
+        match holder {
+            None => split.observed.push(agent),
+            Some(Holder::Task(record)) => {
+                let held = format!("already task {}", record.id);
+                split.held.push((agent, held));
+            }
+            Some(Holder::Supervisor) => split.held.push((agent, "the supervisor's".to_owned())),
+        }
+    }
+    Ok(split)
 }
 
-/// The hand session titled `target`, else the one in pane `target`, a pane id or `<session>/<pane
-/// id>`. Refuses when several share the title or the pane id, listing them, or when none
-/// matches.
+/// The observed session titled `target`, else the one in pane `target`, a pane id or
+/// `<session>/<pane id>`. Refuses when several share the title or the pane id, listing them, or
+/// when none matches, naming what holds the pane when `target` names a task's or the
+/// supervisor's agent instead.
 pub(super) fn resolve<'a>(
-    hands: &'a [Agent],
+    listed: &'a HostAgents,
     host: &str,
     target: &str,
 ) -> Result<&'a Agent, Refused> {
+    let hands = &listed.observed;
     let titled: Vec<&Agent> = hands.iter().filter(|agent| agent.title == target).collect();
     match titled.as_slice() {
         [agent] => return Ok(agent),
@@ -219,12 +267,20 @@ pub(super) fn resolve<'a>(
             agent.pane_id == pane_id && session.is_none_or(|session| agent.session == session)
         })
         .collect();
-    match in_pane.as_slice() {
-        [agent] => Ok(agent),
-        [] => Err(Refused(format!(
+    let held = listed.held.iter().find(|(agent, _)| {
+        agent.title == target
+            || (agent.pane_id == pane_id && session.is_none_or(|session| agent.session == session))
+    });
+    match (in_pane.as_slice(), held) {
+        ([agent], _) => Ok(agent),
+        ([], Some((agent, holder))) => Err(Refused(format!(
+            "pane {} on {host} is {holder}",
+            agent.pane_id
+        ))),
+        ([], None) => Err(Refused(format!(
             "no hand session titled or in pane {target} on {host}; run flow sessions"
         ))),
-        several => Err(several_in_pane(
+        (several, _) => Err(several_in_pane(
             host,
             pane_id,
             several
@@ -271,12 +327,11 @@ fn several_in_pane<'a>(
     ))
 }
 
-/// Marks each hand session `follow` names as followed.
+/// Marks each observed session `follow` names as followed.
 fn mark_followed(matched: &mut [MatchedAgent], follow: &[Followed]) {
     for entry in matched {
         let agent = &entry.agent;
-        entry.followed = entry.task.is_none()
-            && agent.session != herdr::SESSION
+        entry.followed = entry.is_observed()
             && follow
                 .iter()
                 .any(|followed| followed.is(&entry.host, &agent.session, &agent.pane_id));
@@ -293,7 +348,8 @@ fn live_inventories(
     now: Timestamp,
 ) -> anyhow::Result<Vec<HostInventory>> {
     let sessions = &config.herdr_sessions;
-    inventory::list_agents_on(state, runner, sessions, FlowServer::Start, hosts, now)
+    let start = FlowServer::Start(&config.herdr_session);
+    inventory::list_agents_on(state, runner, sessions, start, hosts, now)
         .into_iter()
         .map(|listed| {
             let listed = listed?;
@@ -320,8 +376,9 @@ fn add_summaries(matched: &mut [MatchedAgent], claude_home: &Path) {
 }
 
 /// A table of `HOST  STATUS  TASK  TITLE`, the local host's agents first, then by host, status
-/// (`working`, `blocked`, the rest), and title. TASK is the agent's task, or `followed` or
-/// `observed` for a hand-started session the supervisor follows or not; TITLE is
+/// (`working`, `blocked`, the rest), and title. TASK is the agent's task, `supervisor` for the
+/// supervisor, or `followed` or `observed` for a hand-started session the supervisor follows or
+/// not; TITLE is
 /// the task's title for a worker, else herdr's title, or the pane id when there is none. With
 /// `summaries`, a known summary follows its agent on a line of its own, indented to TITLE and
 /// cut to `SUMMARY_WIDTH`.
@@ -342,7 +399,13 @@ fn render_text(
                 entry.host.clone(),
                 entry.agent.status.as_str().to_owned(),
                 entry.task.clone().unwrap_or_else(|| {
-                    let mark = if entry.followed { FOLLOWED } else { OBSERVED };
+                    let mark = if entry.supervisor {
+                        SUPERVISOR
+                    } else if entry.followed {
+                        FOLLOWED
+                    } else {
+                        OBSERVED
+                    };
                     mark.to_owned()
                 }),
                 (*title).to_owned(),
@@ -436,6 +499,7 @@ mod tests {
                 agent_session_id: None,
             },
             task: task.map(str::to_owned),
+            supervisor: false,
             followed: false,
             session: None,
             matched_by: None,
@@ -475,13 +539,20 @@ mod tests {
         }
     }
 
+    fn observed(hands: &[Agent]) -> HostAgents {
+        HostAgents {
+            observed: hands.to_vec(),
+            held: Vec::new(),
+        }
+    }
+
     #[test]
     fn resolve_refuses_a_pane_id_several_herdr_sessions_hold() {
-        let hands = [
+        let hands = observed(&[
             hand("default", "w1:p1", "Tidy docs"),
             hand("other", "w1:p1", "Fix links"),
             hand("other", "w1:p2", "Upgrade toolchain"),
-        ];
+        ]);
 
         let refused = resolve(&hands, "host-b", "w1:p1").unwrap_err();
 
@@ -497,6 +568,50 @@ mod tests {
         );
         assert_eq!(resolve(&hands, "host-b", "w1:p2").unwrap().session, "other");
         assert!(resolve(&hands, "host-b", "default/w1:p2").is_err());
+    }
+
+    #[test]
+    fn resolve_names_what_holds_a_task_or_supervisor_pane() {
+        let listed = HostAgents {
+            observed: vec![hand("default", "w3:p1", "Tidy docs")],
+            held: vec![
+                (
+                    hand("default", "w1:p1", "flow-supervisor"),
+                    "the supervisor's".to_owned(),
+                ),
+                (
+                    hand("default", "w2:p1", "Build feature"),
+                    "already task aaaaaaab".to_owned(),
+                ),
+            ],
+        };
+
+        assert_eq!(
+            resolve(&listed, "host-b", "Build feature").unwrap_err().0,
+            "pane w2:p1 on host-b is already task aaaaaaab"
+        );
+        assert_eq!(
+            resolve(&listed, "host-b", "w1:p1").unwrap_err().0,
+            "pane w1:p1 on host-b is the supervisor's"
+        );
+        assert_eq!(
+            resolve(&listed, "host-b", "w3:p1").unwrap().title,
+            "Tidy docs"
+        );
+    }
+
+    #[test]
+    fn render_marks_the_supervisor() {
+        let matched = [MatchedAgent {
+            supervisor: true,
+            ..entry("host-a", AgentStatus::Idle, "flow-supervisor", None)
+        }];
+
+        assert_eq!(
+            render_text(&matched, &[], Some("host-a"), false),
+            "HOST    STATUS  TASK        TITLE\n\
+             host-a  idle    supervisor  flow-supervisor\n"
+        );
     }
 
     #[test]

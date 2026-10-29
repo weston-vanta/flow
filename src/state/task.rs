@@ -159,14 +159,15 @@ pub struct HerdrTarget {
     pub workspace_id: String,
     pub pane_id: String,
     pub agent: String,
-    /// The herdr session the pane lives in: flow's own for a dispatched worker, the user's for
-    /// an adopted one. Targets written before adoption existed were all in flow's session.
-    #[serde(default = "flow_session")]
+    /// The herdr session the pane lives in: flow's own, as configured when the worker was
+    /// dispatched, or the one an adopted session was started in. Targets written before
+    /// sessions were recorded were all in flow's legacy session.
+    #[serde(default = "legacy_session")]
     pub session: String,
 }
 
-fn flow_session() -> String {
-    herdr::SESSION.to_owned()
+fn legacy_session() -> String {
+    herdr::LEGACY_SESSION.to_owned()
 }
 
 impl HerdrTarget {
@@ -235,7 +236,7 @@ mod tests {
             r#"{"host": "host-a", "workspace_id": "w1", "pane_id": "w1:p1", "agent": "claude"}"#,
         )
         .unwrap();
-        assert_eq!(target.session, herdr::SESSION);
+        assert_eq!(target.session, herdr::LEGACY_SESSION);
         let adopted: Origin = serde_json::from_str(r#""adopted""#).unwrap();
         assert_eq!(adopted, Origin::Adopted);
     }

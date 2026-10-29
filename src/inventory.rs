@@ -174,10 +174,11 @@ pub struct HerdrAgents {
     pub answered: bool,
 }
 
-/// Whether asking herdr for agents starts flow's own herdr server when it is not running.
+/// Whether asking herdr for agents starts flow's own herdr server, the one for the session
+/// named, when it is not running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FlowServer {
-    Start,
+pub enum FlowServer<'a> {
+    Start(&'a str),
     LeaveStopped,
 }
 
@@ -229,7 +230,8 @@ impl RepoProbe<'_> {
 }
 
 /// Probes `host` for the worktrees of each of `repos`, its load, and the agents in
-/// `herdr_sessions`. Fails with `Unreachable` when ssh fails on the first call or no probe runs at
+/// `herdr_sessions`, starting the herdr server of flow's own session, `own_session`, when none
+/// runs. Fails with `Unreachable` when ssh fails on the first call or no probe runs at
 /// all, and with another error when git cannot list the worktrees of a repo checked out there. A
 /// repo with no checkout on the host is recorded in `missing_repos`; the worktree tool and herdr
 /// failing are recorded on the inventory too. `prs` is left empty for `join_prs`.
@@ -238,6 +240,7 @@ pub fn refresh(
     host: &Host,
     repos: &[Repo],
     herdr_sessions: &[String],
+    own_session: &str,
     now: Timestamp,
 ) -> anyhow::Result<HostInventory> {
     let mut probes = Vec::new();
@@ -316,7 +319,7 @@ pub fn refresh(
         agents,
         error: herdr_error,
         ..
-    } = herdr_agents(runner, host, herdr_sessions, FlowServer::Start);
+    } = herdr_agents(runner, host, herdr_sessions, FlowServer::Start(own_session));
 
     Ok(HostInventory {
         reachable: true,
@@ -331,8 +334,8 @@ pub fn refresh(
 }
 
 /// The agents in each of `sessions` on `host`, in session order. With `FlowServer::Start`,
-/// flow's own session is started when it is not running; any other session without a server
-/// has no agents. A session whose server cannot be asked is recorded in `error`, and asking
+/// the server of the session it names is started when it is not running; any other session
+/// without a server has no agents. A session whose server cannot be asked is recorded in `error`, and asking
 /// stops at the first session ssh cannot reach.
 pub fn herdr_agents(
     runner: &Arc<dyn Runner>,
@@ -346,7 +349,7 @@ pub fn herdr_agents(
     let mut answered = false;
     for session in sessions {
         let herdr = Herdr::with_session(runner.clone(), session);
-        let found = if session == herdr::SESSION && flow_server == FlowServer::Start {
+        let found = if flow_server == FlowServer::Start(session) {
             herdr
                 .ensure_server(host)
                 .and_then(|()| herdr.agents(host))
@@ -817,13 +820,14 @@ detached
             &host(),
             &repos(),
             &sessions(),
+            "flow",
             Timestamp::UNIX_EPOCH,
         )
     }
 
     fn herdr_agents_with(script: Vec<Scripted>) -> HerdrAgents {
         let runner: Arc<dyn Runner> = Arc::new(FakeRunner::new(script));
-        herdr_agents(&runner, &host(), &sessions(), FlowServer::Start)
+        herdr_agents(&runner, &host(), &sessions(), FlowServer::Start("flow"))
     }
 
     #[test]

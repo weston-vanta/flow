@@ -16,8 +16,12 @@ use serde::{Deserialize, Serialize};
 use crate::runner::{Output, Runner, shell_quote};
 use crate::state::config::Host;
 
-/// The herdr session every flow worker lives in.
-pub const SESSION: &str = "flow";
+/// herdr's main session, the one its window shows unless told otherwise: flow's own session
+/// unless `config.toml` names another.
+pub const DEFAULT_SESSION: &str = "default";
+/// The session flow ran its supervisor and workers in before its session was configurable;
+/// records written before they named a session were all in it.
+pub const LEGACY_SESSION: &str = "flow";
 /// The lowest herdr private protocol whose CLI output this module parses.
 pub const MIN_PROTOCOL: u32 = 22;
 
@@ -83,8 +87,9 @@ pub struct Agent {
     /// The terminal title without herdr's status glyph.
     pub title: String,
     /// The herdr session the agent's pane lives in. Pane ids are unique only within a session.
-    /// Inventories cached before sessions were recorded held only flow's own agents.
-    #[serde(default = "flow_session")]
+    /// Inventories cached before sessions were recorded held only flow's own agents, all in its
+    /// legacy session.
+    #[serde(default = "legacy_session")]
     pub session: String,
     /// The id of the agent's own session, such as Claude Code's session id, as herdr reports
     /// it; `None` when herdr has not reported one.
@@ -92,8 +97,8 @@ pub struct Agent {
     pub agent_session_id: Option<String>,
 }
 
-fn flow_session() -> String {
-    SESSION.to_owned()
+fn legacy_session() -> String {
+    LEGACY_SESSION.to_owned()
 }
 
 // Response shapes, pinned against `herdr api schema --json` at protocol 22. Every CLI command
@@ -262,18 +267,18 @@ pub struct Herdr {
 }
 
 impl Herdr {
-    /// herdr in flow's own session.
-    pub fn new(runner: Arc<dyn Runner>) -> Herdr {
-        Herdr::with_session(runner, SESSION)
-    }
-
-    /// herdr in another session, such as the one the user starts sessions in by hand or a
-    /// throwaway one for live smoke checks.
+    /// herdr in `session`: flow's own, the one an agent was found in, or a throwaway one for
+    /// live smoke checks.
     pub fn with_session(runner: Arc<dyn Runner>, session: &str) -> Herdr {
         Herdr {
             runner,
             session: session.to_owned(),
         }
+    }
+
+    /// The herdr session every call names.
+    pub fn session(&self) -> &str {
+        &self.session
     }
 
     /// Makes sure this session's herdr server runs on `host` and speaks at least
@@ -380,7 +385,7 @@ impl Herdr {
         Ok((created.workspace.workspace_id, created.root_pane.pane_id))
     }
 
-    /// The workspaces in flow's session on `host`.
+    /// The workspaces in this session on `host`.
     pub fn workspaces(&self, host: &Host) -> anyhow::Result<Vec<Workspace>> {
         let list: WorkspaceList = self.call_json(host, &self.argv(&["workspace", "list"]))?;
         Ok(list.workspaces)
@@ -831,7 +836,7 @@ mod tests {
 
     fn herdr(script: Vec<Scripted>) -> (Herdr, Arc<FakeRunner>) {
         let fake = Arc::new(FakeRunner::new(script));
-        (Herdr::new(fake.clone()), fake)
+        (Herdr::with_session(fake.clone(), "flow"), fake)
     }
 
     fn words(words: &[&str]) -> Vec<String> {

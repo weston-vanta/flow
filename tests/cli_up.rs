@@ -2,7 +2,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
-use flow::herdr::SESSION;
 use flow::paths::StateDir;
 use flow::state::Store;
 use flow::state::events;
@@ -261,13 +260,13 @@ fn up_creates_supervisor_when_no_lock() {
             workspace_id: "w3".to_owned(),
             pane_id: NEW_PANE.to_owned(),
             agent: "claude".to_owned(),
-            session: SESSION.to_owned(),
+            session: "default".to_owned(),
         }
     );
     assert_eq!(lock.claude_session, None);
     assert_eq!(
         stdout,
-        format!("attach: herdr --session flow agent attach {NEW_PANE}\n")
+        format!("attach: herdr --session default agent attach {NEW_PANE}\n")
     );
     assert_eq!(
         stderr,
@@ -426,6 +425,13 @@ fn up_closes_the_previous_supervisors_workspace_before_starting() {
         })
         .unwrap();
     assert!(close < create, "{calls:?}");
+    let sessions: Vec<&str> = calls.iter().map(|(_, argv)| argv[2].as_str()).collect();
+    assert_eq!(
+        sessions[..create + 1],
+        ["flow", "flow", "flow", "default", "default"],
+        "a lock written before sessions were recorded is looked for in the legacy session, \
+         and the new supervisor starts in the configured one"
+    );
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert!(
         stderr.contains("closed workspace w1 on host-a, left by the previous supervisor"),
@@ -434,6 +440,30 @@ fn up_closes_the_previous_supervisors_workspace_before_starting() {
     let lock = fx.lock().unwrap();
     assert_eq!(lock.claude_session.as_deref(), Some("s9"));
     assert_eq!(lock.herdr.pane_id, NEW_PANE);
+    assert_eq!(lock.herdr.session, "default");
+}
+
+#[test]
+fn up_attaches_to_a_live_supervisor_in_the_session_its_lock_records() {
+    let fx = Fixture::new();
+    fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
+    let lock_path = fx.state.join("supervisor/lock.json");
+    let mut lock: Value = serde_json::from_str(&fs::read_to_string(&lock_path).unwrap()).unwrap();
+    lock["herdr"]["session"] = json!("work");
+    fs::write(&lock_path, lock.to_string()).unwrap();
+
+    let stdout = stdout_of(fx.flow(&[ok(&supervisor_agents())]).arg("up"));
+
+    let calls = fx.calls();
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert_eq!(
+        calls[0].1[..5],
+        ["herdr", "--session", "work", "agent", "list"]
+    );
+    assert_eq!(
+        stdout,
+        format!("attach: herdr --session work agent attach {LIVE_PANE}\n")
+    );
 }
 
 #[test]
@@ -738,7 +768,7 @@ fn up_without_a_terminal_still_starts_the_supervisor() {
 
     assert_eq!(
         stdout,
-        format!("{NO_TERMINAL}herdr --session flow agent attach {NEW_PANE}\n")
+        format!("{NO_TERMINAL}herdr --session default agent attach {NEW_PANE}\n")
     );
     assert_eq!(
         stderr,
@@ -825,7 +855,7 @@ fn create_task_with_pane(fx: &Fixture) -> Store {
                 workspace_id: "w2".to_owned(),
                 pane_id: "w2:p1".to_owned(),
                 agent: "claude".to_owned(),
-                session: SESSION.to_owned(),
+                session: "flow".to_owned(),
             });
         })
         .unwrap();

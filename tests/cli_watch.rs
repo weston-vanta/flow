@@ -5,7 +5,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use assert_cmd::Command;
-use flow::herdr::SESSION;
 use flow::paths::StateDir;
 use flow::state::Store;
 use flow::state::task::{Harness, HerdrTarget, Origin, State, TaskRecord};
@@ -15,7 +14,11 @@ use flow::watch::queue;
 use jiff::Timestamp;
 use serde_json::{Value, json};
 
+/// flow in its own herdr session, `flow`, listing herdr's `default` session too.
 const CONFIG: &str = r#"
+herdr_session = "flow"
+herdr_sessions = ["flow", "default"]
+
 [[repos]]
 name = "example-repo"
 path = "/work/repo"
@@ -23,6 +26,8 @@ default_branch = "main"
 worktree_tool = { create = ["wt", "create", "{branch}"] }
 
 "#;
+/// flow's own herdr session in `CONFIG`.
+const SESSION: &str = "flow";
 
 /// Writes cached records of `host-a` (env `env-0001`) and `host-b` (env `env-0002`), the hosts
 /// discovery would have found.

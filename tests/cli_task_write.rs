@@ -1,7 +1,6 @@
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
-use flow::herdr::SESSION;
 use flow::paths::StateDir;
 use flow::state::Store;
 use flow::state::events::{self, Event};
@@ -488,7 +487,7 @@ fn setup_close(
                 workspace_id: "w2".to_owned(),
                 pane_id: "w2:p1".to_owned(),
                 agent: "claude".to_owned(),
-                session: SESSION.to_owned(),
+                session: "default".to_owned(),
             });
         })
         .unwrap();
@@ -533,7 +532,7 @@ fn close_closes_a_done_task_workspace_and_keeps_the_record() {
     assert_eq!(calls[0]["host"], "host-a");
     assert_eq!(
         calls[0]["argv"],
-        json!(["herdr", "--session", "flow", "workspace", "close", "w2"])
+        json!(["herdr", "--session", "default", "workspace", "close", "w2"])
     );
     let (rec, status) = store.task(TASK).unwrap();
     assert_eq!(rec, rec_before);

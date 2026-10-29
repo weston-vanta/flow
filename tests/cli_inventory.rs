@@ -4,7 +4,11 @@ use std::path::PathBuf;
 use assert_cmd::Command;
 use serde_json::{Value, json};
 
+/// flow in its own herdr session, `flow`, listing herdr's `default` session too.
 const CONFIG: &str = r#"
+herdr_session = "flow"
+herdr_sessions = ["flow", "default"]
+
 [[repos]]
 name = "example-repo"
 path = "/workspaces/acme"
@@ -532,6 +536,9 @@ fn inventory_lists_worktrees_per_repo() {
     fs::write(
         fx.state.join("config.toml"),
         r#"
+herdr_session = "flow"
+herdr_sessions = ["flow", "default"]
+
 [[repos]]
 name = "example-repo"
 path = "/work/repo"
@@ -675,6 +682,9 @@ host-a  reachable · load 0.26 · seen 0s ago
 }
 
 const TWO_REPOS_TWO_HOSTS: &str = r#"
+herdr_session = "flow"
+herdr_sessions = ["flow", "default"]
+
 [[repos]]
 name = "example-repo"
 path = "/work/repo"
@@ -879,8 +889,11 @@ const LAB: &str = "00000000-0000-4000-8000-000000000001";
 const SIDE_PROJECT: &str = "00000000-0000-4000-8000-000000000002";
 const SCRATCH_BOX: &str = "00000000-0000-4000-8000-000000000003";
 
-/// Repos only: hosts come from Ona.
+/// Repos and `CONFIG`'s herdr sessions only: hosts come from Ona.
 const ONA_CONFIG: &str = r#"
+herdr_session = "flow"
+herdr_sessions = ["flow", "default"]
+
 [[repos]]
 name = "example-repo"
 path = "/workspaces/acme"

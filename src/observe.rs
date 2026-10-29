@@ -1,7 +1,8 @@
 //! Observed sessions, the ones the user started by hand in herdr: each herdr agent is matched to
-//! the task whose herdr target is its pane, an adopted session's included, or shown as observed,
-//! with the Claude Code session it runs and that session's latest summary, read from Claude Code's
-//! session registry and transcripts. Reading is all flow does there; it never writes Claude Code's
+//! the task whose herdr target is its pane, an adopted session's included, or to the supervisor
+//! when it runs in the pane `state/supervisor/lock.json` names, or shown as observed, whatever
+//! herdr session it is in, with the Claude Code session it runs and that session's latest
+//! summary, read from Claude Code's session registry and transcripts. Reading is all flow does there; it never writes Claude Code's
 //! state. Any observed session turning `blocked` wakes the supervisor; the follow list,
 //! `state/supervisor/follow.json`, names the followed ones, whose other state changes should wake
 //! it too.
@@ -24,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use crate::herdr::Agent;
 use crate::paths::StateDir;
 use crate::state::fs::{with_lock, write_atomic};
-use crate::state::task::{Status, TaskRecord};
+use crate::state::task::{HerdrTarget, Status, TaskRecord};
 
 /// The most of a transcript's end `latest_summary` reads.
 const SUMMARY_WINDOW: u64 = 1024 * 1024;
@@ -76,12 +77,49 @@ pub struct MatchedAgent {
     pub agent: Agent,
     /// The task whose worker runs in the agent's pane; `None` for a hand-started session.
     pub task: Option<String>,
+    /// Whether the agent is the supervisor.
+    pub supervisor: bool,
     /// Whether the agent is a hand-started session in the follow list.
     pub followed: bool,
     pub session: Option<RegistrySession>,
     /// How `session` was found; `None` when there is no session.
     pub matched_by: Option<MatchedBy>,
     pub summary: Option<String>,
+}
+
+impl MatchedAgent {
+    /// Whether the agent is an observed session: neither a task's worker nor the supervisor.
+    pub fn is_observed(&self) -> bool {
+        self.task.is_none() && !self.supervisor
+    }
+}
+
+/// What keeps a herdr agent from being an observed session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Holder<'a> {
+    /// The task whose herdr target is the agent's pane.
+    Task(&'a TaskRecord),
+    Supervisor,
+}
+
+/// What holds the pane `pane_id` in herdr session `session` on `host`: the task whose herdr
+/// target it is, preferring an open task, then the newest, else the supervisor when its lock
+/// names the pane; `None` for an observed session.
+pub fn holder<'a>(
+    tasks: &'a [(TaskRecord, Status)],
+    supervisor: Option<&HerdrTarget>,
+    host: &str,
+    session: &str,
+    pane_id: &str,
+) -> Option<Holder<'a>> {
+    if let Some((record, _)) = tasks_in_pane(tasks, host, session, pane_id)
+        .max_by_key(|(record, status)| (status.state.is_open(), record.created))
+    {
+        return Some(Holder::Task(record));
+    }
+    supervisor
+        .is_some_and(|target| target.is(host, session, pane_id))
+        .then_some(Holder::Supervisor)
 }
 
 /// How an agent's registry session was found.
@@ -277,7 +315,7 @@ fn away_summary(line: &[u8]) -> Option<String> {
 }
 
 /// Matches each agent of `hosts`, herdr's agents per host, to the task whose worker runs in its
-/// pane and to a registry session. A task's agent gets the task's own Claude Code session when
+/// pane, or to `supervisor`, the supervisor's pane, and to a registry session. A task's agent gets the task's own Claude Code session when
 /// the registry has it. Any other agent herdr reports a session id for gets the registry
 /// session with that id, or none when the registry lacks it. An agent with neither is matched
 /// by cwd only when no other such agent on any host shares its cwd: it gets the most recently
@@ -286,6 +324,7 @@ fn away_summary(line: &[u8]) -> Option<String> {
 pub fn match_agents(
     hosts: &[(&str, &[Agent])],
     tasks: &[(TaskRecord, Status)],
+    supervisor: Option<&HerdrTarget>,
     registry: &[RegistrySession],
 ) -> Vec<MatchedAgent> {
     let by_id = |id: &str| registry.iter().find(|s| s.session_id == id);
@@ -294,6 +333,8 @@ pub fn match_agents(
         .flat_map(|(host, agents)| agents.iter().map(move |agent| (*host, agent)))
         .map(|(host, agent)| {
             let task = task_in_pane(host, agent, tasks);
+            let supervisor = task.is_none()
+                && supervisor.is_some_and(|target| target.is(host, &agent.session, &agent.pane_id));
             let task_session = task
                 .and_then(|(_, status)| status.claude_session.as_ref())
                 .and_then(|claude| by_id(&claude.session_id));
@@ -301,6 +342,7 @@ pub fn match_agents(
                 host,
                 agent,
                 task,
+                supervisor,
                 task_session,
             }
         })
@@ -340,6 +382,7 @@ pub fn match_agents(
                 host: f.host.to_owned(),
                 agent: f.agent.clone(),
                 task: f.task.map(|(record, _)| record.id.clone()),
+                supervisor: f.supervisor,
                 followed: false,
                 session: session.cloned(),
                 matched_by: session.map(|_| matched_by),
@@ -355,6 +398,7 @@ struct Found<'a> {
     host: &'a str,
     agent: &'a Agent,
     task: Option<&'a (TaskRecord, Status)>,
+    supervisor: bool,
     task_session: Option<&'a RegistrySession>,
 }
 
@@ -393,24 +437,12 @@ pub fn tasks_in_pane<'a>(
     })
 }
 
-/// The open task whose herdr target is the pane `pane_id` in herdr session `session` on `host`.
-pub fn open_task_in_pane<'a>(
-    tasks: &'a [(TaskRecord, Status)],
-    host: &str,
-    session: &str,
-    pane_id: &str,
-) -> Option<&'a TaskRecord> {
-    tasks_in_pane(tasks, host, session, pane_id)
-        .find(|(_, status)| status.state.is_open())
-        .map(|(record, _)| record)
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;
 
     use super::*;
-    use crate::herdr::{AgentStatus, SESSION};
+    use crate::herdr::AgentStatus;
     use crate::state::task::{ClaudeSession, Harness, HerdrTarget, Origin};
 
     const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/claude");
@@ -582,7 +614,7 @@ mod tests {
             workspace_id: "w1".to_owned(),
             pane_id: pane_id.to_owned(),
             agent: "claude".to_owned(),
-            session: SESSION.to_owned(),
+            session: "flow".to_owned(),
         });
         status.claude_session = Some(ClaudeSession {
             session_id: session_id.to_owned(),
@@ -606,7 +638,7 @@ mod tests {
     fn match_prefers_task_pane_over_cwd() {
         let agents = [
             // The task's worker, in the same cwd as a newer hand session.
-            agent(SESSION, "w1:p1", "/work/repo"),
+            agent("flow", "w1:p1", "/work/repo"),
             // A hand session in the default herdr session, whose pane ids are its own.
             agent("default", "w1:p1", "/work/repo"),
             agent("default", "w2:p1", "/work/elsewhere"),
@@ -621,7 +653,7 @@ mod tests {
             registered("s-hand", "/work/repo", 300),
         ];
 
-        let matched = match_agents(&[("host-a", &agents)], &tasks, &registry);
+        let matched = match_agents(&[("host-a", &agents)], &tasks, None, &registry);
 
         let summary: Vec<(Option<&str>, Option<&str>)> = matched
             .iter()
@@ -651,7 +683,7 @@ mod tests {
     #[test]
     fn match_finds_an_adopted_task_in_the_herdr_session_its_target_names() {
         let agents = [
-            agent(SESSION, "w1:p1", "/work/repo"),
+            agent("flow", "w1:p1", "/work/repo"),
             agent("default", "w1:p1", "/work/repo"),
         ];
         let mut adopted = task("aaaaaaab", "host-a", "w1:p1", "s-task");
@@ -659,7 +691,7 @@ mod tests {
             target.session = "default".to_owned();
         }
 
-        let matched = match_agents(&[("host-a", &agents)], &[adopted], &[]);
+        let matched = match_agents(&[("host-a", &agents)], &[adopted], None, &[]);
 
         let tasks: Vec<Option<&str>> = matched.iter().map(|m| m.task.as_deref()).collect();
         assert_eq!(tasks, [None, Some("aaaaaaab")]);
@@ -677,7 +709,7 @@ mod tests {
             registered("s3", "/work/repo", 300),
         ];
 
-        let matched = match_agents(&[("host-a", &agents)], &[], &registry);
+        let matched = match_agents(&[("host-a", &agents)], &[], None, &registry);
 
         assert_eq!(session_ids(&matched), [Some("s1"), Some("s2")]);
     }
@@ -687,7 +719,7 @@ mod tests {
         let agents = [reporting("s-gone", agent("default", "w1:p1", "/work/repo"))];
         let registry = [registered("s1", "/work/repo", 100)];
 
-        let matched = match_agents(&[("host-a", &agents)], &[], &registry);
+        let matched = match_agents(&[("host-a", &agents)], &[], None, &registry);
 
         assert_eq!(session_ids(&matched), [None]);
     }
@@ -709,6 +741,7 @@ mod tests {
         let matched = match_agents(
             &[("host-a", &agents), ("host-b", &elsewhere)],
             &[],
+            None,
             &registry,
         );
 
@@ -736,10 +769,57 @@ mod tests {
         let matched = match_agents(
             &[("host-a", &agents), ("host-b", &elsewhere)],
             &[],
+            None,
             &registry,
         );
 
         assert_eq!(session_ids(&matched), [None, Some("s3"), None]);
         assert_eq!(matched_by(&matched), [None, Some(MatchedBy::Cwd), None]);
+    }
+
+    #[test]
+    fn workers_the_supervisor_and_hand_sessions_share_one_herdr_session() {
+        let agents = [
+            agent("default", "w1:p1", "/workspaces/flow"),
+            agent("default", "w2:p1", "/work/repo.wt/feature"),
+            agent("default", "w3:p1", "/work/repo"),
+            agent("default", "w4:p1", "/work/other"),
+        ];
+        let mut worker = task("aaaaaaab", "host-a", "w2:p1", "s-worker");
+        let mut adopted = task("aaaaaaac", "host-a", "w4:p1", "s-adopted");
+        adopted.0.origin = Origin::Adopted;
+        for (_, status) in [&mut worker, &mut adopted] {
+            if let Some(target) = &mut status.herdr {
+                target.session = "default".to_owned();
+            }
+        }
+        let supervisor = HerdrTarget {
+            host: "host-a".to_owned(),
+            workspace_id: "w1".to_owned(),
+            pane_id: "w1:p1".to_owned(),
+            agent: "claude".to_owned(),
+            session: "default".to_owned(),
+        };
+
+        let matched = match_agents(
+            &[("host-a", &agents)],
+            &[worker, adopted],
+            Some(&supervisor),
+            &[],
+        );
+
+        let seen: Vec<(Option<&str>, bool, bool)> = matched
+            .iter()
+            .map(|m| (m.task.as_deref(), m.supervisor, m.is_observed()))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                (None, true, false),
+                (Some("aaaaaaab"), false, false),
+                (None, false, true),
+                (Some("aaaaaaac"), false, false),
+            ]
+        );
     }
 }

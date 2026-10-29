@@ -119,9 +119,11 @@ designer's call.
    Workers do project work. Workers never address the user; their output reaches the user
    through the supervisor unless the user attaches to a worker directly. Intervention in a
    worker's terminal by the user is authoritative and the supervisor reconciles it.
-2. **The supervisor runs detached and persistent.** It lives in its own herdr session on
-   some CDE, so it keeps running and keeps answering workers while the user is
-   disconnected. The user attaches to it (`flow up`, from any CDE over ssh) rather
+2. **The supervisor runs detached and persistent.** It lives in a herdr pane on some CDE,
+   so it keeps running and keeps answering workers while the user is disconnected. It and
+   its workers run in one herdr session per CDE, herdr's `default` unless `config.toml` sets
+   `herdr_session`, beside the sessions the user starts by hand, so one herdr window shows
+   them all. The user attaches to it (`flow up`, from any CDE over ssh) rather
    than owning the process in a terminal. The supervisor's lock names the host and herdr
    target; `flow up` on another CDE finds the existing supervisor and attaches instead of
    starting a second one, unless the user explicitly takes over.
@@ -149,7 +151,8 @@ designer's call.
    inventory when it matters, and imposes no cap on workers per CDE.
 8. **Observing hand sessions is herdr-only and in scope for v1.** Every session the user
    starts by hand runs in a herdr pane. The supervisor lists herdr agents on every known CDE,
-   matches them to task records where one exists, and shows the rest as observed sessions
+   in every herdr session flow lists, matches them to task records where one exists and to
+   the supervisor's own pane, and shows the rest as observed sessions
    with their herdr state and a summary drawn from the registry and transcript. An observed
    session wakes the supervisor only when it turns `blocked`; a followed one, an observed
    session on the follow list, also on `idle` and `done`. Steering an observed session is the
@@ -317,7 +320,8 @@ Task ids are short, time-ordered, and never reused.
 
 **Start or attach.** `flow up` on any CDE reads `state/supervisor/`. If a live supervisor
 exists, it attaches through ssh and herdr. If not, it removes any watch lock the previous
-supervisor's watcher left, starts a herdr session on this CDE running the harness from
+supervisor's watcher left, opens a herdr workspace on this CDE, in the configured herdr
+session, running the harness from
 `/workspaces/flow` with `--resume` of the recorded supervisor session when one exists and a
 first prompt to run the session start procedure (whose turn end arms `flow watch`), takes
 the lock, and attaches.
@@ -363,14 +367,14 @@ Operator:
 - `flow status [--all] [--json]`: open tasks, their holds, pending dispatch requests from workers (`req-id  from-task  host  title`), and observed sessions; `--all` includes done and orphaned tasks.
 - `flow inventory [--refresh] [--json]`: worktrees, agents, and PRs per host; `--refresh` first discovers hosts from Ona (or the static list), probes each running one, and lists open PRs. `--json` gives each host its ssh alias, whether it is the host flow runs on (`local`), its Ona phase, when it was last seen, and whether it is reachable or gone.
 - `flow run <host> -- <argv>...`: run a command on a host, passing its output and exit code through.
-- `flow sessions [--summaries] [--json]`: herdr agents across hosts, with their tasks or as observed sessions; `--summaries` adds each session's latest summary, and `--json` includes summaries and pane ids.
+- `flow sessions [--summaries] [--json]`: herdr agents across hosts, with their tasks, as the supervisor, or as observed sessions; `--summaries` adds each session's latest summary, and `--json` includes summaries and pane ids.
 - `flow follow <host> <session>`: wake the supervisor when a session started by hand goes idle or done, not only when it turns blocked. `<session>` is the session's title as `flow sessions` shows it, or its pane id when several share the title, or `<herdr session>/<pane id>` when several herdr sessions hold that pane id; `flow sessions` then marks it `followed`.
 - `flow unfollow <host> <session>`: stop waking the supervisor for a followed session except when it turns blocked; also accepts the pane id, or `<herdr session>/<pane id>`, of a followed session that is gone.
 
 Supervisor:
 
 - `flow dispatch (--title <title> (--brief <text> | --brief-file <file>) | --request <req-id> [--title <title>]) --criteria <text> [--host <name>] [--dir <path> | --branch <name> [--repo <name>]] [--parent <id>] [--allow-shared-dir]`: start a worker session for a new task. `--request` dispatches a pending request from `flow status`: it supplies the brief, and the title, host and parent unless given, and is consumed once the worker starts.
-- `flow task adopt <host> <session> --title <title> --criteria <text> [--brief <text> | --brief-file <file>] [--parent <id>]`: take over a session started by hand as a task. `<session>` is resolved as `flow follow` resolves it; a session that is not Claude Code, has no working directory herdr knows, or runs an open task is refused. The task gets a brief, the session leaves the follow list and is prompted to read the brief; when that prompt cannot be delivered, or anything else fails once the task exists, the task is held `blocked` on the supervisor, naming the failure, and the command exits 1. The brief, worded for a session with a conversation and a user at its terminal, runs its `flow` commands with `FLOW_STATE` set.
+- `flow task adopt <host> <session> --title <title> --criteria <text> [--brief <text> | --brief-file <file>] [--parent <id>]`: take over a session started by hand as a task. `<session>` is resolved as `flow follow` resolves it; a task's or the supervisor's pane, or a session that is not Claude Code or has no working directory herdr knows, is refused. The task gets a brief, the session leaves the follow list and is prompted to read the brief; when that prompt cannot be delivered, or anything else fails once the task exists, the task is held `blocked` on the supervisor, naming the failure, and the command exits 1. The brief, worded for a session with a conversation and a user at its terminal, runs its `flow` commands with `FLOW_STATE` set.
 - `flow steer <id> <text>`: send a message to a task's worker and log it; a `needs-decision` or `blocked` task reads `working` again.
 - `flow task show <id> [--json]`: a task's fields and the head of its brief, naming the brief's file when the head leaves lines out; `--json` carries the full brief.
 - `flow task events <id> [--last <N>] [--json]`: a task's event log.

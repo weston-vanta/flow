@@ -27,16 +27,17 @@
 //! `needs-decision` or `blocked` is absorbed: it stopped to wait on the hold that already woke
 //! the supervisor. A task whose worker herdr last reported `working` does not count as quiet.
 //!
-//! Hand sessions are the herdr agents outside flow's herdr session on live hosts, as of the cached
-//! inventory: sessions the user started by hand. One adopted as a task is waited on as that task's
-//! worker, in its own herdr session, and not as a hand session. A run first lists every live host's
-//! agents into that cache, in parallel, without starting any herdr server, and giving each host at
-//! most `Settings::list_timeout`. A host whose listing fails keeps its cached agents. The run waits
-//! on every hand session it then finds, except on hosts that ssh could not reach, that run no herdr
-//! server, or that did not answer in time: those wait for the next listing. A host whose earlier
-//! listing has still not returned is not asked again in the same run. Any hand session turning
-//! `blocked` wakes the supervisor; the ones in the follow list also wake it on `idle` and `done`.
-//! Whether a session is followed is read every cycle.
+//! Hand sessions are the herdr agents on live hosts, in any herdr session flow lists, as of the
+//! cached inventory, other than the supervisor, in the pane its lock names, and the panes that are
+//! tasks' herdr targets: sessions the user started by hand. One adopted as a task is waited on as
+//! that task's worker, in its own herdr session, and not as a hand session. A run first lists every
+//! live host's agents into that cache, in parallel, without starting any herdr server, and giving
+//! each host at most `Settings::list_timeout`. A host whose listing fails keeps its cached agents.
+//! The run waits on every hand session it then finds, except on hosts that ssh could not reach,
+//! that run no herdr server, or that did not answer in time: those wait for the next listing. A
+//! host whose earlier listing has still not returned is not asked again in the same run. Any hand
+//! session turning `blocked` wakes the supervisor; the ones in the follow list also wake it on
+//! `idle` and `done`. Whether a session is followed is read every cycle.
 //!
 //! A run with nothing to watch, no open task, followed session or hand session, ends after its
 //! first cycle rather than waiting for the heartbeat. A cycle that could not read the tasks or
@@ -77,6 +78,7 @@ use crate::state::config::{Config, Host};
 use crate::state::events::{EVENTS_FILE, Event};
 use crate::state::fs::{append_line, write_atomic};
 use crate::state::task::{Origin, State, Status, TaskRecord};
+use crate::supervisor;
 use classify::{Observation, Reported, Thresholds, Verdict, classify};
 use files::{Checked, NewEvents, Seen, WorktreeCheck, file_len, new_events};
 use lock::Guard;
@@ -147,7 +149,8 @@ pub fn run(
     }
 }
 
-/// A herdr agent outside flow's herdr session on a live host, as of the cached inventory.
+/// A herdr agent on a live host, as of the cached inventory, that is not the supervisor. One
+/// whose pane is a task's target is left out when waits are chosen.
 struct HandSession {
     host: String,
     session: String,
@@ -156,22 +159,27 @@ struct HandSession {
 }
 
 fn hand_sessions(state: &StateDir) -> anyhow::Result<Vec<HandSession>> {
-    Ok(inventory::load_all(state)?
+    let supervisor = supervisor::load(state)?.map(|lock| lock.herdr);
+    let mut hands = Vec::new();
+    for inv in inventory::load_all(state)?
         .into_iter()
         .filter(|inv| !inv.gone)
-        .flat_map(|inv| {
-            let host = inv.name;
-            inv.agents
-                .into_iter()
-                .filter(|agent| agent.session != herdr::SESSION)
-                .map(move |agent| HandSession {
-                    host: host.clone(),
+    {
+        for agent in inv.agents {
+            let is_supervisor = supervisor
+                .as_ref()
+                .is_some_and(|target| target.is(&inv.name, &agent.session, &agent.pane_id));
+            if !is_supervisor {
+                hands.push(HandSession {
+                    host: inv.name.clone(),
                     session: agent.session,
                     pane_id: agent.pane_id,
                     title: agent.title,
-                })
-        })
-        .collect())
+                });
+            }
+        }
+    }
+    Ok(hands)
 }
 
 /// How a watch that fails after taking the lock retries.
@@ -1141,6 +1149,9 @@ mod tests {
     use classify::DEFAULT_QUIET_SECS;
 
     const CONFIG: &str = r#"
+herdr_session = "flow"
+herdr_sessions = ["flow", "default"]
+
 [[repos]]
 name = "example-repo"
 path = "/work/repo"
@@ -1202,7 +1213,7 @@ default_branch = "main"
                         workspace_id: "w1".to_owned(),
                         pane_id: "w1:p1".to_owned(),
                         agent: "claude".to_owned(),
-                        session: herdr::SESSION.to_owned(),
+                        session: "flow".to_owned(),
                     });
                 })
                 .unwrap();
@@ -1273,6 +1284,18 @@ default_branch = "main"
         /// `host-a`.
         fn hand(&self) {
             self.agent("env-0001", "default", "w1:p1", "Tidy docs");
+        }
+
+        /// Records the supervisor as running in `session`'s pane `pane_id` on `host-a`.
+        fn supervisor_in(&self, session: &str, pane_id: &str) {
+            let target = HerdrTarget {
+                host: "host-a".to_owned(),
+                workspace_id: "w1".to_owned(),
+                pane_id: pane_id.to_owned(),
+                agent: "claude".to_owned(),
+                session: session.to_owned(),
+            };
+            supervisor::take(&self.state, "env-0001", target).unwrap();
         }
 
         fn log(&self) -> String {
@@ -1589,6 +1612,45 @@ default_branch = "main"
 
         assert!(watcher.waits.is_empty());
         assert!(runner.calls().is_empty());
+    }
+
+    #[test]
+    fn a_worker_the_supervisor_and_a_hand_session_share_one_herdr_session() {
+        let fx = Fixture::new();
+        fx.agent("env-0001", "default", "w1:p1", "flow-supervisor");
+        fx.supervisor_in("default", "w1:p1");
+        fx.agent("env-0001", "default", "w2:p1", "aaaaaaab");
+        fx.task(true);
+        Store::open(&fx.state)
+            .set_status(TASK, |status| {
+                if let Some(target) = &mut status.herdr {
+                    target.session = "default".to_owned();
+                    target.pane_id = "w2:p1".to_owned();
+                }
+            })
+            .unwrap();
+        fx.agent("env-0001", "default", "w3:p1", "Tidy docs");
+        let runner = fake(vec![Scripted {
+            repeat: true,
+            ..on("host-a", &["agent", "wait"], WORKING)
+        }]);
+        let mut watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+
+        assert_eq!(watcher.cycle().unwrap(), None);
+
+        assert_eq!(
+            watcher.waits.keys().collect::<Vec<_>>(),
+            ["aaaaaaab", "host-a/default/w3:p1"]
+        );
+        let waited: Vec<String> = runner
+            .calls()
+            .into_iter()
+            .filter_map(|call| {
+                let at = call.argv.iter().position(|word| word == "wait")?;
+                call.argv.get(at + 1).cloned()
+            })
+            .collect();
+        assert_eq!(waited, ["w2:p1", "w3:p1"]);
     }
 
     #[test]
@@ -1926,9 +1988,10 @@ default_branch = "main"
     }
 
     #[test]
-    fn hand_sessions_exclude_flows_own_herdr_session_and_gone_hosts() {
+    fn hand_sessions_exclude_the_supervisor_and_gone_hosts() {
         let fx = Fixture::new();
-        fx.agent("env-0001", herdr::SESSION, "w1:p1", "supervisor");
+        fx.agent("env-0001", "flow", "w1:p1", "flow-supervisor");
+        fx.supervisor_in("flow", "w1:p1");
         let mut gone = HostInventory::new(&fx.host_b(), Timestamp::now());
         gone.gone = true;
         inventory::save(&fx.state, &gone).unwrap();
@@ -1947,7 +2010,7 @@ default_branch = "main"
         fx.hand();
         let before = std::fs::read(fx.state.root().join("hosts/env-0001.json")).unwrap();
         let runner = fake(vec![
-            no_server("host-a", herdr::SESSION),
+            no_server("host-a", "flow"),
             no_server("host-a", "default"),
         ]);
         let lock = lock::acquire(&fx.state, std::process::id())

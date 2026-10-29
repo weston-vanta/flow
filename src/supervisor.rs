@@ -107,7 +107,7 @@ fn write(path: &Path, lock: &Lock) -> io::Result<()> {
 /// The argv that attaches this terminal to the supervisor's pane: herdr itself when `host`, the
 /// lock's host, is this machine, else ssh with a tty, multiplexed through `control_dir`.
 pub fn attach_argv(lock: &Lock, host: &Host, local: bool, control_dir: &Path) -> Vec<String> {
-    let attach = herdr::attach_argv(herdr::SESSION, &lock.herdr.pane_id);
+    let attach = herdr::attach_argv(&lock.herdr.session, &lock.herdr.pane_id);
     if local {
         return attach;
     }
@@ -132,7 +132,7 @@ mod tests {
                 workspace_id: "w1".to_owned(),
                 pane_id: "w1:p1".to_owned(),
                 agent: "claude".to_owned(),
-                session: herdr::SESSION.to_owned(),
+                session: "default".to_owned(),
             },
             claude_session: None,
             since: "2026-10-26T12:00:00Z".parse().unwrap(),
@@ -156,7 +156,7 @@ mod tests {
     fn attach_argv_runs_herdr_directly_on_the_local_host() {
         assert_eq!(
             attach_argv(&lock(), &host(), true, Path::new("/run/flow")),
-            words(&["herdr", "--session", "flow", "agent", "attach", "w1:p1"])
+            words(&["herdr", "--session", "default", "agent", "attach", "w1:p1"])
         );
     }
 
@@ -177,7 +177,7 @@ mod tests {
                 "-o",
                 "ControlPersist=600",
                 "host-b.example",
-                "zsh -lc ''\\''herdr'\\'' '\\''--session'\\'' '\\''flow'\\'' '\\''agent'\\'' \
+                "zsh -lc ''\\''herdr'\\'' '\\''--session'\\'' '\\''default'\\'' '\\''agent'\\'' \
                  '\\''attach'\\'' '\\''w1:p1'\\'''",
             ])
         );

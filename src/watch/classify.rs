@@ -1,8 +1,8 @@
 //! What `flow watch` makes of what it sees: each observation either wakes the supervisor with a
-//! one-line reason or is absorbed. A hand session, an agent outside flow's herdr session, wakes
-//! it when it turns `blocked`, and on every other change only when followed. `Reported`
-//! remembers what earlier wakes already said, so a condition that persists wakes the supervisor
-//! once rather than on every turn end.
+//! one-line reason or is absorbed. A hand session, an agent in neither a task's nor the
+//! supervisor's pane, wakes it when it turns `blocked`, and on every other change only when
+//! followed. `Reported` remembers what earlier wakes already said, so a condition that persists
+//! wakes the supervisor once rather than on every turn end.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -46,8 +46,8 @@ pub enum Observation {
         since_secs: u64,
         worktree_written: bool,
     },
-    /// herdr reports an observed session's agent in `status`: an agent outside flow's herdr
-    /// session whose pane is no task's target.
+    /// herdr reports an observed session's agent in `status`: an agent whose pane is neither a
+    /// task's target nor the supervisor's.
     #[serde(alias = "adopted-changed")]
     ObservedChanged {
         host: String,
