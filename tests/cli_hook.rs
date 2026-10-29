@@ -4,7 +4,7 @@ use assert_cmd::Command;
 use flow::paths::StateDir;
 use flow::state::Store;
 use flow::state::events::{self, Event};
-use flow::state::task::{Harness, TaskRecord};
+use flow::state::task::{Harness, Origin, TaskRecord};
 use jiff::Timestamp;
 use serde_json::json;
 
@@ -34,6 +34,7 @@ fn setup() -> (tempfile::TempDir, PathBuf, Store) {
                 harness: Harness::Claude,
                 created: Timestamp::now(),
                 owner: "supervisor".to_owned(),
+                origin: Origin::Dispatched,
             },
             "brief",
         )

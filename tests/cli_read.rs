@@ -4,7 +4,7 @@ use assert_cmd::Command;
 use flow::paths::StateDir;
 use flow::state::Store;
 use flow::state::events::Event;
-use flow::state::task::{Harness, Hold, HoldOn, State, TaskRecord};
+use flow::state::task::{Harness, Hold, HoldOn, Origin, State, TaskRecord};
 use jiff::Timestamp;
 use serde_json::json;
 
@@ -35,6 +35,7 @@ fn record(id: &str, title: &str) -> TaskRecord {
         harness: Harness::Claude,
         created: Timestamp::now(),
         owner: "supervisor".to_owned(),
+        origin: Origin::Dispatched,
     }
 }
 

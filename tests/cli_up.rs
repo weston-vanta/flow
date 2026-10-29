@@ -2,10 +2,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
+use flow::herdr::SESSION;
 use flow::paths::StateDir;
 use flow::state::Store;
 use flow::state::events;
-use flow::state::task::{Harness, HerdrTarget, Hold, HoldOn, State, TaskRecord};
+use flow::state::task::{Harness, HerdrTarget, Hold, HoldOn, Origin, State, TaskRecord};
 use flow::supervisor::{self, Lock};
 use jiff::Timestamp;
 use serde_json::{Value, json};
@@ -260,6 +261,7 @@ fn up_creates_supervisor_when_no_lock() {
             workspace_id: "w3".to_owned(),
             pane_id: NEW_PANE.to_owned(),
             agent: "claude".to_owned(),
+            session: SESSION.to_owned(),
         }
     );
     assert_eq!(lock.claude_session, None);
@@ -811,6 +813,7 @@ fn create_task_with_pane(fx: &Fixture) -> Store {
                 harness: Harness::Claude,
                 created: Timestamp::now(),
                 owner: "supervisor".to_owned(),
+                origin: Origin::Dispatched,
             },
             "brief",
         )
@@ -822,6 +825,7 @@ fn create_task_with_pane(fx: &Fixture) -> Store {
                 workspace_id: "w2".to_owned(),
                 pane_id: "w2:p1".to_owned(),
                 agent: "claude".to_owned(),
+                session: SESSION.to_owned(),
             });
         })
         .unwrap();
@@ -859,6 +863,32 @@ fn steer_prompts_pane_and_logs_event() {
     assert_eq!(ev.kind, "steer");
     assert_eq!(ev.source, "supervisor");
     assert_eq!(ev.data, json!({"text": "Use the existing retry helper."}));
+}
+
+#[test]
+fn steer_prompts_an_adopted_task_in_its_own_herdr_session() {
+    let fx = Fixture::new();
+    let store = create_task_with_pane(&fx);
+    store
+        .set_status(TASK, |status| {
+            if let Some(target) = &mut status.herdr {
+                target.session = "default".to_owned();
+            }
+        })
+        .unwrap();
+    let prompted = AGENT_GET.replace("agent_info", "agent_prompted");
+
+    fx.flow(&[ok(&prompted)])
+        .args(["steer", TASK, "Use the existing retry helper."])
+        .assert()
+        .success();
+
+    let calls = fx.calls();
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert_eq!(
+        calls[0].1[..6],
+        ["herdr", "--session", "default", "agent", "prompt", "w2:p1"]
+    );
 }
 
 #[test]

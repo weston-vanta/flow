@@ -56,7 +56,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::state::task::Harness;
+    use crate::state::task::{Harness, Origin};
 
     const FLOW_BIN: &str = "/opt/flow/bin/flow";
     const BODY: &str = "Add retries with backoff to the example client.\n\nKeep the public API.";
@@ -73,6 +73,7 @@ mod tests {
             harness: Harness::Claude,
             created: "2026-10-26T12:00:00Z".parse().unwrap(),
             owner: "supervisor".to_owned(),
+            origin: Origin::Dispatched,
         }
     }
 

@@ -1,6 +1,6 @@
 ---
 name: flow-dispatch
-description: Use when the user asks for work a worker should do, or `flow status` lists a worker's dispatch request. Covers choosing a host from `flow inventory`, writing a brief with completion criteria, and starting the worker with `flow dispatch`.
+description: Use when the user asks for work a worker should do, asks for a session they started by hand to become a worker, or `flow status` lists a worker's dispatch request. Covers choosing a host from `flow inventory`, writing a brief with completion criteria, starting the worker with `flow dispatch`, and adopting a hand session with `flow task adopt`.
 ---
 
 # Dispatching a worker
@@ -64,6 +64,29 @@ It prints `dispatched <task-id> on <host> (<pane>)`. Then:
   failure. Fix the cause and dispatch again, then `flow task orphan <old-id> --reason "..."`.
 
 Tell the user in one line what went where, and end the turn; `flow watch` arms on the stop.
+
+## Adopting a session started by hand
+
+When the user points at a session they started by hand and asks for it to become a worker,
+adopt it instead of dispatching a new one:
+
+```
+flow task adopt <host> <session> --title "<short title>" --criteria "- <criterion>" \
+  [--brief "<the ask>" | --brief-file <file>] [--parent <task-id>]
+```
+
+`<session>` is its title as `flow sessions` shows it, or its pane id when several share the
+title. Leave out the brief when the session should simply carry on with what it is doing; the
+criteria still say where to stop. flow writes the task and its brief, stops following the
+session, and prompts it to read the brief. It prints `adopted <task-id> on <host> (<pane>)`.
+From then on it is a task like any other, except that `flow task close` leaves its pane open
+for the user.
+
+flow refuses a session that is not Claude Code, one herdr knows no working directory for, and
+one an open task already runs in. When it exits 1 the session could not be prompted, often
+because it is blocked at a harness prompt. The task then exists, `blocked` with a hold on you;
+ask the user to attend to the session, then steer it to read its brief and follow its Reporting
+section (`flow task show <task-id>` names the brief's file).
 
 ## Worker requests
 

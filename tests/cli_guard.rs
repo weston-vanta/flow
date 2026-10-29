@@ -5,7 +5,7 @@ use std::time::Duration;
 use assert_cmd::Command;
 use flow::paths::StateDir;
 use flow::state::Store;
-use flow::state::task::{Harness, State, TaskRecord};
+use flow::state::task::{Harness, Origin, State, TaskRecord};
 use flow::supervisor::SUPERVISOR_ENV;
 use flow::watch::classify::Observation;
 use flow::watch::lock::Owner;
@@ -58,6 +58,7 @@ impl Fixture {
                     harness: Harness::Claude,
                     created: Timestamp::now(),
                     owner: "supervisor".to_owned(),
+                    origin: Origin::Dispatched,
                 },
                 "brief",
             )

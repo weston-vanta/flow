@@ -83,17 +83,21 @@ Sessions started by hand sit on a ladder:
 
 - **observed**: a herdr agent flow can see but does not manage, started by hand outside flow's herdr session. It wakes the supervisor only when it turns `blocked`.
 - **followed**: an observed session on the follow list. It also wakes the supervisor on `idle` and `done`.
+- **adopted**: a session started by hand that the supervisor took over as a task with `flow task adopt`. It is a worker in every way flow can manage, and `flow sessions` shows its task id.
 
 Supervisor:
 
 - `flow dispatch (--title <title> (--brief <text> | --brief-file <file>) | --request <req-id> [--title <title>]) --criteria <text> [--host <name>] [--dir <path> | --branch <name> [--repo <name>]] [--parent <id>] [--allow-shared-dir]`: start a worker session for a new task. `--request` dispatches a pending request from `flow status`: it supplies the brief, and the title, host and parent unless given, and is consumed once the worker starts.
+- `flow task adopt <host> <session> --title <title> --criteria <text> [--brief <text> | --brief-file <file>] [--parent <id>]`: take over a session started by hand as a task. `<session>` is resolved as `flow follow` resolves it. The session must be Claude Code with a working directory herdr knows, and no open task may run in its pane. flow writes the task and its brief, drops the session from the follow list, and prompts it to read the brief, printing `adopted <id> on <host> (<pane>)`. Without `--brief`, the brief asks it to continue the work already under way. When the prompt cannot be delivered, for example because the session is blocked, the task is held `blocked` on the supervisor and the command exits 1; `flow steer` can deliver it later.
 - `flow steer <id> <text>`: send a message to a task's worker and log it; a `needs-decision` or `blocked` task reads `working` again.
 - `flow task show <id> [--json]`: a task's fields and the head of its brief, naming the brief's file when the head leaves lines out; `--json` carries the full brief.
 - `flow task events <id> [--last <N>] [--json]`: a task's event log.
 - `flow task decide <id> --by user|supervisor --answer <text>`: answer the task's hold and lift it.
 - `flow task hold <id> --on user|supervisor --what <text>`: hold the task until someone answers.
 - `flow task orphan <id> --reason <text>`: mark the task orphaned: its work will not finish.
-- `flow task close <id> [--force]`: close the task's herdr workspace, keeping its record, working directory and branch; `--force` closes it while the task is still open (working, pending, blocked or needs-decision).
+- `flow task close <id> [--force]`: close the task's herdr workspace, keeping its record, working directory and branch; `--force` closes it while the task is still open (working, pending, blocked or needs-decision). An adopted task's workspace belongs to whoever started the session, so it stays open: flow only stops treating the pane as the task's and prints `closed <id> (pane left to its owner)`.
+
+An adopted task keeps running in the session that was started by hand, so flow cannot add hooks to it. It reports through its own `flow task` calls and herdr's view of it. It has no turn-end events, so the check for a quiet task relies on herdr reporting it `working` and on writes in its working directory.
 
 Worker:
 
@@ -104,7 +108,7 @@ Worker:
 Hooks and plumbing, run by Claude Code and the supervisor rather than by hand, and left out of `flow --help`:
 
 - `flow guard`: Stop hook that blocks ending a turn while work is unwatched.
-- `flow watch [--heartbeat <secs>] [--once]`: watch tasks and exit 2 with a reason when the supervisor should wake. Every session started by hand, outside flow's herdr session, wakes the supervisor when it turns `blocked`; `flow follow` adds `idle` and `done` for that session. While only such unfollowed sessions are watched there is no hourly heartbeat: the watch lists the hosts again every hour, so a session started meanwhile is watched within the hour, and ends quietly after a day.
+- `flow watch [--heartbeat <secs>] [--once]`: watch tasks and exit 2 with a reason when the supervisor should wake. Every session started by hand, outside flow's herdr session, wakes the supervisor when it turns `blocked`, except one adopted as a task, which is watched as that task's worker; `flow follow` adds `idle` and `done` for that session. While only such unfollowed sessions are watched there is no hourly heartbeat: the watch lists the hosts again every hour, so a session started meanwhile is watched within the hour, and ends quietly after a day.
 - `flow wake drain`: print the queued wakes not yet acknowledged.
 - `flow wake ack --through <N>`: acknowledge every queued wake up to and including N.
 - `flow hook claude --task <id>`: record a worker's Claude Code hook event read as JSON from stdin.

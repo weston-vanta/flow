@@ -175,7 +175,7 @@ fn request_ids(requests: &Path) -> anyhow::Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::task::{Harness, TaskRecord};
+    use crate::state::task::{Harness, Origin, TaskRecord};
 
     fn store_with_tasks(ids: &[&str]) -> (tempfile::TempDir, Store) {
         let state = tempfile::tempdir().unwrap();
@@ -193,6 +193,7 @@ mod tests {
                 harness: Harness::Claude,
                 created: Timestamp::now(),
                 owner: "supervisor".to_owned(),
+                origin: Origin::Dispatched,
             };
             store.create_task(rec, "brief").unwrap();
         }

@@ -5,9 +5,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use assert_cmd::Command;
+use flow::herdr::SESSION;
 use flow::paths::StateDir;
 use flow::state::Store;
-use flow::state::task::{Harness, HerdrTarget, State, TaskRecord};
+use flow::state::task::{Harness, HerdrTarget, Origin, State, TaskRecord};
 use flow::supervisor::SUPERVISOR_ENV;
 use flow::watch::classify::Observation;
 use flow::watch::queue;
@@ -82,6 +83,7 @@ impl Fixture {
                     harness: Harness::Claude,
                     created: Timestamp::now(),
                     owner: "supervisor".to_owned(),
+                    origin: Origin::Dispatched,
                 },
                 "brief",
             )
@@ -94,6 +96,7 @@ impl Fixture {
                     workspace_id: "w1".to_owned(),
                     pane_id: pane_id.to_owned(),
                     agent: "claude".to_owned(),
+                    session: SESSION.to_owned(),
                 });
             })
             .unwrap();

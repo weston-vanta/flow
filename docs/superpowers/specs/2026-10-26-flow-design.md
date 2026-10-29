@@ -153,7 +153,15 @@ designer's call.
    with their herdr state and a summary drawn from the registry and transcript. An observed
    session wakes the supervisor only when it turns `blocked`; a followed one, an observed
    session on the follow list, also on `idle` and `done`. Steering an observed session is
-   the same herdr operation as steering a worker, used only when the user asks.
+   the same herdr operation as steering a worker, used only when the user asks. When the
+   user asks for a hand session to become a worker, the supervisor adopts it with `flow task
+   adopt`: an adopted session is a task in every way flow can manage, with a brief, a record
+   whose herdr target names the pane in the user's herdr session, and the same watching as a
+   dispatched worker. It keeps running where it is, so it gets no hooks: it reports through
+   its own `flow task` calls and herdr's state, and the quiet check leans on herdr `working`
+   and writes in its working directory. Closing an adopted task leaves its workspace open,
+   since the user owns it. The ladder, then: observed (seen, wakes on `blocked`), followed
+   (also wakes on `idle` and `done`), adopted (a worker).
 
 ### Durability and layout
 
@@ -238,7 +246,8 @@ designer's call.
     recent writes in its worktree); a worker's session or pane disappeared; a CDE became
     unreachable; a dispatch request appeared; a session the user started by hand turned
     `blocked`, or one the user follows went idle or done; the heartbeat fired. The heartbeat
-    fires only while tasks are open or sessions are followed.
+    fires only while tasks are open or sessions are followed. An adopted session wakes the
+    supervisor as its task, never as a session started by hand.
 
 ### Decision authority
 
@@ -327,7 +336,9 @@ clears the hold.
 
 **Observe.** On session start and on each wake, the supervisor lists herdr agents on every
 known CDE, matches them to tasks where possible, and lists the rest as observed sessions
-with their latest summary and state.
+with their latest summary and state. When the user asks for one of them to become a worker,
+the supervisor adopts it: flow records the task with a brief, drops the session from the
+follow list, and prompts it in place to read the brief and report through flow.
 
 **Recycle.** A worker CDE is recycled: watch sees the CDE unreachable and its sessions
 gone; the supervisor marks affected tasks `orphaned` with what was last known (branch
@@ -356,13 +367,14 @@ Operator:
 Supervisor:
 
 - `flow dispatch (--title <title> (--brief <text> | --brief-file <file>) | --request <req-id> [--title <title>]) --criteria <text> [--host <name>] [--dir <path> | --branch <name> [--repo <name>]] [--parent <id>] [--allow-shared-dir]`: start a worker session for a new task. `--request` dispatches a pending request from `flow status`: it supplies the brief, and the title, host and parent unless given, and is consumed once the worker starts.
+- `flow task adopt <host> <session> --title <title> --criteria <text> [--brief <text> | --brief-file <file>] [--parent <id>]`: take over a session started by hand as a task. `<session>` is resolved as `flow follow` resolves it; a session that is not Claude Code, has no working directory herdr knows, or runs an open task is refused. The task gets a brief, the session leaves the follow list and is prompted to read the brief; when that prompt cannot be delivered, the task is held `blocked` on the supervisor and the command exits 1.
 - `flow steer <id> <text>`: send a message to a task's worker and log it; a `needs-decision` or `blocked` task reads `working` again.
 - `flow task show <id> [--json]`: a task's fields and the head of its brief, naming the brief's file when the head leaves lines out; `--json` carries the full brief.
 - `flow task events <id> [--last <N>] [--json]`: a task's event log.
 - `flow task decide <id> --by user|supervisor --answer <text>`: answer the task's hold and lift it.
 - `flow task hold <id> --on user|supervisor --what <text>`: hold the task until someone answers.
 - `flow task orphan <id> --reason <text>`: mark the task orphaned: its work will not finish.
-- `flow task close <id> [--force]`: close the task's herdr workspace, keeping its record, working directory and branch; `--force` closes it while the task is still open (working, pending, blocked or needs-decision).
+- `flow task close <id> [--force]`: close the task's herdr workspace, keeping its record, working directory and branch; `--force` closes it while the task is still open (working, pending, blocked or needs-decision). An adopted task's workspace is left open to its owner.
 
 Worker:
 

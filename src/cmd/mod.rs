@@ -10,6 +10,7 @@ pub mod run;
 pub mod sessions;
 pub mod status;
 pub mod steer;
+pub mod task_adopt;
 pub mod task_close;
 pub mod task_events;
 pub mod task_show;

@@ -1,10 +1,11 @@
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
+use flow::herdr::SESSION;
 use flow::paths::StateDir;
 use flow::state::Store;
 use flow::state::events::{self, Event};
-use flow::state::task::{Harness, Hold, HoldOn, State, TaskRecord};
+use flow::state::task::{Harness, Hold, HoldOn, Origin, State, TaskRecord};
 use jiff::Timestamp;
 use serde_json::{Value, json};
 
@@ -40,6 +41,7 @@ fn record(id: &str, title: &str) -> TaskRecord {
         harness: Harness::Claude,
         created: Timestamp::now(),
         owner: "supervisor".to_owned(),
+        origin: Origin::Dispatched,
     }
 }
 
@@ -486,6 +488,7 @@ fn setup_close(
                 workspace_id: "w2".to_owned(),
                 pane_id: "w2:p1".to_owned(),
                 agent: "claude".to_owned(),
+                session: SESSION.to_owned(),
             });
         })
         .unwrap();
@@ -544,6 +547,42 @@ fn close_closes_a_done_task_workspace_and_keeps_the_record() {
         json!({
             "host": "host-a", "workspace_id": "w2", "pane_id": "w2:p1",
             "forced": false, "already_gone": false,
+        })
+    );
+}
+
+#[test]
+fn close_of_an_adopted_task_leaves_its_workspace_to_its_owner() {
+    let (_repo, state, store, script) = setup_close(State::Done, &[]);
+    let dir = store.task_dir(TASK).unwrap();
+    let mut rec: Value = read_json(&dir.join("task.json"));
+    rec["origin"] = json!("adopted");
+    std::fs::write(dir.join("task.json"), rec.to_string()).unwrap();
+    store
+        .set_status(TASK, |status| {
+            if let Some(target) = &mut status.herdr {
+                target.session = "default".to_owned();
+            }
+        })
+        .unwrap();
+
+    let out = stdout(
+        flow(&state)
+            .env("FLOW_FAKE_RUNNER", &script)
+            .args(["task", "close", TASK]),
+    );
+
+    assert_eq!(out, format!("closed {TASK} (pane left to its owner)\n"));
+    assert!(runner_calls(&script).is_empty());
+    let (_, status) = store.task(TASK).unwrap();
+    assert_eq!(status.herdr, None);
+    let ev = last_event(&store, TASK);
+    assert_eq!(ev.kind, "close");
+    assert_eq!(
+        ev.data,
+        json!({
+            "host": "host-a", "workspace_id": "w2", "pane_id": "w2:p1",
+            "forced": false, "workspace_left": true,
         })
     );
 }

@@ -226,6 +226,7 @@ fn launch(
             workspace_id: workspace_id.clone(),
             pane_id: pane_id.clone(),
             agent: AGENT_KIND.to_owned(),
+            session: herdr::SESSION.to_owned(),
         },
     )?;
     herdr.pane_run(

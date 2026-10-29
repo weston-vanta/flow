@@ -1,6 +1,6 @@
 //! Observed sessions, the ones the user started by hand in herdr: each herdr agent is matched to
-//! the task whose worker runs in its pane, or shown as observed, with the Claude Code session it
-//! runs and that session's latest summary, read from Claude Code's session registry and
+//! the task whose herdr target is its pane, an adopted session's included, or shown as observed,
+//! with the Claude Code session it runs and that session's latest summary, read from Claude Code's session registry and
 //! transcripts. Reading is all flow does there; it never writes Claude Code's state. Any
 //! observed session turning `blocked` wakes the supervisor; the follow list,
 //! `state/supervisor/follow.json`, names the followed ones, whose other state changes should
@@ -21,7 +21,7 @@ use anyhow::{Context, anyhow};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use crate::herdr::{self, Agent};
+use crate::herdr::Agent;
 use crate::paths::StateDir;
 use crate::state::fs::{with_lock, write_atomic};
 use crate::state::task::{Status, TaskRecord};
@@ -223,10 +223,15 @@ pub fn project_slug(cwd: &Path) -> String {
 
 /// Where Claude Code keeps `session`'s transcript.
 pub fn transcript_path(claude_home: &Path, session: &RegistrySession) -> PathBuf {
+    transcript_in(claude_home, &session.cwd, &session.session_id)
+}
+
+/// Where Claude Code keeps the transcript of session `session_id` started in `cwd`.
+pub fn transcript_in(claude_home: &Path, cwd: &Path, session_id: &str) -> PathBuf {
     claude_home
         .join("projects")
-        .join(project_slug(&session.cwd))
-        .join(format!("{}.jsonl", session.session_id))
+        .join(project_slug(cwd))
+        .join(format!("{session_id}.jsonl"))
 }
 
 /// The `content` of the transcript's last `away_summary` line, reading at most its last
@@ -360,25 +365,41 @@ impl Found<'_> {
     }
 }
 
-/// The task whose worker runs in `agent`'s pane on `host`, preferring an open task, then the
-/// newest. Workers run only in flow's herdr session.
+/// The task whose worker runs in `agent`'s pane on `host`, in the herdr session its target
+/// names, preferring an open task, then the newest.
 fn task_in_pane<'a>(
     host: &str,
     agent: &Agent,
     tasks: &'a [(TaskRecord, Status)],
 ) -> Option<&'a (TaskRecord, Status)> {
-    if agent.session != herdr::SESSION {
-        return None;
-    }
     tasks
         .iter()
         .filter(|(_, status)| {
             status
                 .herdr
                 .as_ref()
-                .is_some_and(|target| target.host == host && target.pane_id == agent.pane_id)
+                .is_some_and(|target| target.is(host, &agent.session, &agent.pane_id))
         })
         .max_by_key(|(record, status)| (status.state.is_open(), record.created))
+}
+
+/// The open task whose herdr target is the pane `pane_id` in herdr session `session` on `host`.
+pub fn open_task_in_pane<'a>(
+    tasks: &'a [(TaskRecord, Status)],
+    host: &str,
+    session: &str,
+    pane_id: &str,
+) -> Option<&'a TaskRecord> {
+    tasks
+        .iter()
+        .find(|(_, status)| {
+            status.state.is_open()
+                && status
+                    .herdr
+                    .as_ref()
+                    .is_some_and(|target| target.is(host, session, pane_id))
+        })
+        .map(|(record, _)| record)
 }
 
 #[cfg(test)]
@@ -387,7 +408,7 @@ mod tests {
 
     use super::*;
     use crate::herdr::{AgentStatus, SESSION};
-    use crate::state::task::{ClaudeSession, Harness, HerdrTarget};
+    use crate::state::task::{ClaudeSession, Harness, HerdrTarget, Origin};
 
     const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/claude");
     const FIXTURE_SESSION_ID: &str = "00000000-0000-4000-8000-000000000001";
@@ -550,6 +571,7 @@ mod tests {
             harness: Harness::Claude,
             created: Timestamp::UNIX_EPOCH,
             owner: "supervisor".to_owned(),
+            origin: Origin::Dispatched,
         };
         let mut status = Status::pending(Timestamp::UNIX_EPOCH);
         status.herdr = Some(HerdrTarget {
@@ -557,6 +579,7 @@ mod tests {
             workspace_id: "w1".to_owned(),
             pane_id: pane_id.to_owned(),
             agent: "claude".to_owned(),
+            session: SESSION.to_owned(),
         });
         status.claude_session = Some(ClaudeSession {
             session_id: session_id.to_owned(),
@@ -620,6 +643,23 @@ mod tests {
         );
         assert!(matched.iter().all(|a| a.host == "host-a"));
         assert_eq!(matched[1].agent, agents[1]);
+    }
+
+    #[test]
+    fn match_finds_an_adopted_task_in_the_herdr_session_its_target_names() {
+        let agents = [
+            agent(SESSION, "w1:p1", "/work/repo"),
+            agent("default", "w1:p1", "/work/repo"),
+        ];
+        let mut adopted = task("aaaaaaab", "host-a", "w1:p1", "s-task");
+        if let Some(target) = &mut adopted.1.herdr {
+            target.session = "default".to_owned();
+        }
+
+        let matched = match_agents(&[("host-a", &agents)], &[adopted], &[]);
+
+        let tasks: Vec<Option<&str>> = matched.iter().map(|m| m.task.as_deref()).collect();
+        assert_eq!(tasks, [None, Some("aaaaaaab")]);
     }
 
     #[test]

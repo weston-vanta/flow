@@ -7,7 +7,7 @@ use flow::paths::StateDir;
 use flow::state::Store;
 use flow::state::config::{Config, HostSource};
 use flow::state::events::{self, Event};
-use flow::state::task::{Harness, State, TaskRecord};
+use flow::state::task::{Harness, Origin, State, TaskRecord};
 use jiff::Timestamp;
 use serde_json::json;
 
@@ -27,6 +27,7 @@ fn sample_record(id: &str) -> TaskRecord {
         harness: Harness::Claude,
         created: "2026-10-26T12:00:00Z".parse::<Timestamp>().unwrap(),
         owner: "supervisor".to_owned(),
+        origin: Origin::Dispatched,
     }
 }
 

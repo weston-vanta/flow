@@ -6,6 +6,7 @@ use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use flow::cmd;
 use flow::cmd::Refused;
 use flow::cmd::dispatch::{BriefSource, DirSource, DispatchArgs, TaskSource};
+use flow::cmd::task_adopt::AdoptArgs;
 use flow::cmd::task_write::ReportedState;
 use flow::paths::StateDir;
 use flow::state::task::HoldOn;
@@ -235,6 +236,53 @@ impl TryFrom<DispatchCli> for DispatchArgs {
     }
 }
 
+#[derive(Debug, Args)]
+#[command(group(ArgGroup::new("brief_source")))]
+pub struct AdoptCli {
+    /// Host the session runs on
+    host: String,
+    /// The session's title as `flow sessions` shows it, or its herdr pane id
+    session: String,
+    /// The task's title
+    #[arg(long)]
+    title: String,
+    /// What must be true for the task to be done, often a `- ` list
+    #[arg(long, value_name = "TEXT", allow_hyphen_values = true)]
+    criteria: String,
+    /// File holding the ask, read on this machine
+    #[arg(long, value_name = "FILE", group = "brief_source")]
+    brief_file: Option<PathBuf>,
+    /// The ask itself [default: continue the work already under way]
+    #[arg(
+        long,
+        value_name = "TEXT",
+        allow_hyphen_values = true,
+        group = "brief_source"
+    )]
+    brief: Option<String>,
+    /// Task this one was split from
+    #[arg(long, value_name = "ID")]
+    parent: Option<String>,
+}
+
+impl From<AdoptCli> for AdoptArgs {
+    fn from(cli: AdoptCli) -> AdoptArgs {
+        let brief = match (cli.brief_file, cli.brief) {
+            (Some(path), _) => Some(BriefSource::File(path)),
+            (None, Some(text)) => Some(BriefSource::Text(text)),
+            (None, None) => None,
+        };
+        AdoptArgs {
+            host: cli.host,
+            session: cli.session,
+            title: cli.title,
+            criteria: cli.criteria,
+            brief,
+            parent: cli.parent,
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 pub enum TaskCommand {
     /// Show a task's fields and the head of its brief
@@ -309,7 +357,10 @@ pub enum TaskCommand {
         #[arg(long, value_name = "TEXT")]
         reason: String,
     },
-    /// Close the task's herdr workspace, keeping its record, working directory and branch
+    /// Take over a session started by hand as a task, briefing it in place
+    Adopt(AdoptCli),
+    /// Close the task's herdr workspace, keeping its record, working directory and branch; an
+    /// adopted task's workspace is left to its owner
     Close {
         id: String,
         /// Close it even while the task is still open: not done or orphaned
@@ -365,7 +416,7 @@ pub fn run(cli: Cli, state: &StateDir, repo_root: &Path) -> anyhow::Result<ExitC
             return Ok(ExitCode::from(u8::try_from(status).unwrap_or(u8::MAX)));
         }
         Command::Status { all, json } => cmd::status::run(state, all, json),
-        Command::Task { command } => run_task(command, state),
+        Command::Task { command } => return run_task(command, state),
         Command::Hook {
             command: HookCommand::Claude { task },
         } => cmd::hook::run_claude(state, &task, std::io::stdin().lock()),
@@ -392,8 +443,9 @@ pub fn run(cli: Cli, state: &StateDir, repo_root: &Path) -> anyhow::Result<ExitC
     done.map(|()| ExitCode::SUCCESS)
 }
 
-fn run_task(command: TaskCommand, state: &StateDir) -> anyhow::Result<()> {
-    match command {
+fn run_task(command: TaskCommand, state: &StateDir) -> anyhow::Result<ExitCode> {
+    let done = match command {
+        TaskCommand::Adopt(args) => return cmd::task_adopt::run(state, &args.into()),
         TaskCommand::Show { id, json } => cmd::task_show::run(state, &id, json),
         TaskCommand::Events { id, last, json } => cmd::task_events::run(state, &id, last, json),
         TaskCommand::Status {
@@ -416,5 +468,6 @@ fn run_task(command: TaskCommand, state: &StateDir) -> anyhow::Result<()> {
         }
         TaskCommand::Orphan { id, reason } => cmd::task_write::run_orphan(state, &id, &reason),
         TaskCommand::Close { id, force } => cmd::task_close::run(state, &id, force),
-    }
+    };
+    done.map(|()| ExitCode::SUCCESS)
 }

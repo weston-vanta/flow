@@ -2,9 +2,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
+use flow::herdr::SESSION;
 use flow::paths::StateDir;
 use flow::state::Store;
-use flow::state::task::{ClaudeSession, Harness, HerdrTarget, State, TaskRecord};
+use flow::state::task::{ClaudeSession, Harness, HerdrTarget, Origin, State, TaskRecord};
 use jiff::Timestamp;
 use serde_json::{Value, json};
 
@@ -89,6 +90,7 @@ impl Fixture {
                     harness: Harness::Claude,
                     created: Timestamp::now(),
                     owner: "supervisor".to_owned(),
+                    origin: Origin::Dispatched,
                 },
                 "brief",
             )
@@ -101,6 +103,7 @@ impl Fixture {
                     workspace_id: "w1".to_owned(),
                     pane_id: "w1:p1".to_owned(),
                     agent: "claude".to_owned(),
+                    session: SESSION.to_owned(),
                 });
                 status.claude_session = Some(ClaudeSession {
                     session_id: TASK_SESSION_ID.to_owned(),

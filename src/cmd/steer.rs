@@ -17,12 +17,12 @@ use crate::state::Store;
 use crate::state::events::Event;
 use crate::state::task::{HoldOn, State};
 
-const EVENT_SOURCE: &str = "supervisor";
+pub(super) const EVENT_SOURCE: &str = "supervisor";
 /// The prompt counts as delivered once the worker starts on it, or blocks on it; waiting for
 /// the worker's turn to end could hold the supervisor for hours.
-const DELIVERED: [AgentStatus; 2] = [AgentStatus::Working, AgentStatus::Blocked];
+pub(super) const DELIVERED: [AgentStatus; 2] = [AgentStatus::Working, AgentStatus::Blocked];
 
-/// Prompts the worker in the task's herdr pane with `text`, appends a `steer` event, moves a
+/// Prompts the worker in the task's herdr pane, in the herdr session it lives in, with `text`, appends a `steer` event, moves a
 /// `needs-decision` or `blocked` task back to `working`, and prints
 /// `steered <id> (<pane>): <status>`.
 pub fn run(state: &StateDir, id: &str, text: &str) -> anyhow::Result<()> {
@@ -33,7 +33,7 @@ pub fn run(state: &StateDir, id: &str, text: &str) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow!("task {id} has no herdr target"))?;
     let hosts = inventory::hosts(state)?;
     let host = host::find(&hosts, &target.host)?;
-    let herdr = Herdr::new(Arc::from(runner::from_env()?));
+    let herdr = Herdr::with_session(Arc::from(runner::from_env()?), &target.session);
     let reached = herdr.prompt(host, &target.pane_id, text, &DELIVERED)?;
     store.append_event(
         id,

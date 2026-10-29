@@ -14,14 +14,14 @@ use serde_json::json;
 use super::Refused;
 use crate::harness::handshake::{self, AgentStart};
 use crate::harness::{ClaudeAdapter, HarnessAdapter, brief};
-use crate::herdr::{Agent, Herdr};
+use crate::herdr::{self, Agent, Herdr};
 use crate::host;
 use crate::inventory;
 use crate::paths::{STATE_ENV, StateDir};
 use crate::runner::{self, Runner};
 use crate::state::config::{Config, Host, Repo};
 use crate::state::events::Event;
-use crate::state::task::{Harness, HerdrTarget, Hold, HoldOn, State, TaskRecord};
+use crate::state::task::{Harness, HerdrTarget, Hold, HoldOn, Origin, State, TaskRecord};
 use crate::state::{Store, ids};
 use crate::supervisor;
 use crate::worktree;
@@ -144,6 +144,7 @@ pub fn run(state: &StateDir, args: &DispatchArgs) -> anyhow::Result<ExitCode> {
         harness: Harness::Claude,
         created: Timestamp::now(),
         owner: OWNER.to_owned(),
+        origin: Origin::Dispatched,
     };
     store.create_task(
         rec.clone(),
@@ -361,6 +362,7 @@ fn start_worker(
             workspace_id: workspace_id.clone(),
             pane_id: pane_id.clone(),
             agent: adapter.kind().to_owned(),
+            session: herdr::SESSION.to_owned(),
         });
     })?;
     append_event(

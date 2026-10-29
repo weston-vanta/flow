@@ -53,4 +53,5 @@ hold on the user and say what is needed.
   hold on the user and tell them which pane to attach to.
 - Keep steer messages self-contained: the worker has its brief and its own context, not yours.
 - Steer observed sessions (those started by hand) only when the user asks;
-  `flow steer` targets tasks.
+  `flow steer` targets tasks. A session adopted with `flow task adopt` is a task, steered like
+  any worker.

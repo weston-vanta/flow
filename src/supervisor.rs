@@ -132,6 +132,7 @@ mod tests {
                 workspace_id: "w1".to_owned(),
                 pane_id: "w1:p1".to_owned(),
                 agent: "claude".to_owned(),
+                session: herdr::SESSION.to_owned(),
             },
             claude_session: None,
             since: "2026-10-26T12:00:00Z".parse().unwrap(),

@@ -2,11 +2,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
+use flow::herdr::SESSION;
 use flow::paths::StateDir;
 use flow::state::Store;
 use flow::state::events::{self, Event};
 use flow::state::requests::NewRequest;
-use flow::state::task::{Harness, HerdrTarget, HoldOn, State, TaskRecord};
+use flow::state::task::{Harness, HerdrTarget, HoldOn, Origin, State, TaskRecord};
 use jiff::Timestamp;
 use serde_json::{Value, json};
 
@@ -190,6 +191,7 @@ fn task_record(id: &str, title: &str) -> TaskRecord {
         harness: Harness::Claude,
         created: Timestamp::now(),
         owner: "supervisor".to_owned(),
+        origin: Origin::Dispatched,
     }
 }
 const REQUEST_BRIEF: &str = "Rebuild the search index from the request.\n";
@@ -418,6 +420,7 @@ fn dispatch_creates_task_and_starts_agent() {
             workspace_id: WORKSPACE.to_owned(),
             pane_id: PANE.to_owned(),
             agent: "claude".to_owned(),
+            session: SESSION.to_owned(),
         })
     );
     let brief = store.brief(&id).unwrap();

@@ -4,6 +4,8 @@ use std::path::PathBuf;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+use crate::herdr;
+
 /// `task.json`: what a task is. Written once at creation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskRecord {
@@ -22,6 +24,19 @@ pub struct TaskRecord {
     pub harness: Harness,
     pub created: Timestamp,
     pub owner: String,
+    /// How the task's session began. Records written before adoption existed were dispatched.
+    #[serde(default)]
+    pub origin: Origin,
+}
+
+/// How a task's session began: started by `flow dispatch`, or started by hand and taken over
+/// with `flow task adopt`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Origin {
+    #[default]
+    Dispatched,
+    Adopted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -135,6 +150,21 @@ pub struct HerdrTarget {
     pub workspace_id: String,
     pub pane_id: String,
     pub agent: String,
+    /// The herdr session the pane lives in: flow's own for a dispatched worker, the user's for
+    /// an adopted one. Targets written before adoption existed were all in flow's session.
+    #[serde(default = "flow_session")]
+    pub session: String,
+}
+
+fn flow_session() -> String {
+    herdr::SESSION.to_owned()
+}
+
+impl HerdrTarget {
+    /// Whether this names the pane `pane_id` in herdr session `session` on `host`.
+    pub fn is(&self, host: &str, session: &str, pane_id: &str) -> bool {
+        self.host == host && self.session == session && self.pane_id == pane_id
+    }
 }
 
 /// The Claude Code session a worker runs in, as its `SessionStart` hook reported it.
@@ -180,6 +210,25 @@ mod tests {
         let json = serde_json::to_value(&rec).unwrap();
         assert_eq!(json["cwd"], "/work/repo-worktrees/old");
         assert!(json.get("worktree").is_none(), "{json}");
+    }
+
+    #[test]
+    fn records_and_targets_written_before_adoption_read_as_dispatched_in_flows_session() {
+        let rec: TaskRecord = serde_json::from_str(
+            r#"{"id": "aaaaaaab", "title": "Old task", "host": "host-a",
+                "cwd": "/work/repo.wt/old", "harness": "claude",
+                "created": "2026-10-26T12:00:00Z", "owner": "supervisor"}"#,
+        )
+        .unwrap();
+        assert_eq!(rec.origin, Origin::Dispatched);
+        assert_eq!(serde_json::to_value(&rec).unwrap()["origin"], "dispatched");
+        let target: HerdrTarget = serde_json::from_str(
+            r#"{"host": "host-a", "workspace_id": "w1", "pane_id": "w1:p1", "agent": "claude"}"#,
+        )
+        .unwrap();
+        assert_eq!(target.session, herdr::SESSION);
+        let adopted: Origin = serde_json::from_str(r#""adopted""#).unwrap();
+        assert_eq!(adopted, Origin::Adopted);
     }
 
     #[test]

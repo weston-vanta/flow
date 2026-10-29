@@ -75,7 +75,8 @@ fn agents_by_host(inventories: &[HostInventory]) -> Vec<(&str, &[Agent])> {
 
 /// Adds the hand session `target` names on `host` to the follow list, recording its title.
 pub fn run_follow(state: &StateDir, host: &str, target: &str) -> anyhow::Result<()> {
-    let hands = hand_sessions(state, host)?;
+    let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
+    let hands = hand_sessions(state, &runner, host)?;
     let agent = resolve(&hands, host, target)?;
     let followed = Followed {
         host: host.to_owned(),
@@ -98,7 +99,8 @@ pub fn run_follow(state: &StateDir, host: &str, target: &str) -> anyhow::Result<
 /// Removes the hand session `target` names on `host` from the follow list. A pane id the list
 /// holds is removed even when no session runs there any more.
 pub fn run_unfollow(state: &StateDir, host: &str, target: &str) -> anyhow::Result<()> {
-    let hands = hand_sessions(state, host)?;
+    let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
+    let hands = hand_sessions(state, &runner, host)?;
     let stale = |entry: &Followed| entry.host == host && entry.pane_id == target;
     let resolved = match resolve(&hands, host, target) {
         Ok(agent) => Some(agent),
@@ -122,7 +124,11 @@ pub fn run_unfollow(state: &StateDir, host: &str, target: &str) -> anyhow::Resul
 /// The hand sessions on `host`: its agents outside flow's herdr session, after one listing of
 /// the host refreshed its cached inventory. When the listing fails, the cached agents, saying
 /// so on stderr; none when `host` is not a live host.
-fn hand_sessions(state: &StateDir, host: &str) -> anyhow::Result<Vec<Agent>> {
+pub(super) fn hand_sessions(
+    state: &StateDir,
+    runner: &Arc<dyn Runner>,
+    host: &str,
+) -> anyhow::Result<Vec<Agent>> {
     let Some(host) = inventory::live_hosts(state)?
         .into_iter()
         .find(|known| known.name == host)
@@ -130,10 +136,9 @@ fn hand_sessions(state: &StateDir, host: &str) -> anyhow::Result<Vec<Agent>> {
         return Ok(Vec::new());
     };
     let config = Config::load(state)?;
-    let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
     let listed = inventory::list_agents(
         state,
-        &runner,
+        runner,
         &config.herdr_sessions,
         FlowServer::Start,
         &host,
@@ -172,7 +177,11 @@ fn hand_sessions(state: &StateDir, host: &str) -> anyhow::Result<Vec<Agent>> {
 
 /// The hand session titled `target`, else the one in pane `target`. Refuses when several share
 /// the title, listing them, or when none matches.
-fn resolve<'a>(hands: &'a [Agent], host: &str, target: &str) -> Result<&'a Agent, Refused> {
+pub(super) fn resolve<'a>(
+    hands: &'a [Agent],
+    host: &str,
+    target: &str,
+) -> Result<&'a Agent, Refused> {
     let titled: Vec<&Agent> = hands.iter().filter(|agent| agent.title == target).collect();
     match titled.as_slice() {
         [agent] => return Ok(agent),
@@ -347,7 +356,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::state::task::Harness;
+    use crate::state::task::{Harness, Origin};
 
     fn entry(host: &str, status: AgentStatus, title: &str, task: Option<&str>) -> MatchedAgent {
         MatchedAgent {
@@ -381,6 +390,7 @@ mod tests {
             harness: Harness::Claude,
             created: Timestamp::UNIX_EPOCH,
             owner: "supervisor".to_owned(),
+            origin: Origin::Dispatched,
         };
         (record, Status::pending(Timestamp::UNIX_EPOCH))
     }

@@ -24,7 +24,8 @@
 //! the supervisor. A task whose worker herdr last reported `working` does not count as quiet.
 //!
 //! Hand sessions are the herdr agents outside flow's herdr session on live hosts, as of the
-//! cached inventory: sessions the user started by hand. A run first lists every live host's
+//! cached inventory: sessions the user started by hand. One adopted as a task is waited on as
+//! that task's worker, in its own herdr session, and not as a hand session. A run first lists every live host's
 //! agents into that cache, in parallel, without starting any herdr server, and giving each host
 //! at most `Settings::list_timeout`. A host whose listing fails keeps its cached agents. The
 //! run waits on every hand session it then finds, except on hosts that ssh could not reach,
@@ -64,7 +65,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::herdr::{self, Herdr};
 use crate::inventory::{self, FlowServer};
-use crate::observe::{FollowList, Followed};
+use crate::observe::{self, FollowList, Followed};
 use crate::paths::StateDir;
 use crate::runner::Runner;
 use crate::state::Store;
@@ -734,9 +735,11 @@ impl<'a> Watcher<'a> {
         observed
     }
 
-    /// Keeps one wait per open task with a herdr target and one per hand session or followed
-    /// pane, dropping waits whose task closed or whose target moved. A hand session's wait
-    /// starts afresh when it is followed or unfollowed, since that changes what it ends on.
+    /// Keeps one wait per open task with a herdr target, in the herdr session the target names,
+    /// and one per observed session or followed pane that is no open task's target, dropping
+    /// waits whose task closed or whose target moved. An adopted session's pane is therefore
+    /// waited on as its task's only. An observed session's wait starts afresh when it is
+    /// followed or unfollowed, since that changes what it ends on.
     fn reconcile_waits(&mut self, tasks: &[(TaskRecord, Status)], follow: &[Followed]) {
         let mut wanted: BTreeMap<String, WaitSpec> = BTreeMap::new();
         for (rec, status) in tasks {
@@ -748,12 +751,18 @@ impl<'a> Watcher<'a> {
                 WaitSpec {
                     target: WaitTarget::Task(rec.id.clone()),
                     host: target.host.clone(),
-                    session: herdr::SESSION.to_owned(),
+                    session: target.session.clone(),
                     pane_id: target.pane_id.clone(),
                 },
             );
         }
+        let tasked = |host: &str, session: &str, pane_id: &str| {
+            observe::open_task_in_pane(tasks, host, session, pane_id).is_some()
+        };
         for hand in &self.hands {
+            if tasked(&hand.host, &hand.session, &hand.pane_id) {
+                continue;
+            }
             let followed = follow
                 .iter()
                 .any(|followed| followed.is(&hand.host, &hand.session, &hand.pane_id));
@@ -769,6 +778,9 @@ impl<'a> Watcher<'a> {
             wanted.insert(spec.key(), spec);
         }
         for followed in follow {
+            if tasked(&followed.host, &followed.session, &followed.pane_id) {
+                continue;
+            }
             let spec = WaitSpec {
                 target: WaitTarget::Observed {
                     followed: true,
@@ -1039,7 +1051,7 @@ mod tests {
     use crate::inventory::HostInventory;
     use crate::runner::{FakeRunner, Scripted};
     use crate::state::events::Event;
-    use crate::state::task::{Harness, HerdrTarget};
+    use crate::state::task::{Harness, HerdrTarget, Origin};
     use classify::DEFAULT_QUIET_SECS;
 
     const CONFIG: &str = r#"
@@ -1093,6 +1105,7 @@ default_branch = "main"
                 harness: Harness::Claude,
                 created: Timestamp::now(),
                 owner: "supervisor".to_owned(),
+                origin: Origin::Dispatched,
             };
             store.create_task(rec, "brief").unwrap();
             store
@@ -1103,6 +1116,7 @@ default_branch = "main"
                         workspace_id: "w1".to_owned(),
                         pane_id: "w1:p1".to_owned(),
                         agent: "claude".to_owned(),
+                        session: herdr::SESSION.to_owned(),
                     });
                 })
                 .unwrap();
@@ -1404,6 +1418,38 @@ default_branch = "main"
             ]
         );
         assert!(runner.calls()[0].argv.contains(&"default".to_owned()));
+    }
+
+    #[test]
+    fn an_adopted_pane_is_watched_as_its_task_only() {
+        let fx = Fixture::new();
+        fx.hand();
+        fx.follow();
+        fx.task(true);
+        Store::open(&fx.state)
+            .set_status(TASK, |status| {
+                if let Some(target) = &mut status.herdr {
+                    target.session = "default".to_owned();
+                }
+            })
+            .unwrap();
+        let runner = fake(vec![answer(0, BLOCKED)]);
+        let mut watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+
+        assert_eq!(
+            two_cycles(&mut watcher).as_deref(),
+            Some("agent-blocked: aaaaaaab")
+        );
+        assert_eq!(watcher.waits.keys().collect::<Vec<_>>(), [TASK]);
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert!(
+            calls[0]
+                .argv
+                .windows(2)
+                .any(|pair| pair == ["--session", "default"]),
+            "{calls:?}"
+        );
     }
 
     #[test]
