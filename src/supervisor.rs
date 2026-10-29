@@ -111,7 +111,7 @@ impl Lock {
 }
 
 /// Gives each of `agents` in the supervisor's cwd the label `workspaces` lists for its
-/// workspace, which `Lock::runs` needs when the Claude Code sessions do not decide.
+/// workspace, which `Lock::identify` needs when the Claude Code sessions do not decide.
 pub fn label_workspaces(agents: &mut [Agent], workspaces: &[Workspace]) {
     for agent in agents
         .iter_mut()

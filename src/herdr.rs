@@ -99,7 +99,7 @@ pub struct Agent {
     pub agent_session_id: Option<String>,
     /// The label of the agent's workspace, which herdr's agent list does not carry. flow looks
     /// it up only for agents in the supervisor's cwd, the ones whose workspace can tell the
-    /// supervisor apart (see `Lock::runs`); `None` for the rest.
+    /// supervisor apart (see `Lock::identify`); `None` for the rest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_label: Option<String>,
 }
