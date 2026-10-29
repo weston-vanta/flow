@@ -341,9 +341,12 @@ struct WatchState {
 /// Records that adopted task `task`'s agent was just seen `working`, as `flow task adopt` sees
 /// it once its prompt is delivered, so the next watch run logs the end of that turn. Only an
 /// existing, readable `watch-state.json` is changed: creating one would end the very first
-/// run's special case. A watch run under way keeps its own copy and may write over this; it
-/// then reads the task's status itself.
+/// run's special case. Nothing is written while a watch run holds the lock: the file is that
+/// run's to write, and the run waits on the new task itself.
 pub fn note_working(state: &StateDir, task: &str) -> anyhow::Result<()> {
+    if lock::held_live(state)? {
+        return Ok(());
+    }
     let path = state.root().join(WATCH_STATE_FILE);
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
@@ -1730,6 +1733,25 @@ default_branch = "main"
         assert_eq!(second.cycle().unwrap().as_deref(), Some("done: aaaaaaab"));
         drop(second);
         assert!(watch_state(&fx).get("working").is_none());
+    }
+
+    #[test]
+    fn noting_an_adopted_task_working_leaves_a_live_runs_state_alone() {
+        let fx = Fixture::new();
+        fx.adopted_task();
+        let path = fx.state.root().join(WATCH_STATE_FILE);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "{}\n").unwrap();
+        let guard = lock::acquire(&fx.state, std::process::id())
+            .unwrap()
+            .unwrap();
+
+        note_working(&fx.state, TASK).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{}\n");
+
+        drop(guard);
+        note_working(&fx.state, TASK).unwrap();
+        assert_eq!(watch_state(&fx)["working"], serde_json::json!([TASK]));
     }
 
     #[test]

@@ -87,8 +87,10 @@ one an open task already runs in. When it exits 1 after printing the adopted lin
 could not be prompted, often because it is blocked at a harness prompt. The task then exists,
 `blocked` with a hold on you; ask the user to attend to the session, then steer it to read its
 brief and follow its Reporting section (`flow task show <task-id>` names the brief's file).
-When it exits 1 without that line, something failed part way; the error names the task, which
-is held `blocked` on you with the failure.
+When it exits non-zero without that line and the error starts `adopting the session as task
+<task-id>`, something failed part way: that task is held `blocked` on you with the failure. Any
+other error means nothing was written; fix the cause, such as a refusal or an unreadable
+`--brief-file`, and adopt again.
 
 ## Worker requests
 
