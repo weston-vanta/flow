@@ -143,6 +143,38 @@ fn await_start_with(
     Ok(AgentStart::Running)
 }
 
+/// The Claude Code session herdr reports for the agent in `pane_id`, asked every poll until the
+/// start timeout, counted from `since`, has passed; `None` when herdr reports none by then.
+pub fn await_session(
+    herdr: &Herdr,
+    host: &Host,
+    pane_id: &str,
+    since: Instant,
+) -> anyhow::Result<Option<String>> {
+    await_session_with(herdr, host, pane_id, since, &Timing::from_env()?)
+}
+
+fn await_session_with(
+    herdr: &Herdr,
+    host: &Host,
+    pane_id: &str,
+    since: Instant,
+    timing: &Timing,
+) -> anyhow::Result<Option<String>> {
+    loop {
+        let session = herdr
+            .agents(host)?
+            .into_iter()
+            .find(|agent| agent.pane_id == pane_id)
+            .and_then(|agent| agent.agent_session_id);
+        let left = timing.timeout.saturating_sub(since.elapsed());
+        if session.is_some() || left.is_zero() {
+            return Ok(session);
+        }
+        thread::sleep(timing.poll.min(left));
+    }
+}
+
 /// One start's progress across its waits: when the first began, whether the wait for herdr
 /// to see the agent has been announced, and whether a wait without an answer has been.
 #[derive(Default)]
@@ -505,6 +537,43 @@ mod tests {
 
  Enter to confirm · Esc to cancel
 ";
+
+    fn listing(session: Option<&str>) -> Scripted {
+        let mut agent = serde_json::json!({
+            "agent": "claude", "agent_status": "idle", "cwd": "/workspaces/flow",
+            "pane_id": PANE, "workspace_id": "w3",
+        });
+        if let Some(session) = session {
+            agent["agent_session"] = serde_json::json!({"kind": "id", "value": session});
+        }
+        ok(
+            &serde_json::json!({"id": "cli:agent:list", "result": {"type": "agent_list",
+            "agents": [agent]}})
+            .to_string(),
+        )
+    }
+
+    #[test]
+    fn await_session_asks_until_herdr_reports_one_or_the_start_times_out() {
+        let fake = Arc::new(FakeRunner::new(vec![
+            listing(None),
+            listing(None),
+            listing(Some("s1")),
+        ]));
+        let herdr = Herdr::with_session(fake.clone(), "default");
+        let session = await_session_with(&herdr, &host(), PANE, Instant::now(), &fast()).unwrap();
+        assert_eq!(session.as_deref(), Some("s1"));
+        assert_eq!(fake.calls().len(), 3);
+
+        let fake = Arc::new(FakeRunner::new(vec![Scripted {
+            repeat: true,
+            ..listing(None)
+        }]));
+        let herdr = Herdr::with_session(fake, "default");
+        let since = Instant::now() - fast().timeout;
+        let session = await_session_with(&herdr, &host(), PANE, since, &fast()).unwrap();
+        assert_eq!(session, None);
+    }
 
     #[test]
     fn session_missing_reads_a_failed_resume() {

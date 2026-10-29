@@ -22,6 +22,7 @@ use crate::herdr::{Agent, AgentStatus, Herdr};
 use crate::host;
 use crate::inventory;
 use crate::observe::{self, FollowList};
+use crate::owner::Owner;
 use crate::paths::{STATE_ENV, StateDir};
 use crate::runner::{self, Runner, shell_quote};
 use crate::state::config::Host;
@@ -89,7 +90,15 @@ pub fn run(state: &StateDir, args: &AdoptArgs) -> anyhow::Result<ExitCode> {
 
     let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
     let listed = super::sessions::host_agents(state, &runner, &host.name)?;
-    let agent = super::sessions::resolve(&listed, &host.name, &args.session)?;
+    let (agent, owner) = super::sessions::resolve(&listed, &host.name, &args.session)?;
+    if *owner == Owner::Unconfirmed {
+        return Err(Refused(format!(
+            "pane {} on {} is the supervisor's, and herdr reports no Claude Code session for the \
+             agent there, so flow cannot tell it from the supervisor",
+            agent.pane_id, host.name
+        ))
+        .into());
+    }
     refuse_unadoptable(host, agent)?;
 
     let flow = flow_command(
@@ -305,7 +314,6 @@ mod tests {
             title: "Fix links".to_owned(),
             session: "default".to_owned(),
             agent_session_id: session_id.map(str::to_owned),
-            workspace_label: None,
         }
     }
 

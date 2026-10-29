@@ -97,11 +97,6 @@ pub struct Agent {
     /// it; `None` when herdr has not reported one.
     #[serde(default)]
     pub agent_session_id: Option<String>,
-    /// The label of the agent's workspace, which herdr's agent list does not carry. flow looks
-    /// it up only for agents in the supervisor's cwd, the ones whose workspace can confirm the
-    /// supervisor (see `Lock::identify`); `None` for the rest.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace_label: Option<String>,
 }
 
 fn legacy_session() -> String {
@@ -181,7 +176,6 @@ impl AgentInfo {
                 .unwrap_or_default(),
             session: session.to_owned(),
             agent_session_id: self.agent_session.and_then(AgentSessionInfo::id),
-            workspace_label: None,
         }
     }
 }
@@ -229,19 +223,6 @@ const TASK_LABEL_SEPARATOR: &str = " · ";
 /// keeps a label across a server restart, unlike workspace metadata.
 pub fn task_workspace_label(title: &str, id: &str) -> String {
     format!("{title}{TASK_LABEL_SEPARATOR}{id}")
-}
-
-/// `pane list` → `pane_list`.
-#[derive(Deserialize)]
-struct PaneList {
-    panes: Vec<Pane>,
-}
-
-/// A herdr pane and the workspace it sits in.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct Pane {
-    pub pane_id: String,
-    pub workspace_id: String,
 }
 
 #[derive(Deserialize)]
@@ -439,22 +420,6 @@ impl Herdr {
         };
         let list: WorkspaceList = parse_result(host, &argv, &output)?;
         Ok(Some(list.workspaces))
-    }
-
-    /// The panes in this session on `host`.
-    pub fn panes(&self, host: &Host) -> anyhow::Result<Vec<Pane>> {
-        let list: PaneList = self.call_json(host, &self.argv(&["pane", "list"]))?;
-        Ok(list.panes)
-    }
-
-    /// The panes in this session on `host`, or `None` when its server is not running.
-    pub fn panes_if_running(&self, host: &Host) -> anyhow::Result<Option<Vec<Pane>>> {
-        let argv = self.argv(&["pane", "list"]);
-        let Some(output) = self.call_unless(host, &argv, SERVER_NOT_RUNNING_CODE)? else {
-            return Ok(None);
-        };
-        let list: PaneList = parse_result(host, &argv, &output)?;
-        Ok(Some(list.panes))
     }
 
     /// Closes `workspace_id`; `false` when herdr no longer knows it, so there was nothing to
@@ -991,7 +956,6 @@ mod tests {
                     title: "Refactor login form".to_owned(),
                     session: "flow".to_owned(),
                     agent_session_id: None,
-                    workspace_label: None,
                 },
                 Agent {
                     pane_id: "w2:p1".to_owned(),
@@ -1002,7 +966,6 @@ mod tests {
                     title: "Fix cache eviction".to_owned(),
                     session: "flow".to_owned(),
                     agent_session_id: Some("00000000-0000-4000-8000-0000000000a2".to_owned()),
-                    workspace_label: None,
                 },
             ]
         );

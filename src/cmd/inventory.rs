@@ -732,7 +732,6 @@ default_branch = "main"
             title: title.to_owned(),
             session: session.to_owned(),
             agent_session_id: None,
-            workspace_label: None,
         }
     }
 

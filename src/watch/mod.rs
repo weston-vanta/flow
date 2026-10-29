@@ -28,9 +28,9 @@
 //! the supervisor. A task whose worker herdr last reported `working` does not count as quiet.
 //!
 //! Hand sessions are the herdr agents on live hosts, in any herdr session flow lists, as of the
-//! cached inventory, other than the supervisor, an agent that may be the supervisor (logged once
-//! per run), and the agents tasks run (see `observe::task_runs`): sessions the user started by
-//! hand. One adopted as a task is waited on as that task's worker, in the herdr session it was
+//! cached inventory, other than the supervisor, each with its owner (see `owner::owner`) as of
+//! the listing. The observed ones are the sessions the user started by hand. One a task owns,
+//! adopted ones included, is waited on as that task's worker, in the herdr session it was
 //! started in, and not as a hand session. A run first lists every live host's agents into that
 //! cache, in parallel, without starting any herdr server, and giving each host at most
 //! `Settings::list_timeout`. A host whose listing fails keeps its cached agents. The run waits on
@@ -71,9 +71,10 @@ use anyhow::Context;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use crate::herdr::{self, Herdr};
+use crate::herdr::{self, Agent, Herdr};
 use crate::inventory::{self, FlowServer};
-use crate::observe::{self, FollowList, Followed};
+use crate::observe::{FollowList, Followed};
+use crate::owner::{self, Owner};
 use crate::paths::StateDir;
 use crate::runner::Runner;
 use crate::state::Store;
@@ -81,7 +82,7 @@ use crate::state::config::{Config, Host};
 use crate::state::events::{EVENTS_FILE, Event};
 use crate::state::fs::{append_line, write_atomic};
 use crate::state::task::{Origin, State, Status, TaskRecord};
-use crate::supervisor::{self, Identity};
+use crate::supervisor;
 use classify::{Observation, Reported, Thresholds, Verdict, classify};
 use files::{Checked, NewEvents, Seen, WorktreeCheck, file_len, new_events};
 use lock::Guard;
@@ -158,90 +159,52 @@ pub fn run(
     }
 }
 
-/// A herdr agent on a live host, as of the cached inventory, that is not the supervisor. One a
-/// task runs is left out when waits are chosen.
+/// A herdr agent on a live host, as of the cached inventory, other than the supervisor, with its
+/// owner as of the listing.
 struct HandSession {
     host: String,
-    session: String,
-    pane_id: String,
-    title: String,
-    /// The Claude Code session herdr reports for the agent.
-    agent_session_id: Option<String>,
+    agent: Agent,
+    listed: Owner,
 }
 
-/// The hand sessions, and a note for each agent in the supervisor's pane that may be the
-/// supervisor: such an agent is neither waited on, lest the supervisor wake itself, nor taken
-/// for the supervisor.
-fn hand_sessions(state: &StateDir) -> anyhow::Result<(Vec<HandSession>, Vec<String>)> {
-    let supervisor = supervisor::running(state)?;
-    let tasks = match &supervisor {
-        Some(_) => Store::open(state).list_tasks()?,
-        None => Vec::new(),
-    };
+impl HandSession {
+    /// Its owner as listed, unless it was listed as observed and a task has claimed it since, as
+    /// one adopted after the listing.
+    fn owner(&self, tasks: &[(TaskRecord, Status)]) -> Owner {
+        if self.listed.is_observed() {
+            owner::owner(&self.host, &self.agent, None, tasks)
+        } else {
+            self.listed.clone()
+        }
+    }
+
+    fn is_in(&self, host: &str, session: &str, pane_id: &str) -> bool {
+        self.host == host && self.agent.session == session && self.agent.pane_id == pane_id
+    }
+}
+
+/// The agents in the cached inventory other than the supervisor, owned as of one reading of the
+/// lock and the tasks. Unreadable tasks own nothing here; `HandSession::owner` reads them again.
+fn hand_sessions(state: &StateDir) -> anyhow::Result<Vec<HandSession>> {
+    let lock = supervisor::running(state)?;
+    let tasks = Store::open(state).list_tasks().unwrap_or_default();
     let mut hands = Vec::new();
-    let mut notes = Vec::new();
     for inv in inventory::load_all(state)?
         .into_iter()
         .filter(|inv| !inv.gone)
     {
         for agent in inv.agents {
-            let identity = supervisor
-                .as_ref()
-                .and_then(|lock| Some((lock, lock.in_pane(&inv.name, &agent, &tasks)?)));
-            match identity {
-                Some((_, Identity::Supervisor)) => {}
-                Some((lock, Identity::Unconfirmed)) => notes.push(format!(
-                    "{}; flow does not watch it",
-                    supervisor::unconfirmed(lock, &inv.name, &agent)
-                )),
-                Some((_, Identity::Other)) | None => hands.push(HandSession {
+            let listed = owner::owner(&inv.name, &agent, lock.as_ref(), &tasks);
+            if listed != Owner::Supervisor {
+                hands.push(HandSession {
                     host: inv.name.clone(),
-                    session: agent.session,
-                    pane_id: agent.pane_id,
-                    title: agent.title,
-                    agent_session_id: agent.agent_session_id,
-                }),
+                    agent,
+                    listed,
+                });
             }
         }
     }
-    Ok((hands, notes))
-}
-
-/// Each task's recorded Claude Code session; empty when the tasks cannot be read.
-fn task_sessions(store: &Store) -> HashMap<String, Option<String>> {
-    store
-        .list_tasks()
-        .map(|tasks| {
-            tasks
-                .into_iter()
-                .map(|(rec, status)| {
-                    (
-                        rec.id,
-                        status.claude_session.map(|claude| claude.session_id),
-                    )
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// The Claude Code session `hand`, an agent in the pane of the task `rec` and `status` name,
-/// runs as far as the hand sessions tell: what herdr reported when they were listed, or `None`
-/// once the task's recorded session has changed since, which makes that report stale.
-fn reported_session<'h>(
-    listed_sessions: &HashMap<String, Option<String>>,
-    rec: &TaskRecord,
-    status: &Status,
-    hand: &'h HandSession,
-) -> Option<&'h str> {
-    let recorded = status
-        .claude_session
-        .as_ref()
-        .map(|claude| claude.session_id.as_str());
-    let listed = listed_sessions.get(&rec.id).and_then(Option::as_deref);
-    (listed == recorded)
-        .then_some(hand.agent_session_id.as_deref())
-        .flatten()
+    Ok(hands)
 }
 
 /// How a watch that fails after taking the lock retries.
@@ -479,12 +442,8 @@ struct Watcher<'a> {
     /// a cycle that listed the tasks, so a first run that could not list them leaves the next
     /// run a first run too, rather than one that replays every task it finds.
     state_saved: bool,
-    /// The hand sessions as of this run's start.
+    /// The hand sessions as of the last listing.
     hands: Vec<HandSession>,
-    /// Each task's recorded Claude Code session when `hands` were listed. A task whose
-    /// recorded session has changed since, as after `/clear`, may run under a session id newer
-    /// than the one `hands` cached for its pane.
-    listed_sessions: HashMap<String, Option<String>>,
     /// Whether the last cycle found anything to watch: an open task, a followed or hand
     /// session, or a task list or follow list it could not read.
     watching: bool,
@@ -517,13 +476,12 @@ impl<'a> Watcher<'a> {
         std::fs::create_dir_all(&supervisor)
             .with_context(|| format!("creating {}", supervisor.display()))?;
         let (memory, replay_unseen) = load_watch_state(state)?;
-        let (hands, notes) = hand_sessions(state)?;
-        let mut watcher = Watcher {
+        let hands = hand_sessions(state)?;
+        Ok(Watcher {
             state,
             store: Store::open(state),
             hosts: inventory::hosts(state)?,
             hands,
-            listed_sessions: task_sessions(&Store::open(state)),
             runner,
             settings: settings.clone(),
             saved: memory.clone(),
@@ -541,11 +499,7 @@ impl<'a> Watcher<'a> {
             worktree_checks: BTreeMap::new(),
             logged: HashSet::new(),
             started: Instant::now(),
-        };
-        for note in notes {
-            watcher.log(&note);
-        }
-        Ok(watcher)
+        })
     }
 
     /// One poll cycle: the wake reason when something woke the supervisor.
@@ -658,15 +612,11 @@ impl<'a> Watcher<'a> {
         let skipped = self.list_agents(lock);
         self.listed_at = Instant::now();
         match hand_sessions(self.state) {
-            Ok((hands, notes)) => {
+            Ok(hands) => {
                 self.hands = hands
                     .into_iter()
                     .filter(|hand| !skipped.contains(&hand.host))
                     .collect();
-                self.listed_sessions = task_sessions(&self.store);
-                for note in notes {
-                    self.log(&note);
-                }
             }
             Err(err) => self.log(&format!("{err:#}")),
         }
@@ -883,46 +833,31 @@ impl<'a> Watcher<'a> {
         observed
     }
 
-    /// Keeps one wait per open task with a herdr target, in the herdr session the target names, and
-    /// one per observed session or followed pane no task runs (see `observe::task_runs`),
-    /// dropping waits whose task closed or whose target moved. An adopted session's pane is
-    /// therefore waited on as its task's only, and not at all once the task is done or orphaned
-    /// while herdr reports the task's own session there, as `flow sessions` shows it as the
-    /// task's until `flow task close` clears its target. An open task whose pane herdr gave to
-    /// another session, by the Claude Code session it reports, gets no wait, and that session is
-    /// waited on as observed. An observed session's wait starts afresh when it is followed or
-    /// unfollowed, since that changes what it ends on.
+    /// Keeps one wait per open task with a herdr target, in the herdr session the target names,
+    /// unless the hand session listed in that pane is not the task's, and one per observed or
+    /// followed pane no task waits on, dropping waits whose task closed or whose target moved. An
+    /// observed session's wait starts afresh when it is followed or unfollowed, since that
+    /// changes what it ends on.
     fn reconcile_waits(&mut self, tasks: &[(TaskRecord, Status)], follow: &[Followed]) {
+        let owned: Vec<(&HandSession, Owner)> = self
+            .hands
+            .iter()
+            .map(|hand| (hand, hand.owner(tasks)))
+            .collect();
         let mut wanted: BTreeMap<String, WaitSpec> = BTreeMap::new();
         let mut reused = Vec::new();
         for (rec, status) in tasks {
             let Some(target) = status.herdr.as_ref().filter(|_| status.state.is_open()) else {
                 continue;
             };
-            let in_pane = self
-                .hands
-                .iter()
-                .find(|hand| target.is(&hand.host, &hand.session, &hand.pane_id));
-            if let Some(hand) = in_pane
-                && observe::pane_reused(
-                    status,
-                    reported_session(&self.listed_sessions, rec, status, hand),
-                )
-            {
+            let task = Owner::Task(rec.id.clone());
+            if owned.iter().any(|(hand, owner)| {
+                hand.is_in(&target.host, &target.session, &target.pane_id) && *owner != task
+            }) {
                 reused.push(format!(
-                    "pane {} on {} (herdr session {}) runs Claude Code session {}, not task {}'s \
-                     {}: herdr reused the pane id, so flow watches it as an observed session \
-                     and no longer as the task's",
-                    hand.pane_id,
-                    hand.host,
-                    hand.session,
-                    hand.agent_session_id.as_deref().unwrap_or_default(),
-                    rec.id,
-                    status
-                        .claude_session
-                        .as_ref()
-                        .map(|claude| claude.session_id.as_str())
-                        .unwrap_or_default(),
+                    "pane {} on {} (herdr session {}) no longer runs task {}'s worker: herdr \
+                     reused the pane id, so flow no longer watches it as the task's",
+                    target.pane_id, target.host, target.session, rec.id
                 ));
                 continue;
             }
@@ -939,43 +874,46 @@ impl<'a> Watcher<'a> {
                 },
             );
         }
-        let tasked = |host: &str, session: &str, pane_id: &str| {
-            let hand = self.hands.iter().find(|hand| {
-                hand.host == host && hand.session == session && hand.pane_id == pane_id
-            });
-            tasks.iter().any(|(rec, status)| {
-                status
-                    .herdr
-                    .as_ref()
-                    .is_some_and(|target| target.is(host, session, pane_id))
-                    && observe::task_runs(
-                        status,
-                        hand.and_then(|hand| {
-                            reported_session(&self.listed_sessions, rec, status, hand)
-                        }),
-                    )
+        let claimed: Vec<(String, String, String)> = wanted
+            .values()
+            .map(|spec| {
+                (
+                    spec.host.clone(),
+                    spec.session.clone(),
+                    spec.pane_id.clone(),
+                )
             })
+            .collect();
+        let claimed = |host: &str, session: &str, pane_id: &str| {
+            claimed
+                .iter()
+                .any(|(h, s, p)| h == host && s == session && p == pane_id)
         };
-        for hand in &self.hands {
-            if tasked(&hand.host, &hand.session, &hand.pane_id) {
+        for (hand, owner) in &owned {
+            let agent = &hand.agent;
+            if !owner.is_observed() || claimed(&hand.host, &agent.session, &agent.pane_id) {
                 continue;
             }
             let followed = follow
                 .iter()
-                .any(|followed| followed.is(&hand.host, &hand.session, &hand.pane_id));
+                .any(|followed| followed.is(&hand.host, &agent.session, &agent.pane_id));
             let spec = WaitSpec {
                 target: WaitTarget::Observed {
                     followed,
-                    title: hand.title.clone(),
+                    title: agent.title.clone(),
                 },
                 host: hand.host.clone(),
-                session: hand.session.clone(),
-                pane_id: hand.pane_id.clone(),
+                session: agent.session.clone(),
+                pane_id: agent.pane_id.clone(),
             };
             wanted.insert(spec.key(), spec);
         }
         for followed in follow {
-            if tasked(&followed.host, &followed.session, &followed.pane_id) {
+            let held = owned.iter().any(|(hand, owner)| {
+                hand.is_in(&followed.host, &followed.session, &followed.pane_id)
+                    && !owner.is_observed()
+            });
+            if held || claimed(&followed.host, &followed.session, &followed.pane_id) {
                 continue;
             }
             let spec = WaitSpec {
@@ -1416,7 +1354,6 @@ default_branch = "main"
                 title: title.to_owned(),
                 session: session.to_owned(),
                 agent_session_id: None,
-                workspace_label: None,
             });
             inventory::save(&self.state, &inv).unwrap();
         }
@@ -1434,15 +1371,12 @@ default_branch = "main"
             inventory::save(&self.state, &inv).unwrap();
         }
 
-        /// Adds the supervisor's agent, in the supervisor's cwd and labelled workspace, in
-        /// `session`'s pane `pane_id` on `host-a` to the cached inventory.
+        /// Adds the supervisor's agent, reporting the Claude Code session `s-sup` that
+        /// `supervisor_in` records, in `session`'s pane `pane_id` on `host-a` to the cached
+        /// inventory.
         fn supervisor_agent(&self, session: &str, pane_id: &str) {
             self.agent("env-0001", session, pane_id, "flow-supervisor");
-            let mut inv = inventory::load(&self.state, "env-0001").unwrap().unwrap();
-            let agent = inv.agents.last_mut().unwrap();
-            agent.cwd = PathBuf::from(supervisor::SUPERVISOR_CWD);
-            agent.workspace_label = Some(supervisor::SUPERVISOR_NAME.to_owned());
-            inventory::save(&self.state, &inv).unwrap();
+            self.reports_session("env-0001", pane_id, "s-sup");
         }
 
         /// Records Claude Code session `id` as task `TASK`'s.
@@ -1463,7 +1397,8 @@ default_branch = "main"
             self.agent("env-0001", "default", "w1:p1", "Tidy docs");
         }
 
-        /// Records the supervisor as running in `session`'s pane `pane_id` on `host-a`.
+        /// Records the supervisor as running in `session`'s pane `pane_id` on `host-a`, with
+        /// Claude Code session `s-sup`.
         fn supervisor_in(&self, session: &str, pane_id: &str) {
             let target = HerdrTarget {
                 host: "host-a".to_owned(),
@@ -1473,6 +1408,7 @@ default_branch = "main"
                 session: session.to_owned(),
             };
             supervisor::take(&self.state, "env-0001", target).unwrap();
+            supervisor::set_session(&self.state, Some("s-sup")).unwrap();
         }
 
         fn log(&self) -> String {
@@ -1645,7 +1581,7 @@ default_branch = "main"
             .map(|hand| {
                 format!(
                     "{}/{}/{} {}",
-                    hand.host, hand.session, hand.pane_id, hand.title
+                    hand.host, hand.agent.session, hand.agent.pane_id, hand.agent.title
                 )
             })
             .collect()
@@ -1842,9 +1778,9 @@ default_branch = "main"
             watcher.waits.keys().collect::<Vec<_>>(),
             ["host-a/default/w1:p1"]
         );
-        let reused = "pane w1:p1 on host-a (herdr session default) runs Claude Code session \
-                      s-hand, not task aaaaaaab's s-worker: herdr reused the pane id, so flow \
-                      watches it as an observed session and no longer as the task's";
+        let reused = "pane w1:p1 on host-a (herdr session default) no longer runs task \
+                      aaaaaaab's worker: herdr reused the pane id, so flow no longer watches it as \
+                      the task's";
         assert_eq!(fx.log().matches(reused).count(), 1, "{}", fx.log());
     }
 
@@ -1870,6 +1806,24 @@ default_branch = "main"
     }
 
     #[test]
+    fn a_worker_listed_before_its_session_was_recorded_keeps_its_wait() {
+        let fx = Fixture::new();
+        fx.hand();
+        fx.adopted_task();
+        let runner = fake(vec![Scripted {
+            repeat: true,
+            ..on("host-a", &["agent", "wait"], WORKING)
+        }]);
+        let mut watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+        assert_eq!(watcher.cycle().unwrap(), None);
+
+        fx.task_session("s-worker");
+        assert_eq!(watcher.cycle().unwrap(), None);
+
+        assert_eq!(watcher.waits.keys().collect::<Vec<_>>(), [TASK]);
+    }
+
+    #[test]
     fn an_open_tasks_pane_running_its_session_is_the_tasks_wait_only() {
         let fx = Fixture::new();
         fx.hand();
@@ -1889,69 +1843,43 @@ default_branch = "main"
     }
 
     #[test]
-    fn an_agent_that_may_be_the_supervisor_is_neither_watched_nor_excluded_silently() {
+    fn an_agent_with_no_session_in_the_supervisors_pane_is_watched_as_observed() {
         let fx = Fixture::new();
-        fx.supervisor_agent("default", "w1:p1");
+        fx.agent("env-0001", "default", "w1:p1", "flow-supervisor");
         fx.supervisor_in("default", "w1:p1");
-        supervisor::set_session(&fx.state, Some("s-sup")).unwrap();
-        fx.reports_session("env-0001", "w1:p1", "s-hand");
         let runner = fake(vec![Scripted {
             repeat: true,
             ..on("host-a", &["agent", "wait"], WORKING)
         }]);
 
         let mut watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
-        assert!(watcher.hands.is_empty());
-        assert_eq!(watcher.cycle().unwrap(), None);
         assert_eq!(watcher.cycle().unwrap(), None);
 
-        assert!(watcher.waits.is_empty());
-        let note = "pane w1:p1 on host-a holds an agent flow cannot tell from the supervisor: it \
-                    is in the supervisor's workspace w1, but herdr reports Claude Code session \
-                    s-hand for it, not the supervisor's s-sup; flow does not watch it";
-        assert_eq!(fx.log().matches(note).count(), 1, "{}", fx.log());
-
+        assert_eq!(
+            watcher.waits.keys().collect::<Vec<_>>(),
+            ["host-a/default/w1:p1"]
+        );
         fx.reports_session("env-0001", "w1:p1", "s-sup");
         let watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
         assert!(watcher.hands.is_empty());
     }
 
     #[test]
-    fn a_hand_session_in_the_supervisors_reused_pane_in_another_workspace_is_watched() {
+    fn another_session_in_the_supervisors_pane_is_a_hand_session() {
         let fx = Fixture::new();
         fx.agent("env-0001", "default", "w1:p1", "Tidy docs");
-        let mut inv = inventory::load(&fx.state, "env-0001").unwrap().unwrap();
-        inv.agents[0].workspace_id = "w2".to_owned();
-        inventory::save(&fx.state, &inv).unwrap();
         fx.supervisor_in("default", "w1:p1");
-        supervisor::set_session(&fx.state, Some("s-sup")).unwrap();
         fx.reports_session("env-0001", "w1:p1", "s-hand");
         let runner = fake(Vec::new());
 
         let watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
 
-        let hands: Vec<&str> = watcher.hands.iter().map(|h| h.pane_id.as_str()).collect();
+        let hands: Vec<&str> = watcher
+            .hands
+            .iter()
+            .map(|h| h.agent.pane_id.as_str())
+            .collect();
         assert_eq!(hands, ["w1:p1"]);
-    }
-
-    #[test]
-    fn a_hand_session_in_the_supervisors_workspace_is_left_alone_wherever_it_runs() {
-        let fx = Fixture::new();
-        fx.agent("env-0001", "default", "w1:p1", "Tidy docs");
-        fx.supervisor_in("default", "w1:p1");
-        supervisor::set_session(&fx.state, Some("s-sup")).unwrap();
-        fx.reports_session("env-0001", "w1:p1", "s-hand");
-        let runner = fake(Vec::new());
-
-        let watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
-
-        assert!(watcher.hands.is_empty());
-        assert!(
-            fx.log()
-                .contains("it is in the supervisor's workspace w1, but herdr reports"),
-            "{}",
-            fx.log()
-        );
     }
 
     #[test]
@@ -1959,7 +1887,6 @@ default_branch = "main"
         let fx = Fixture::new();
         fx.supervisor_agent("default", "w1:p1");
         fx.supervisor_in("default", "w1:p1");
-        supervisor::set_session(&fx.state, Some("s-sup")).unwrap();
         fx.reports_session("env-0001", "w1:p1", "s-worker");
         fx.task(false);
         fx.task_session("s-worker");
@@ -1967,7 +1894,11 @@ default_branch = "main"
 
         let watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
 
-        let hands: Vec<&str> = watcher.hands.iter().map(|h| h.pane_id.as_str()).collect();
+        let hands: Vec<&str> = watcher
+            .hands
+            .iter()
+            .map(|h| h.agent.pane_id.as_str())
+            .collect();
         assert_eq!(hands, ["w1:p1"]);
         assert!(!fx.log().contains("cannot tell"), "{}", fx.log());
     }
@@ -2021,7 +1952,11 @@ default_branch = "main"
 
         let watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
 
-        let hands: Vec<&str> = watcher.hands.iter().map(|h| h.pane_id.as_str()).collect();
+        let hands: Vec<&str> = watcher
+            .hands
+            .iter()
+            .map(|h| h.agent.pane_id.as_str())
+            .collect();
         assert_eq!(hands, ["w1:p1"]);
     }
 

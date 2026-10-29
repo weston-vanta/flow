@@ -1,7 +1,8 @@
 //! `flow task close`: the supervisor retires a task's worker pane by closing its herdr
 //! workspace. The task record, its working directory and any branch stay as they are. herdr
 //! reuses workspace ids, so the workspace is closed only while herdr still lists it under a
-//! label naming the task, with the task's pane in it. An adopted task's workspace belongs to the
+//! label naming the task, and the task's pane holds its worker or nothing. An adopted task's
+//! workspace belongs to the
 //! user who started it by hand, so closing such a task only stops flow treating the pane as the
 //! task's: the workspace is left open.
 
@@ -14,12 +15,14 @@ use super::Refused;
 use crate::herdr::Herdr;
 use crate::host;
 use crate::inventory;
+use crate::owner::{self, Owner};
 use crate::paths::StateDir;
 use crate::runner;
 use crate::state::Store;
 use crate::state::config::Host;
 use crate::state::events::Event;
-use crate::state::task::{HerdrTarget, Origin};
+use crate::state::task::{HerdrTarget, Origin, Status, TaskRecord};
+use crate::supervisor::{self, Lock};
 
 const EVENT_SOURCE: &str = "supervisor";
 
@@ -64,7 +67,9 @@ pub fn run(state: &StateDir, id: &str, force: bool) -> anyhow::Result<()> {
         let hosts = inventory::hosts(state)?;
         let host = host::find(&hosts, &target.host)?;
         let herdr = Herdr::with_session(Arc::from(runner::from_env()?), &target.session);
-        let closed = close_task_workspace(&herdr, host, id, &target)?;
+        let lock = supervisor::running(state)?;
+        let tasks = store.list_tasks()?;
+        let closed = close_task_workspace(&herdr, host, &target, id, lock.as_ref(), &tasks)?;
         data["already_gone"] = Value::Bool(!closed);
         if closed {
             format!(
@@ -89,13 +94,16 @@ pub fn run(state: &StateDir, id: &str, force: bool) -> anyhow::Result<()> {
 }
 
 /// Closes `target`'s workspace once herdr shows it is task `id`'s: listed under a label naming
-/// the task, with the task's pane in it. Returns `false` when herdr no longer lists it. Refuses,
-/// closing nothing, when herdr lists the id under another label or the pane elsewhere.
+/// the task, with the task's worker (see `owner::owner`, given the running supervisor's `lock`
+/// and `tasks`) or no agent in the task's pane. Returns `false` when herdr no longer lists it.
+/// Refuses, closing nothing, otherwise.
 fn close_task_workspace(
     herdr: &Herdr,
     host: &Host,
-    id: &str,
     target: &HerdrTarget,
+    id: &str,
+    lock: Option<&Lock>,
+    tasks: &[(TaskRecord, Status)],
 ) -> anyhow::Result<bool> {
     let Some(workspaces) = herdr.workspaces_if_running(host)? else {
         return Ok(false);
@@ -114,16 +122,15 @@ fn close_task_workspace(
         ))
         .into());
     }
-    let panes = herdr.panes(host)?;
-    let pane = panes.iter().find(|pane| pane.pane_id == target.pane_id);
-    if pane.is_none_or(|pane| pane.workspace_id != target.workspace_id) {
-        let found = match pane {
-            Some(pane) => format!("lists it in workspace {}", pane.workspace_id),
-            None => "does not list it".to_owned(),
-        };
+    let task = Owner::Task(id.to_owned());
+    let other = herdr.agents(host)?.iter().any(|agent| {
+        agent.pane_id == target.pane_id && owner::owner(&host.name, agent, lock, tasks) != task
+    });
+    if other {
         return Err(Refused(format!(
-            "task {id}'s pane {} is not in workspace {} on {}: herdr {found}; flow closed nothing",
-            target.pane_id, target.workspace_id, host.name
+            "task {id}'s pane {} on {} runs another agent than the task's worker; herdr reuses \
+             pane ids, so flow closed nothing",
+            target.pane_id, host.name
         ))
         .into());
     }

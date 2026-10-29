@@ -1,15 +1,10 @@
 //! Observed sessions, the ones the user started by hand in herdr: each herdr agent is matched to
-//! the task whose herdr target is its pane, an adopted session's included, or to the supervisor
-//! when it runs in the pane `state/supervisor/lock.json` names, or shown as observed, whatever
-//! herdr session it is in, with the Claude Code session it runs and that session's latest summary,
-//! read from Claude Code's session registry and transcripts. herdr reuses pane ids after a server
-//! restart, so a pane match holds only when the Claude Code session herdr reports for the agent
-//! does not contradict the task's or the supervisor's (see `task_runs` and `Lock::identify`). An
-//! agent in the supervisor's pane and workspace whose identity cannot be confirmed may be the
-//! supervisor, whatever its cwd,, and is neither the supervisor nor observed. Reading is all flow
-//! does there; it never writes Claude Code's state. Any observed session turning `blocked` wakes
-//! the supervisor; the follow list, `state/supervisor/follow.json`, names the followed ones, whose
-//! other state changes should wake it too.
+//! its owner (see `owner::owner`), whatever herdr session it is in, with the Claude Code session
+//! it runs and that session's latest summary, read from Claude Code's session registry and
+//! transcripts. Reading is all flow does there; it never writes Claude Code's state. Any observed
+//! session turning `blocked` wakes the supervisor; the follow list,
+//! `state/supervisor/follow.json`, names the followed ones, whose other state changes should
+//! wake it too.
 //!
 //! herdr can report an agent's Claude Code session id, which names its registry session
 //! exactly. An agent it reports none for is matched by cwd, and only when no other such agent
@@ -27,10 +22,11 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::herdr::Agent;
+use crate::owner::{self, Owner};
 use crate::paths::StateDir;
 use crate::state::fs::{with_lock, write_atomic};
 use crate::state::task::{Status, TaskRecord};
-use crate::supervisor::{Identity, Lock};
+use crate::supervisor::Lock;
 
 /// The most of a transcript's end `latest_summary` reads.
 const SUMMARY_WINDOW: u64 = 1024 * 1024;
@@ -80,13 +76,10 @@ struct TranscriptLine {
 pub struct MatchedAgent {
     pub host: String,
     pub agent: Agent,
-    /// The task whose worker runs in the agent's pane; `None` for a hand-started session.
+    /// The task whose worker the agent is; `None` for a hand-started session.
     pub task: Option<String>,
     /// Whether the agent is the supervisor.
     pub supervisor: bool,
-    /// Whether the agent sits in the supervisor's pane, cwd and workspace but herdr's view does
-    /// not confirm it is the supervisor (see `Lock::identify`). Such an agent is not observed.
-    pub maybe_supervisor: bool,
     /// Whether the agent is a hand-started session in the follow list.
     pub followed: bool,
     pub session: Option<RegistrySession>,
@@ -96,39 +89,9 @@ pub struct MatchedAgent {
 }
 
 impl MatchedAgent {
-    /// Whether the agent is an observed session: neither a task's worker nor the supervisor, nor
-    /// possibly the supervisor.
+    /// Whether the agent is an observed session: neither a task's worker nor the supervisor.
     pub fn is_observed(&self) -> bool {
-        self.task.is_none() && !self.supervisor && !self.maybe_supervisor
-    }
-}
-
-/// What keeps a herdr agent from being an observed session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Holder<'a> {
-    /// The task whose herdr target is the agent's pane.
-    Task(&'a TaskRecord),
-    Supervisor,
-    /// An agent in the supervisor's pane that may be the supervisor.
-    MaybeSupervisor,
-}
-
-/// What holds `agent`, which herdr lists on `host`: the task running it (see `task_in_pane`),
-/// else the supervisor when `supervisor`, its running lock, shows the agent is or may be the
-/// supervisor; `None` for an observed session.
-pub fn holder<'a>(
-    tasks: &'a [(TaskRecord, Status)],
-    supervisor: Option<&Lock>,
-    host: &str,
-    agent: &Agent,
-) -> Option<Holder<'a>> {
-    if let Some((record, _)) = task_in_pane(host, agent, tasks) {
-        return Some(Holder::Task(record));
-    }
-    match supervisor?.in_pane(host, agent, tasks)? {
-        Identity::Supervisor => Some(Holder::Supervisor),
-        Identity::Unconfirmed => Some(Holder::MaybeSupervisor),
-        Identity::Other => None,
+        self.task.is_none() && !self.supervisor
     }
 }
 
@@ -324,9 +287,8 @@ fn away_summary(line: &[u8]) -> Option<String> {
         .flatten()
 }
 
-/// Matches each agent of `hosts`, herdr's agents per host, to the task running it (see
-/// `task_in_pane`), or to the supervisor when `supervisor`, its running lock, shows the agent is
-/// the supervisor, and to a registry session. A task's agent gets the task's own Claude Code
+/// Matches each agent of `hosts`, herdr's agents per host, to its owner, given `supervisor`, the
+/// running lock, and to a registry session. A task's agent gets the task's own Claude Code
 /// session when the registry has it. Any other agent herdr reports a session id for gets the
 /// registry session with that id, or none when the registry lacks it. An agent with neither is
 /// matched by cwd only when no other such agent on any host shares its cwd: it gets the most
@@ -343,19 +305,19 @@ pub fn match_agents(
         .iter()
         .flat_map(|(host, agents)| agents.iter().map(move |agent| (*host, agent)))
         .map(|(host, agent)| {
-            let task = task_in_pane(host, agent, tasks);
-            let identity = supervisor
-                .filter(|_| task.is_none())
-                .and_then(|lock| lock.in_pane(host, agent, tasks));
-            let task_session = task
-                .and_then(|(_, status)| status.claude_session.as_ref())
-                .and_then(|claude| by_id(&claude.session_id));
+            let owner = owner::owner(host, agent, supervisor, tasks);
+            let task_session = match &owner {
+                Owner::Task(id) => tasks
+                    .iter()
+                    .find(|(record, _)| record.id == *id)
+                    .and_then(|(_, status)| status.claude_session.as_ref())
+                    .and_then(|claude| by_id(&claude.session_id)),
+                _ => None,
+            };
             Found {
                 host,
                 agent,
-                task,
-                supervisor: identity == Some(Identity::Supervisor),
-                maybe_supervisor: identity == Some(Identity::Unconfirmed),
+                owner,
                 task_session,
             }
         })
@@ -394,9 +356,11 @@ pub fn match_agents(
             MatchedAgent {
                 host: f.host.to_owned(),
                 agent: f.agent.clone(),
-                task: f.task.map(|(record, _)| record.id.clone()),
-                supervisor: f.supervisor,
-                maybe_supervisor: f.maybe_supervisor,
+                task: match &f.owner {
+                    Owner::Task(id) => Some(id.clone()),
+                    _ => None,
+                },
+                supervisor: f.owner == Owner::Supervisor,
                 followed: false,
                 session: session.cloned(),
                 matched_by: session.map(|_| matched_by),
@@ -406,14 +370,11 @@ pub fn match_agents(
         .collect()
 }
 
-/// An agent on its host, with the task whose worker runs in its pane and that task's registry
-/// session.
+/// An agent on its host, with its owner and, for a task's worker, the task's registry session.
 struct Found<'a> {
     host: &'a str,
     agent: &'a Agent,
-    task: Option<&'a (TaskRecord, Status)>,
-    supervisor: bool,
-    maybe_supervisor: bool,
+    owner: Owner,
     task_session: Option<&'a RegistrySession>,
 }
 
@@ -422,64 +383,6 @@ impl Found<'_> {
     fn unidentified(&self) -> bool {
         self.task_session.is_none() && self.agent.agent_session_id.is_none()
     }
-}
-
-/// The task running `agent`, which herdr lists on `host`, preferring an open task, then the
-/// newest: one whose herdr target is the agent's pane in the agent's herdr session, and which
-/// `task_runs` it.
-fn task_in_pane<'a>(
-    host: &str,
-    agent: &Agent,
-    tasks: &'a [(TaskRecord, Status)],
-) -> Option<&'a (TaskRecord, Status)> {
-    tasks_in_pane(
-        tasks,
-        host,
-        &agent.session,
-        &agent.pane_id,
-        agent.agent_session_id.as_deref(),
-    )
-    .max_by_key(|(record, status)| (status.state.is_open(), record.created))
-}
-
-/// The tasks whose herdr target is the pane `pane_id` in herdr session `session` on `host` and
-/// which `task_runs` the agent there, herdr reporting `agent_session_id` for it. `flow task
-/// close` clears a target, so a task here that is not open has not been closed yet.
-pub fn tasks_in_pane<'a>(
-    tasks: &'a [(TaskRecord, Status)],
-    host: &str,
-    session: &str,
-    pane_id: &str,
-    agent_session_id: Option<&str>,
-) -> impl Iterator<Item = &'a (TaskRecord, Status)> {
-    tasks.iter().filter(move |(_, status)| {
-        status
-            .herdr
-            .as_ref()
-            .is_some_and(|target| target.is(host, session, pane_id))
-            && task_runs(status, agent_session_id)
-    })
-}
-
-/// Whether the task `status` describes runs the agent herdr lists in its target's pane,
-/// reporting `agent_session_id` for it. herdr reuses pane ids after a server restart, so the
-/// pane alone does not tell. When the task recorded its Claude Code session and herdr reports
-/// the agent's, they must be the same; otherwise only an open task holds its pane.
-pub fn task_runs(status: &Status, agent_session_id: Option<&str>) -> bool {
-    let recorded = status
-        .claude_session
-        .as_ref()
-        .map(|claude| claude.session_id.as_str());
-    match (recorded, agent_session_id) {
-        (Some(recorded), Some(reported)) => recorded == reported,
-        _ => status.state.is_open(),
-    }
-}
-
-/// Whether herdr gave an open task's pane to another session: the agent there reports a Claude
-/// Code session other than the one the task recorded.
-pub fn pane_reused(status: &Status, agent_session_id: Option<&str>) -> bool {
-    status.state.is_open() && !task_runs(status, agent_session_id)
 }
 
 #[cfg(test)]
@@ -624,7 +527,6 @@ mod tests {
             title: String::new(),
             session: session.to_owned(),
             agent_session_id: None,
-            workspace_label: None,
         }
     }
 
@@ -685,7 +587,7 @@ mod tests {
     fn match_prefers_task_pane_over_cwd() {
         let agents = [
             // The task's worker, in the same cwd as a newer hand session.
-            agent("flow", "w1:p1", "/work/repo"),
+            reporting("s-task", agent("flow", "w1:p1", "/work/repo")),
             // A hand session in the default herdr session, whose pane ids are its own.
             agent("default", "w1:p1", "/work/repo"),
             agent("default", "w2:p1", "/work/elsewhere"),
@@ -733,10 +635,8 @@ mod tests {
             agent("flow", "w1:p1", "/work/repo"),
             agent("default", "w1:p1", "/work/repo"),
         ];
-        let mut adopted = task("aaaaaaab", "host-a", "w1:p1", "s-task");
-        if let Some(target) = &mut adopted.1.herdr {
-            target.session = "default".to_owned();
-        }
+        let mut adopted = in_default(task("aaaaaaab", "host-a", "w1:p1", "s-task"));
+        adopted.1.claude_session = None;
 
         let matched = match_agents(&[("host-a", &agents)], &[adopted], None, &[]);
 
@@ -827,13 +727,13 @@ mod tests {
     #[test]
     fn workers_the_supervisor_and_hand_sessions_share_one_herdr_session() {
         let agents = [
-            Agent {
-                workspace_label: Some("flow-supervisor".to_owned()),
-                ..agent("default", "w1:p1", "/workspaces/flow")
-            },
-            agent("default", "w2:p1", "/work/repo.wt/feature"),
+            reporting("s-sup", agent("default", "w1:p1", "/workspaces/flow")),
+            reporting(
+                "s-worker",
+                agent("default", "w2:p1", "/work/repo.wt/feature"),
+            ),
             agent("default", "w3:p1", "/work/repo"),
-            agent("default", "w4:p1", "/work/other"),
+            reporting("s-adopted", agent("default", "w4:p1", "/work/other")),
         ];
         let mut worker = task("aaaaaaab", "host-a", "w2:p1", "s-worker");
         let mut adopted = task("aaaaaaac", "host-a", "w4:p1", "s-adopted");
@@ -843,7 +743,7 @@ mod tests {
                 target.session = "default".to_owned();
             }
         }
-        let supervisor = supervisor_lock("w1:p1", None);
+        let supervisor = supervisor_lock("w1:p1", Some("s-sup"));
 
         let matched = match_agents(
             &[("host-a", &agents)],
@@ -890,231 +790,5 @@ mod tests {
             target.session = "default".to_owned();
         }
         task
-    }
-
-    #[test]
-    fn a_task_claims_its_pane_while_open_or_when_its_session_runs_there() {
-        let open = in_default(task("aaaaaaab", "host-a", "w1:p1", "s-worker"));
-        let mut done = open.clone();
-        done.1.state = crate::state::task::State::Done;
-        let hand = || agent("default", "w1:p1", "/work/repo");
-        let cases = [
-            (&open, hand(), Some("aaaaaaab")),
-            (&open, reporting("s-worker", hand()), Some("aaaaaaab")),
-            (&open, reporting("s-hand", hand()), None),
-            (&done, hand(), None),
-            (&done, reporting("s-hand", hand()), None),
-            (&done, reporting("s-worker", hand()), Some("aaaaaaab")),
-        ];
-        for (task, agent, expected) in cases {
-            let agents = [agent];
-            let tasks = [task.clone()];
-            let matched = match_agents(&[("host-a", &agents)], &tasks, None, &[]);
-            assert_eq!(
-                matched[0].task.as_deref(),
-                expected,
-                "{:?} with {:?}",
-                task.1.state,
-                agents[0].agent_session_id
-            );
-            assert_eq!(matched[0].is_observed(), expected.is_none());
-            let held = holder(&tasks, None, "host-a", &agents[0]);
-            assert_eq!(
-                held.map(|held| match held {
-                    Holder::Task(record) => record.id.as_str(),
-                    Holder::Supervisor | Holder::MaybeSupervisor => "supervisor",
-                }),
-                expected
-            );
-        }
-    }
-
-    #[test]
-    fn an_open_tasks_worker_in_the_supervisors_pane_is_not_the_supervisor() {
-        let lock = supervisor_lock("w1:p1", Some("s-sup"));
-        let in_clone = || agent("default", "w1:p1", "/workspaces/flow");
-        let elsewhere = in_default(task("aaaaaaab", "host-a", "w9:p1", "s-worker"));
-        let mut done = elsewhere.clone();
-        done.1.state = crate::state::task::State::Done;
-        let mut unrecorded = in_default(task("aaaaaaac", "host-a", "w1:p1", "unused"));
-        unrecorded.1.claude_session = None;
-        let conflicting = in_default(task("aaaaaaac", "host-a", "w1:p1", "s-other"));
-        let mut done_here = in_default(task("aaaaaaac", "host-a", "w1:p1", "s-worker"));
-        done_here.1.state = crate::state::task::State::Done;
-        let labelled = || Agent {
-            workspace_label: Some(crate::supervisor::SUPERVISOR_NAME.to_owned()),
-            ..in_clone()
-        };
-        let unlocked = supervisor_lock("w1:p1", None);
-        let cases = [
-            (
-                &lock,
-                &elsewhere,
-                reporting("s-worker", in_clone()),
-                Identity::Other,
-            ),
-            (
-                &unlocked,
-                &elsewhere,
-                reporting("s-worker", labelled()),
-                Identity::Other,
-            ),
-            (
-                &lock,
-                &done,
-                reporting("s-worker", in_clone()),
-                Identity::Unconfirmed,
-            ),
-            (&lock, &unrecorded, in_clone(), Identity::Other),
-            (
-                &lock,
-                &unrecorded,
-                reporting("s-hand", in_clone()),
-                Identity::Other,
-            ),
-            (&lock, &unrecorded, labelled(), Identity::Supervisor),
-            (
-                &lock,
-                &unrecorded,
-                reporting("s-new", labelled()),
-                Identity::Other,
-            ),
-            (
-                &lock,
-                &conflicting,
-                reporting("s-hand", in_clone()),
-                Identity::Unconfirmed,
-            ),
-            (
-                &lock,
-                &elsewhere,
-                reporting("s-sup", in_clone()),
-                Identity::Supervisor,
-            ),
-            (
-                &lock,
-                &done_here,
-                reporting("s-worker", in_clone()),
-                Identity::Unconfirmed,
-            ),
-        ];
-        for (lock, task, agent, expected) in cases {
-            let tasks = [task.clone()];
-            assert_eq!(
-                lock.in_pane("host-a", &agent, &tasks),
-                Some(expected),
-                "{} {:?} with {:?}",
-                task.0.id,
-                task.1.state,
-                agent.agent_session_id
-            );
-        }
-    }
-
-    #[test]
-    fn a_reused_task_pane_is_reported_for_an_open_task_only() {
-        let open = in_default(task("aaaaaaab", "host-a", "w1:p1", "s-worker"));
-        let mut done = open.clone();
-        done.1.state = crate::state::task::State::Done;
-        assert!(pane_reused(&open.1, Some("s-hand")));
-        assert!(!pane_reused(&open.1, Some("s-worker")));
-        assert!(!pane_reused(&open.1, None));
-        assert!(!pane_reused(&done.1, Some("s-hand")));
-        let mut unrecorded = open.clone();
-        unrecorded.1.claude_session = None;
-        assert!(!pane_reused(&unrecorded.1, Some("s-hand")));
-    }
-
-    #[test]
-    fn the_supervisor_is_told_by_its_session_or_else_by_cwd_workspace_and_label() {
-        let labelled = |label: &str, agent: Agent| Agent {
-            workspace_label: Some(label.to_owned()),
-            ..agent
-        };
-        let in_clone = || {
-            labelled(
-                "flow-supervisor",
-                agent("default", "w1:p1", "/workspaces/flow"),
-            )
-        };
-        let elsewhere = || labelled("flow-supervisor", agent("default", "w1:p1", "/work/repo"));
-        let moved = || Agent {
-            workspace_id: "w4".to_owned(),
-            ..in_clone()
-        };
-        // (supervisor, maybe the supervisor)
-        let yes = (true, false);
-        let other = (false, false);
-        let maybe = (false, true);
-        let cases = [
-            (Some("s-sup"), reporting("s-sup", elsewhere()), yes),
-            (
-                Some("s-sup"),
-                reporting("s-sup", agent("default", "w1:p1", "/work/repo")),
-                yes,
-            ),
-            (Some("s-sup"), reporting("s-hand", in_clone()), maybe),
-            (Some("s-sup"), reporting("s-hand", elsewhere()), maybe),
-            (Some("s-sup"), in_clone(), yes),
-            (None, in_clone(), yes),
-            (None, reporting("s-hand", in_clone()), yes),
-            (None, elsewhere(), maybe),
-            (None, agent("default", "w2:p1", "/workspaces/flow"), other),
-            (Some("s-sup"), moved(), other),
-            (None, moved(), other),
-            (Some("s-sup"), reporting("s-hand", moved()), other),
-            (Some("s-sup"), labelled("my notes", in_clone()), maybe),
-            (None, labelled("my notes", in_clone()), maybe),
-            (None, agent("default", "w1:p1", "/workspaces/flow"), maybe),
-            (
-                None,
-                labelled(
-                    "flow-supervisor",
-                    agent("default", "w1:p1", "/workspaces/flow/docs"),
-                ),
-                maybe,
-            ),
-            (
-                Some("s-sup"),
-                reporting(
-                    "s-hand",
-                    labelled(
-                        "flow-supervisor",
-                        agent("default", "w1:p1", "/workspaces/flow/docs"),
-                    ),
-                ),
-                maybe,
-            ),
-            (
-                None,
-                labelled(
-                    "flow-supervisor",
-                    agent("default", "w1:p1", "/workspaces/flow-notes"),
-                ),
-                maybe,
-            ),
-        ];
-        for (recorded, agent, (supervisor, maybe_supervisor)) in cases {
-            let lock = supervisor_lock("w1:p1", recorded);
-            let agents = [agent];
-            let matched = match_agents(&[("host-a", &agents)], &[], Some(&lock), &[]);
-            let seen = (matched[0].supervisor, matched[0].maybe_supervisor);
-            assert_eq!(
-                seen,
-                (supervisor, maybe_supervisor),
-                "lock {recorded:?}, agent {:?}",
-                agents[0]
-            );
-            assert_eq!(matched[0].is_observed(), !supervisor && !maybe_supervisor);
-            let held = holder(&[], Some(&lock), "host-a", &agents[0]);
-            let expected = if supervisor {
-                Some(Holder::Supervisor)
-            } else if maybe_supervisor {
-                Some(Holder::MaybeSupervisor)
-            } else {
-                None
-            };
-            assert_eq!(held, expected);
-        }
     }
 }

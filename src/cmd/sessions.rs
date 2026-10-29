@@ -13,7 +13,8 @@ use super::Refused;
 use crate::herdr::{Agent, AgentStatus};
 use crate::host;
 use crate::inventory::{self, FlowServer, HostInventory};
-use crate::observe::{self, FollowList, Followed, Holder, MatchedAgent};
+use crate::observe::{self, FollowList, Followed, MatchedAgent};
+use crate::owner::{self, Owner};
 use crate::paths::StateDir;
 use crate::render;
 use crate::runner::{self, Runner};
@@ -25,7 +26,6 @@ use crate::supervisor;
 const OBSERVED: &str = "observed";
 const FOLLOWED: &str = "followed";
 const SUPERVISOR: &str = "supervisor";
-const MAYBE_SUPERVISOR: &str = "supervisor?";
 const HEADER: [&str; 4] = ["HOST", "STATUS", "TASK", "TITLE"];
 const SUMMARY_WIDTH: usize = 100;
 
@@ -93,7 +93,7 @@ fn agents_by_host(inventories: &[HostInventory]) -> Vec<(&str, &[Agent])> {
 pub fn run_follow(state: &StateDir, host: &str, target: &str) -> anyhow::Result<()> {
     let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
     let listed = host_agents(state, &runner, host)?;
-    let agent = resolve(&listed, host, target)?;
+    let (agent, _) = resolve(&listed, host, target)?;
     let followed = Followed {
         host: host.to_owned(),
         pane_id: agent.pane_id.clone(),
@@ -119,7 +119,7 @@ pub fn run_unfollow(state: &StateDir, host: &str, target: &str) -> anyhow::Resul
     let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
     let listed = host_agents(state, &runner, host)?;
     let (session, pane_id) = match resolve(&listed, host, target) {
-        Ok(agent) => (agent.session.clone(), agent.pane_id.clone()),
+        Ok((agent, _)) => (agent.session.clone(), agent.pane_id.clone()),
         Err(refused) => {
             let follow = FollowList::load(state)?.follow;
             match stale_entries(&follow, host, target).as_slice() {
@@ -151,11 +151,11 @@ pub fn run_unfollow(state: &StateDir, host: &str, target: &str) -> anyhow::Resul
     Ok(())
 }
 
-/// A host's herdr agents in every listed herdr session, split into the observed sessions and
-/// the agents a task or the supervisor holds.
+/// A host's herdr agents in every listed herdr session, split into the observed sessions, with
+/// their owners, and the agents a task or the supervisor holds.
 #[derive(Debug, Default)]
 pub(super) struct HostAgents {
-    pub observed: Vec<Agent>,
+    pub observed: Vec<(Agent, Owner)>,
     /// Each agent whose pane a task or the supervisor holds, with what holds it, as `is <...>`
     /// reads.
     pub held: Vec<(Agent, String)>,
@@ -212,18 +212,10 @@ pub(super) fn host_agents(
     let supervisor = supervisor::running(state)?;
     let mut split = HostAgents::default();
     for agent in agents {
-        let holder = observe::holder(&tasks, supervisor.as_ref(), &host.name, &agent);
-        match holder {
-            None => split.observed.push(agent),
-            Some(Holder::Task(record)) => {
-                let held = format!("already task {}", record.id);
-                split.held.push((agent, held));
-            }
-            Some(Holder::Supervisor) => split.held.push((agent, "the supervisor's".to_owned())),
-            Some(Holder::MaybeSupervisor) => split.held.push((
-                agent,
-                "in the supervisor's workspace and may be the supervisor".to_owned(),
-            )),
+        match owner::owner(&host.name, &agent, supervisor.as_ref(), &tasks) {
+            Owner::Task(id) => split.held.push((agent, format!("already task {id}"))),
+            Owner::Supervisor => split.held.push((agent, "the supervisor's".to_owned())),
+            owner => split.observed.push((agent, owner)),
         }
     }
     Ok(split)
@@ -237,16 +229,19 @@ pub(super) fn resolve<'a>(
     listed: &'a HostAgents,
     host: &str,
     target: &str,
-) -> Result<&'a Agent, Refused> {
+) -> Result<&'a (Agent, Owner), Refused> {
     let hands = &listed.observed;
-    let titled: Vec<&Agent> = hands.iter().filter(|agent| agent.title == target).collect();
+    let titled: Vec<&(Agent, Owner)> = hands
+        .iter()
+        .filter(|(agent, _)| agent.title == target)
+        .collect();
     match titled.as_slice() {
-        [agent] => return Ok(agent),
+        [hand] => return Ok(hand),
         [] => {}
         several => {
             let candidates: Vec<String> = several
                 .iter()
-                .map(|agent| format!("{}  {}", agent.pane_id, agent.title))
+                .map(|(agent, _)| format!("{}  {}", agent.pane_id, agent.title))
                 .collect();
             return Err(Refused(format!(
                 "several hand sessions on {host} are titled \"{target}\"; pass the pane id:\n{}",
@@ -255,9 +250,9 @@ pub(super) fn resolve<'a>(
         }
     }
     let (session, pane_id) = pane_ref(target);
-    let in_pane: Vec<&Agent> = hands
+    let in_pane: Vec<&(Agent, Owner)> = hands
         .iter()
-        .filter(|agent| {
+        .filter(|(agent, _)| {
             agent.pane_id == pane_id && session.is_none_or(|session| agent.session == session)
         })
         .collect();
@@ -266,7 +261,7 @@ pub(super) fn resolve<'a>(
             || (agent.pane_id == pane_id && session.is_none_or(|session| agent.session == session))
     });
     match (in_pane.as_slice(), held) {
-        ([agent], _) => Ok(agent),
+        ([hand], _) => Ok(hand),
         ([], Some((agent, holder))) => Err(Refused(format!(
             "pane {} on {host} is {holder}",
             agent.pane_id
@@ -279,7 +274,7 @@ pub(super) fn resolve<'a>(
             pane_id,
             several
                 .iter()
-                .map(|agent| (agent.session.as_str(), agent.title.as_str())),
+                .map(|(agent, _)| (agent.session.as_str(), agent.title.as_str())),
         )),
     }
 }
@@ -395,8 +390,6 @@ fn render_text(
                 entry.task.clone().unwrap_or_else(|| {
                     let mark = if entry.supervisor {
                         SUPERVISOR
-                    } else if entry.maybe_supervisor {
-                        MAYBE_SUPERVISOR
                     } else if entry.followed {
                         FOLLOWED
                     } else {
@@ -493,11 +486,9 @@ mod tests {
                 title: title.to_owned(),
                 session: "default".to_owned(),
                 agent_session_id: None,
-                workspace_label: None,
             },
             task: task.map(str::to_owned),
             supervisor: false,
-            maybe_supervisor: false,
             followed: false,
             session: None,
             matched_by: None,
@@ -539,7 +530,10 @@ mod tests {
 
     fn observed(hands: &[Agent]) -> HostAgents {
         HostAgents {
-            observed: hands.to_vec(),
+            observed: hands
+                .iter()
+                .map(|hand| (hand.clone(), Owner::Observed))
+                .collect(),
             held: Vec::new(),
         }
     }
@@ -561,17 +555,19 @@ mod tests {
              other/w1:p1  Fix links"
         );
         assert_eq!(
-            resolve(&hands, "host-b", "other/w1:p1").unwrap().title,
+            resolve(&hands, "host-b", "other/w1:p1").unwrap().0.title,
             "Fix links"
         );
-        assert_eq!(resolve(&hands, "host-b", "w1:p2").unwrap().session, "other");
+        assert_eq!(
+            resolve(&hands, "host-b", "w1:p2").unwrap().0.session,
+            "other"
+        );
         assert!(resolve(&hands, "host-b", "default/w1:p2").is_err());
     }
 
     #[test]
     fn resolve_names_what_holds_a_task_or_supervisor_pane() {
         let listed = HostAgents {
-            observed: vec![hand("default", "w3:p1", "Tidy docs")],
             held: vec![
                 (
                     hand("default", "w1:p1", "flow-supervisor"),
@@ -582,6 +578,7 @@ mod tests {
                     "already task aaaaaaab".to_owned(),
                 ),
             ],
+            ..observed(&[hand("default", "w3:p1", "Tidy docs")])
         };
 
         assert_eq!(
@@ -593,7 +590,7 @@ mod tests {
             "pane w1:p1 on host-b is the supervisor's"
         );
         assert_eq!(
-            resolve(&listed, "host-b", "w3:p1").unwrap().title,
+            resolve(&listed, "host-b", "w3:p1").unwrap().0.title,
             "Tidy docs"
         );
     }
@@ -602,7 +599,6 @@ mod tests {
     fn render_marks_the_supervisor() {
         let matched = [MatchedAgent {
             supervisor: true,
-            maybe_supervisor: false,
             ..entry("host-a", AgentStatus::Idle, "flow-supervisor", None)
         }];
 

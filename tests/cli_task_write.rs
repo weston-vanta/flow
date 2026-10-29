@@ -483,16 +483,18 @@ fn workspaces_with_w2(label: &str) -> Value {
     json!({"argv": ["workspace", "list"], "status": 0, "stdout": list.to_string(), "stderr": ""})
 }
 
-/// `pane list` answering with one pane per `(pane_id, workspace_id)`.
-fn panes(panes: &[(&str, &str)]) -> Value {
-    let panes: Vec<Value> = panes
+/// `agent list` answering with one agent per `(pane_id, Claude Code session)`.
+fn agents(agents: &[(&str, &str)]) -> Value {
+    let agents: Vec<Value> = agents
         .iter()
-        .map(|(pane_id, workspace_id)| {
-            json!({"pane_id": pane_id, "workspace_id": workspace_id, "cwd": "/tmp"})
+        .map(|(pane_id, session)| {
+            json!({"pane_id": pane_id, "workspace_id": pane_id.split(':').next().unwrap(),
+                "agent": "claude", "agent_status": "idle",
+                "agent_session": {"kind": "id", "value": session}})
         })
         .collect();
-    let list = json!({"id": "cli:pane:list", "result": {"type": "pane_list", "panes": panes}});
-    json!({"argv": ["pane", "list"], "status": 0, "stdout": list.to_string(), "stderr": ""})
+    let list = json!({"id": "cli:agent:list", "result": {"type": "agent_list", "agents": agents}});
+    json!({"argv": ["agent", "list"], "status": 0, "stdout": list.to_string(), "stderr": ""})
 }
 
 fn closed() -> Value {
@@ -503,7 +505,7 @@ fn closed() -> Value {
 fn task_workspace_closes() -> Vec<Value> {
     vec![
         workspaces_with_w2(TASK_LABEL),
-        panes(&[("w1:p1", "w1"), ("w2:p1", "w2")]),
+        agents(&[("w1:p1", "s-hand"), ("w2:p1", "s-worker")]),
         closed(),
     ]
 }
@@ -515,8 +517,9 @@ fn herdr_argvs(script_path: &Path) -> Vec<Value> {
         .collect()
 }
 
-/// `setup()` with the task `state`, its worker in workspace `w2` on `host-a`, the host's cached
-/// record, and a fake runner answering `script`; returns the runner's script path.
+/// `setup()` with the task `state`, its worker in workspace `w2` on `host-a` with Claude Code
+/// session `s-worker`, the host's cached record, and a fake runner answering `script`; returns
+/// the runner's script path.
 fn setup_close(
     state_name: State,
     script: &[Value],
@@ -531,6 +534,10 @@ fn setup_close(
                 pane_id: "w2:p1".to_owned(),
                 agent: "claude".to_owned(),
                 session: "default".to_owned(),
+            });
+            status.claude_session = Some(flow::state::task::ClaudeSession {
+                session_id: "s-worker".to_owned(),
+                transcript_path: PathBuf::new(),
             });
         })
         .unwrap();
@@ -578,7 +585,7 @@ fn close_closes_a_done_task_workspace_and_keeps_the_record() {
         herdr_argvs(&script),
         [
             json!(["herdr", "--session", "default", "workspace", "list"]),
-            json!(["herdr", "--session", "default", "pane", "list"]),
+            json!(["herdr", "--session", "default", "agent", "list"]),
             json!(["herdr", "--session", "default", "workspace", "close", "w2"]),
         ]
     );
@@ -658,7 +665,7 @@ fn close_of_a_workspace_already_gone_still_retires_the_pane() {
         (
             vec![
                 workspaces_with_w2(TASK_LABEL),
-                panes(&[("w2:p1", "w2")]),
+                agents(&[]),
                 closed_meanwhile,
             ],
             3,
@@ -714,39 +721,53 @@ fn close_refuses_a_workspace_id_listed_under_another_label() {
 }
 
 #[test]
-fn close_refuses_when_the_task_pane_is_not_in_its_workspace() {
-    for (listed, where_) in [
-        (vec![("w2:p2", "w2")], "does not list it"),
-        (vec![("w2:p1", "w5")], "lists it in workspace w5"),
-    ] {
-        let script = [workspaces_with_w2(TASK_LABEL), panes(&listed), closed()];
-        let (_repo, state, store, script) = setup_close(State::Done, &script);
+fn close_refuses_when_another_agent_runs_in_the_task_pane() {
+    let script = [
+        workspaces_with_w2(TASK_LABEL),
+        agents(&[("w2:p1", "s-hand")]),
+        closed(),
+    ];
+    let (_repo, state, store, script) = setup_close(State::Done, &script);
 
-        let out = flow(&state)
+    let out = flow(&state)
+        .env("FLOW_FAKE_RUNNER", &script)
+        .args(["task", "close", TASK])
+        .assert()
+        .code(2)
+        .get_output()
+        .clone();
+
+    assert_eq!(
+        String::from_utf8(out.stderr).unwrap(),
+        format!(
+            "task {TASK}'s pane w2:p1 on host-a runs another agent than the task's worker; herdr \
+             reuses pane ids, so flow closed nothing\n"
+        )
+    );
+    assert_eq!(herdr_argvs(&script).len(), 2);
+    assert!(store.task(TASK).unwrap().1.herdr.is_some());
+}
+
+#[test]
+fn close_closes_a_workspace_whose_task_pane_holds_no_agent() {
+    let script = [workspaces_with_w2(TASK_LABEL), agents(&[]), closed()];
+    let (_repo, state, store, script) = setup_close(State::Done, &script);
+
+    let out = stdout(
+        flow(&state)
             .env("FLOW_FAKE_RUNNER", &script)
-            .args(["task", "close", TASK])
-            .assert()
-            .code(2)
-            .get_output()
-            .clone();
+            .args(["task", "close", TASK]),
+    );
 
-        assert_eq!(
-            String::from_utf8(out.stderr).unwrap(),
-            format!(
-                "task {TASK}'s pane w2:p1 is not in workspace w2 on host-a: herdr {where_}; \
-                 flow closed nothing\n"
-            )
-        );
-        assert_eq!(herdr_argvs(&script).len(), 2);
-        assert!(store.task(TASK).unwrap().1.herdr.is_some());
-    }
+    assert_eq!(out, format!("closed {TASK} (workspace w2 on host-a)\n"));
+    assert_eq!(store.task(TASK).unwrap().1.herdr, None);
 }
 
 #[test]
 fn close_accepts_a_workspace_labelled_with_the_task_id_alone() {
     let script = [
         workspaces_with_w2(TASK),
-        panes(&[("w2:p1", "w2")]),
+        agents(&[("w2:p1", "s-worker")]),
         closed(),
     ];
     let (_repo, state, store, script) = setup_close(State::Done, &script);

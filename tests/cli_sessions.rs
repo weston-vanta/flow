@@ -42,7 +42,7 @@ const SERVER_RUNNING: &str = "status: running\nversion: 0.9.5\nendpoint_compatib
      private_protocol: 22\nprivate_protocol_compatible: yes\n\
      socket: /home/dev/.config/herdr/sessions/flow/herdr.sock\n";
 
-const FLOW_AGENTS: &str = r#"{"id":"cli:agent:list","result":{"agents":[{"agent":"claude","agent_status":"working","cwd":"/work/repo.wt/feature","pane_id":"w1:p1","terminal_title":"✳ aaaaaaab","terminal_title_stripped":"aaaaaaab","workspace_id":"w1"}],"type":"agent_list"}}"#;
+const FLOW_AGENTS: &str = r#"{"id":"cli:agent:list","result":{"agents":[{"agent":"claude","agent_session":{"agent":"claude","kind":"id","source":"herdr:claude","value":"00000000-0000-4000-8000-000000000002"},"agent_status":"working","cwd":"/work/repo.wt/feature","pane_id":"w1:p1","terminal_title":"✳ aaaaaaab","terminal_title_stripped":"aaaaaaab","workspace_id":"w1"}],"type":"agent_list"}}"#;
 
 const DEFAULT_AGENTS: &str = r#"{"id":"cli:agent:list","result":{"agents":[{"agent":"claude","agent_status":"idle","cwd":"/work/repo","pane_id":"w1:p1","terminal_title":"✳ Tidy docs","terminal_title_stripped":"Tidy docs","workspace_id":"w1"}],"type":"agent_list"}}"#;
 
@@ -327,7 +327,7 @@ fn sessions_match_hand_sessions_by_the_id_herdr_reports() {
     assert_eq!(
         matched,
         [
-            (&Value::Null, &Value::Null),
+            (&Value::Null, &json!(TASK_SESSION_ID)),
             (&json!(HAND_SESSION_ID), &json!(HAND_SESSION_ID)),
             (&json!(SECOND_SESSION_ID), &json!(SECOND_SESSION_ID)),
         ],
@@ -508,7 +508,8 @@ fn status_counts_observed_sessions_from_cache() {
     host_a["env_id"] = json!("env-0001");
     host_a["agents"] = json!([
         {"pane_id": "w1:p1", "workspace_id": "w1", "agent": "claude", "status": "working",
-         "cwd": "/work/repo.wt/feature", "title": "Build feature", "session": "flow"},
+         "cwd": "/work/repo.wt/feature", "title": "Build feature", "session": "flow",
+         "agent_session_id": TASK_SESSION_ID},
         {"pane_id": "w1:p1", "workspace_id": "w1", "agent": "claude", "status": "idle",
          "cwd": "/work/repo", "title": "Tidy docs", "session": "default"},
     ]);
@@ -775,23 +776,19 @@ fn sessions_mark_a_followed_hand_session() {
 }
 
 /// `default`'s agents on `host-a` when flow runs there too: the supervisor in `w1:p1`, task
-/// `aaaaaaab`'s worker in `w2:p1`, a hand session in `w3:p1`, and one adopted as task
-/// `aaaaaaac` in `w4:p1`.
+/// The supervisor in `w1:p1`, `aaaaaaab`'s worker in `w2:p1`, a hand session in `w3:p1`, and one
+/// adopted as task `aaaaaaac` in `w4:p1` before herdr reported its session.
 const SHARED_SESSION_AGENTS: &str = r#"{"id":"cli:agent:list","result":{"agents":[
-{"agent":"claude","agent_status":"idle","cwd":"/workspaces/flow","pane_id":"w1:p1","terminal_title_stripped":"flow-supervisor","workspace_id":"w1"},
-{"agent":"claude","agent_status":"working","cwd":"/work/repo.wt/feature","pane_id":"w2:p1","terminal_title_stripped":"aaaaaaab","workspace_id":"w2"},
+{"agent":"claude","agent_session":{"kind":"id","value":"s-sup"},"agent_status":"idle","cwd":"/workspaces/flow","pane_id":"w1:p1","terminal_title_stripped":"flow-supervisor","workspace_id":"w1"},
+{"agent":"claude","agent_session":{"kind":"id","value":"00000000-0000-4000-8000-000000000002"},"agent_status":"working","cwd":"/work/repo.wt/feature","pane_id":"w2:p1","terminal_title_stripped":"aaaaaaab","workspace_id":"w2"},
 {"agent":"claude","agent_status":"idle","cwd":"/work/other","pane_id":"w3:p1","terminal_title_stripped":"Tidy docs","workspace_id":"w3"},
 {"agent":"claude","agent_status":"idle","cwd":"/work/app","pane_id":"w4:p1","terminal_title_stripped":"Fix links","workspace_id":"w4"}
 ],"type":"agent_list"}}"#;
 
-/// `default`'s workspaces on `host-a` when flow runs there: `w1` is the supervisor's.
-const SHARED_SESSION_WORKSPACES: &str = r#"{"id":"cli:workspace:list","result":{"type":"workspace_list","workspaces":[
-{"workspace_id":"w1","label":"flow-supervisor"},{"workspace_id":"w2","label":"Build feature · aaaaaaab"},
-{"workspace_id":"w3","label":"docs"},{"workspace_id":"w4","label":"links"}]}}"#;
-
 impl Fixture {
-    /// flow in herdr's `default` session alone: the supervisor, task `TASK`'s worker and task
-    /// `aaaaaaac`, adopted, all in it on `host-a`, as `SHARED_SESSION_AGENTS` lists them.
+    /// flow in herdr's `default` session alone: the supervisor, with Claude Code session
+    /// `s-sup`, task `TASK`'s worker and task `aaaaaaac`, adopted, all in it on `host-a`, as
+    /// `SHARED_SESSION_AGENTS` lists them.
     fn sharing_default(&self) {
         fs::write(
             self.state.join("config.toml"),
@@ -823,12 +820,9 @@ impl Fixture {
                 status.herdr = Some(target("w4:p1"));
             })
             .unwrap();
-        flow::supervisor::take(
-            &StateDir::resolve(self.dir.path()).unwrap(),
-            "env-0001",
-            target("w1:p1"),
-        )
-        .unwrap();
+        let state = StateDir::resolve(self.dir.path()).unwrap();
+        flow::supervisor::take(&state, "env-0001", target("w1:p1")).unwrap();
+        flow::supervisor::set_session(&state, Some("s-sup")).unwrap();
     }
 }
 
@@ -840,7 +834,6 @@ fn workers_the_supervisor_and_hand_sessions_share_herdrs_default_session() {
     let script = [
         on("host-a", SERVER_RUNNING),
         on("host-a", SHARED_SESSION_AGENTS),
-        on("host-a", SHARED_SESSION_WORKSPACES),
     ];
 
     let stdout = stdout_of(fx.flow(&script).arg("sessions"));
@@ -859,7 +852,6 @@ fn workers_the_supervisor_and_hand_sessions_share_herdrs_default_session() {
         [
             words(&["herdr", "--session", "default", "status", "server"]),
             words(&["herdr", "--session", "default", "agent", "list"]),
-            words(&["herdr", "--session", "default", "workspace", "list"]),
         ]
     );
     let json_out = stdout_of(fx.flow(&script).args(["sessions", "--json"]));
@@ -909,25 +901,23 @@ const REUSED_PANE_AGENTS: &str = r#"{"id":"cli:agent:list","result":{"agents":[
 ],"type":"agent_list"}}"#;
 
 #[test]
-fn hand_sessions_in_reused_panes_are_observed_unless_they_may_be_the_supervisor() {
+fn hand_sessions_in_reused_panes_are_observed() {
     let fx = Fixture::new();
     fx.single_host();
     fx.sharing_default();
     let state = StateDir::resolve(fx.dir.path()).unwrap();
-    flow::supervisor::set_session(&state, Some("s-sup")).unwrap();
     Store::open(&state)
         .set_status("aaaaaaac", |status| status.state = State::Done)
         .unwrap();
     let script = [
         on("host-a", SERVER_RUNNING),
         on("host-a", REUSED_PANE_AGENTS),
-        on("host-a", SHARED_SESSION_WORKSPACES),
     ];
 
     let json_out = stdout_of(fx.flow(&script).args(["sessions", "--json"]));
 
     let parsed: Value = serde_json::from_str(&json_out).unwrap();
-    let rows: Vec<(String, Value, bool, bool)> = parsed
+    let rows: Vec<(String, Value, bool)> = parsed
         .as_array()
         .unwrap()
         .iter()
@@ -936,26 +926,18 @@ fn hand_sessions_in_reused_panes_are_observed_unless_they_may_be_the_supervisor(
                 entry["agent"]["pane_id"].as_str().unwrap().to_owned(),
                 entry["task"].clone(),
                 entry["supervisor"].as_bool().unwrap(),
-                entry["maybe_supervisor"].as_bool().unwrap(),
             )
         })
         .collect();
     assert_eq!(
         rows,
         [
-            ("w1:p1".to_owned(), Value::Null, false, true),
-            ("w2:p1".to_owned(), Value::Null, false, false),
-            ("w4:p1".to_owned(), Value::Null, false, false),
+            ("w1:p1".to_owned(), Value::Null, false),
+            ("w2:p1".to_owned(), Value::Null, false),
+            ("w4:p1".to_owned(), Value::Null, false),
         ]
     );
-    fx.flow(&script)
-        .args(["follow", "host-a", "Read the docs"])
-        .assert()
-        .code(2)
-        .stderr(
-            "pane w1:p1 on host-a is in the supervisor's workspace and may be the supervisor\n",
-        );
-    for target in ["Try a fix", "Fix links"] {
+    for target in ["Read the docs", "Try a fix", "Fix links"] {
         stdout_of(fx.flow(&script).args(["follow", "host-a", target]));
     }
     let list = fx.follow_list();
@@ -965,53 +947,23 @@ fn hand_sessions_in_reused_panes_are_observed_unless_they_may_be_the_supervisor(
         .iter()
         .map(|entry| entry["pane_id"].as_str().unwrap())
         .collect();
-    assert_eq!(followed, ["w2:p1", "w4:p1"]);
+    assert_eq!(followed, ["w1:p1", "w2:p1", "w4:p1"]);
 }
 
 #[test]
-fn a_session_in_the_flow_checkout_is_the_supervisor_only_in_its_labelled_workspace_else_maybe() {
+fn an_agent_with_no_session_in_the_supervisors_pane_shows_as_observed() {
     let fx = Fixture::new();
     fx.single_host();
     fx.sharing_default();
-    let relabelled = SHARED_SESSION_WORKSPACES.replace("flow-supervisor", "scratch");
-    let rows = |workspaces: &str| {
-        let script = [
-            on("host-a", SERVER_RUNNING),
-            on("host-a", SHARED_SESSION_AGENTS),
-            on("host-a", workspaces),
-        ];
-        let json_out = stdout_of(fx.flow(&script).args(["sessions", "--json"]));
-        let parsed: Value = serde_json::from_str(&json_out).unwrap();
-        parsed
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|entry| entry["agent"]["pane_id"] == "w1:p1")
-            .map(|entry| {
-                (
-                    entry["supervisor"].as_bool().unwrap(),
-                    entry["maybe_supervisor"].as_bool().unwrap(),
-                )
-            })
-            .collect::<Vec<_>>()
-    };
+    let unreported =
+        SHARED_SESSION_AGENTS.replace(r#""agent_session":{"kind":"id","value":"s-sup"},"#, "");
+    assert_ne!(unreported, SHARED_SESSION_AGENTS);
+    let script = [on("host-a", SERVER_RUNNING), on("host-a", &unreported)];
 
-    assert_eq!(rows(SHARED_SESSION_WORKSPACES), [(true, false)]);
-    assert_eq!(rows(&relabelled), [(false, true)]);
-    let script = [
-        on("host-a", SERVER_RUNNING),
-        on("host-a", SHARED_SESSION_AGENTS),
-        on("host-a", &relabelled),
-    ];
     let text = stdout_of(fx.flow(&script).arg("sessions"));
+
     assert!(
-        text.contains("host-a  idle     supervisor?  flow-supervisor\n"),
+        text.contains("host-a  idle     observed  flow-supervisor\n"),
         "{text}"
-    );
-    let status = stdout_of(fx.flow(&[]).arg("status"));
-    assert_eq!(
-        status.lines().last(),
-        Some("observed: 1 sessions"),
-        "{status}"
     );
 }

@@ -1,19 +1,20 @@
-//! `flow down`: stops the supervisor, leaving every worker and task running. It closes the
-//! supervisor's pane, marks the lock stopped keeping the Claude Code session to resume, and
+//! `flow down`: stops the supervisor, leaving every worker and task running. It closes the pane
+//! herdr shows the supervisor's Claude Code session in, marks the lock stopped keeping the Claude Code session to resume, and
 //! removes the watch lock, which ends the watcher at its next cycle.
 
 use std::process::ExitCode;
 use std::sync::Arc;
 
 use super::Refused;
-use crate::herdr::Herdr;
+use crate::herdr::{Agent, Herdr};
 use crate::inventory;
+use crate::owner::{self, Owner};
 use crate::paths::StateDir;
 use crate::runner::{self, Runner};
 use crate::state::Store;
 use crate::state::config::Host;
 use crate::state::task::{Status, TaskRecord};
-use crate::supervisor::{self, Identity, Lock};
+use crate::supervisor::{self, Lock};
 use crate::watch::lock as watch_lock;
 
 /// Stops the supervisor `state/supervisor/lock.json` records. With `forget`, closes nothing.
@@ -85,21 +86,14 @@ fn reachable_host(state: &StateDir, lock: &Lock) -> anyhow::Result<Option<Host>>
     Ok(Some(record.host()))
 }
 
-/// Closes the supervisor's pane on `host`. An agent there that is clearly another's is left to
-/// its owner; one flow cannot tell from the supervisor is refused.
+/// Closes the supervisor's pane on `host`, wherever herdr shows it. Refuses beside an
+/// unconfirmed agent in the lock's pane, and closes nothing when the supervisor runs nowhere.
 fn close_supervisor(
     herdr: &Herdr,
     host: &Host,
     lock: &Lock,
     tasks: &[(TaskRecord, Status)],
 ) -> anyhow::Result<()> {
-    let pane = &lock.herdr.pane_id;
-    let gone = || {
-        super::print(&format!(
-            "the supervisor's pane {pane} on {} is already gone\n",
-            host.name
-        ))
-    };
     let unreachable = |err: anyhow::Error| {
         err.context(format!(
             "closing the supervisor's pane on {}; nothing stopped, and the lock is kept",
@@ -110,33 +104,33 @@ fn close_supervisor(
         .agents_if_running(host)
         .map_err(unreachable)?
         .unwrap_or_default();
-    let Some(agent) = agents.iter().find(|agent| agent.pane_id == *pane) else {
-        return gone();
-    };
-    match lock.identify(&host.name, agent, tasks) {
-        Identity::Supervisor => {}
-        Identity::Unconfirmed => {
-            return Err(Refused(format!(
-                "{}. flow down stopped nothing and kept the lock. {}",
-                supervisor::unconfirmed(lock, &host.name, agent),
-                supervisor::UNCONFIRMED_WAY_OUT
-            ))
-            .into());
-        }
-        Identity::Other => {
-            return super::print(&format!(
-                "the supervisor is gone from pane {pane} on {}, which now runs {}; flow down \
-                 leaves that pane to its owner\n",
-                host.name,
-                supervisor::not_the_supervisor(lock, &host.name, agent, tasks)
-            ));
-        }
+    let owners: Vec<(&Agent, Owner)> = agents
+        .iter()
+        .map(|agent| (agent, owner::owner(&host.name, agent, Some(lock), tasks)))
+        .collect();
+    let supervisor = owners.iter().find(|(_, owner)| *owner == Owner::Supervisor);
+    if let Some((agent, _)) = supervisor
+        && herdr
+            .close_pane(host, &agent.pane_id)
+            .map_err(unreachable)?
+    {
+        return super::print(&format!(
+            "closed the supervisor's pane {} on {} (herdr session {})\n",
+            agent.pane_id,
+            host.name,
+            herdr.session()
+        ));
     }
-    if !herdr.close_pane(host, pane).map_err(unreachable)? {
-        return gone();
+    if owners.iter().any(|(_, owner)| *owner == Owner::Unconfirmed) {
+        return Err(Refused(format!(
+            "{}. flow down stopped nothing and kept the lock. {}",
+            supervisor::unconfirmed(lock),
+            supervisor::UNCONFIRMED_WAY_OUT
+        ))
+        .into());
     }
     super::print(&format!(
-        "closed the supervisor's pane {pane} on {} (herdr session {})\n",
+        "the supervisor runs in no pane on {} (herdr session {}); closed nothing\n",
         host.name,
         herdr.session()
     ))

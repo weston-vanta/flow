@@ -5,6 +5,7 @@ pub mod host;
 pub mod inventory;
 pub mod observe;
 pub mod ona;
+pub mod owner;
 pub mod paths;
 pub mod render;
 pub mod runner;
