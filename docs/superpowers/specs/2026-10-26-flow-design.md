@@ -121,12 +121,13 @@ designer's call.
    worker's terminal by the user is authoritative and the supervisor reconciles it.
 2. **The supervisor runs detached and persistent.** It lives in a herdr pane on some CDE,
    so it keeps running and keeps answering workers while the user is disconnected. It and
-   its workers run in one herdr session per CDE, herdr's `default` unless `config.toml`
-   sets `herdr_session`, beside the sessions the user starts by hand, so one herdr window
-   shows them all. The user attaches to it (`flow up`, from any CDE over ssh) rather than
-   owning the process in a terminal. The supervisor's lock names the host and herdr target;
-   `flow up` on another CDE finds the existing supervisor and attaches instead of starting
-   a second one, unless the user explicitly takes over.
+   its workers run in the herdr session `flow up` ran in, beside the sessions the user starts
+   by hand, so one herdr window shows them all. The user runs `flow up` from a shell pane in
+   that herdr session on the CDE that should host the supervisor; it starts the supervisor or
+   focuses the running one, and the user works with it in its herdr pane rather than owning
+   the process in a terminal. The supervisor's lock names the host, herdr session and pane.
+   At most one supervisor runs per state directory: `flow up` refuses while the lock records a
+   running one anywhere else, until the user stops it with `flow down`.
 3. **Session is the unit; tasks are its durable shadow.** A task record on EFS mirrors one
    worker session: brief, target CDE, worktree, harness, status events, decisions, report,
    and a `parent` pointer. Tasks are hierarchical through `parent`; a worker's in-session
@@ -161,9 +162,8 @@ designer's call.
    recorded target is its pane while the pane's workspace label names the task (any label for a
    task adopted from a session that reported none); under another label any listing retires the
    task's target as reused, logging `target.retired`, which wakes the supervisor as
-   `agent-gone` while the task is open. In the supervisor's pane it may be the supervisor, so flow
-   neither watches, follows nor adopts it, and flow up and flow down refuse beside it until the
-   user says which it is.
+   `agent-gone` while the task is open. In the supervisor's pane it is the supervisor under the
+   `flow-supervisor` label flow wrote, and observed under any other.
    An observed session wakes the supervisor only when it turns `blocked`; a followed one, an observed session on the follow list, also on `idle` and
    `done`. Steering an observed session is the same herdr operation as steering a worker,
    used only when the user asks. When the user asks for a hand session to become a worker,
@@ -212,18 +212,18 @@ designer's call.
 ### Transport and runtime
 
 13. **EFS files for durable communication; ssh for control.** Status, requests, decisions,
-    and reports are files. Starting a worker, running a herdr API command on another CDE,
-    and attaching to a terminal go over ssh using the Ona aliases. Nothing in the steady
+    and reports are files. Starting a worker and running a herdr API command on another CDE
+    go over ssh using the Ona aliases. Nothing in the steady
     state polls over ssh.
 14. **herdr is the only runtime.** Workers, observed sessions, and the supervisor itself run
     in herdr panes. `flow` uses herdr for: starting a harness in a pane, native
     idle/working/blocked/done state, waiting on state transitions, reading terminal output,
     steering with confirmation, session identity (once the hook path is fixed), and
-    attaching. A herdr server is started on demand on each CDE, without flow's environment
+    focusing a pane. A herdr server is started on demand on each CDE, without flow's environment
     variables or an invoking Claude Code session's, since the panes a user opens there later
     inherit its environment. The adapter pins a minimum herdr protocol and fails loudly on
     mismatch. tmux is not a fallback.
-15. **Every host that may run or attach to the supervisor needs the user's Ona login**
+15. **Every host that may run the supervisor needs the user's Ona login**
     (`gitpod login`, then `gitpod environment ssh-config`). There is no dedicated check or
     repair command. When an ssh or `gitpod` call fails because the login is missing or
     expired, the supervisor keeps working from EFS state and says plainly that it cannot
@@ -330,23 +330,26 @@ Task ids are short, time-ordered, and never reused.
 
 ## Flows
 
-**Start or attach.** `flow up` on any CDE reads `state/supervisor/`. If herdr reports the
-recorded supervisor session for an agent on the lock's CDE, it attaches to it through ssh and
-herdr. If not, it removes any watch lock the previous supervisor's watcher left, writes
-`watch-state.json` with every closed task marked read when there is none yet, opens a herdr
-workspace on this CDE, in the configured herdr session, running the harness from
-`/workspaces/flow` with `--resume` of the recorded supervisor session when one exists and a
-first prompt to run the session start procedure (whose turn end arms `flow watch`), takes the
-lock, records the session herdr reports for the new supervisor, and attaches.
+**Start or focus.** `flow up` runs from a shell pane inside herdr and reads
+`state/supervisor/`. With no lock, a stopped one, or one whose CDE the inventory marks gone,
+it starts a supervisor here. With a lock on this CDE in the herdr session it runs in, one
+listing looks for the supervisor: the agent herdr reports the lock's Claude Code session for,
+or with no session reported, the agent in the lock's pane under the `flow-supervisor` label.
+Found, it is focused; not found, one is started here. A lock anywhere else is refused without
+asking any host. Starting removes any watch lock the previous supervisor's watcher left,
+writes `watch-state.json` with every closed task marked read when there is none yet, opens a
+`flow-supervisor` workspace in this herdr session running the harness from `/workspaces/flow`
+with `--resume` of the recorded supervisor session when one exists and a first prompt to run
+the session start procedure (whose turn end arms `flow watch`), takes the lock with this CDE
+and herdr session, records the session herdr reports for the new supervisor, and focuses its
+pane.
 
-**Stop.** `flow down` finds the supervisor by its Claude Code session on the lock's CDE,
-closes its pane, marks its lock stopped, keeping the Claude Code session to resume, removes
-the watch lock, which ends the watcher at its next cycle, and leaves every worker running.
-When no agent reports that session, the supervisor is gone and nothing is closed. An agent
-in the supervisor's pane that herdr reports no session for makes `flow down` refuse, and
-`flow up` refuse to start beside it; `--forget` takes it to be the user's own and closes
-nothing. The next `flow up` does not look for the
-stopped supervisor: it starts one on its own CDE resuming that session.
+**Stop.** `flow down` finds the supervisor on the lock's CDE, by its Claude Code session or
+by the `flow-supervisor` label on the lock's pane, closes its pane, marks its lock stopped,
+keeping the Claude Code session to resume, removes the watch lock, which ends the watcher at
+its next cycle, and leaves every worker running. When it finds no supervisor, it closes
+nothing and says so. The next `flow up` does not look for the stopped supervisor: it starts
+one in its own herdr session on its own CDE resuming that session.
 
 **Dispatch.** User asks for work. Supervisor picks a CDE from inventory (or asks), writes
 the task directory and brief with completion criteria, ensures a worktree, ensures a herdr
@@ -372,9 +375,9 @@ follow list, and prompts it in place to read the brief and report through flow.
 **Recycle.** A worker CDE is recycled: watch sees the CDE unreachable and its sessions
 gone; the supervisor marks affected tasks `orphaned` with what was last known (branch
 pushed or not) and asks the user whether to redispatch. The supervisor CDE is recycled:
-the user runs `flow up` on any CDE; it finds no live supervisor, starts one that resumes
-the recorded session, reads `state/`, re-arms the watcher, and reports what changed while
-it was away.
+once the inventory marks that CDE gone, the user runs `flow up` from a herdr pane on another
+CDE; it starts one that resumes the recorded session, reads `state/`, re-arms the watcher,
+and reports what changed while it was away. Before then, `flow down` marks it stopped.
 
 ## CLI
 
@@ -385,13 +388,13 @@ given. Commands that take `--json` print raw JSON instead of the compact view.
 Operator:
 
 - `flow init [--force]`: write `state/config.toml` from what this machine can tell, then refresh the inventory; `--force` replaces an existing file.
-- `flow up`: attach to the live supervisor session, or start one on this host and attach. The live supervisor is the agent on the lock's host that herdr reports the lock's Claude Code session for, wherever herdr moved it, in any herdr session `herdr_sessions` lists. When stdout is not a terminal, it prints the command to attach with instead of attaching. Starting one first writes `state/supervisor/watch-state.json` with every closed task marked read when that file does not exist, so the first `flow watch` replays only open tasks. When no supervisor runs but the lock's pane holds an agent herdr reports no session for, it starts nothing and exits 1, since a second supervisor would resume the same session: if that is the user's own session, `flow down --forget` marks the supervisor stopped and leaves the pane alone; if it is the supervisor, exit it and run `flow down`; then `flow up`.
-- `flow down [--forget]`: stop the supervisor, leaving every worker and task running. It closes the pane herdr shows the supervisor's Claude Code session in, in any listed herdr session; with none it closes nothing, since a pane id alone does not say whose pane it is, so a shell pane the supervisor left stays open. It marks the lock stopped keeping that session for the next `flow up` to resume, removes the watch lock, which ends the watcher at its next cycle, and says how many open tasks keep running. It fails, changing nothing, when the supervisor's host cannot be reached, and refuses beside an agent in the supervisor's pane that herdr reports no session for; `--forget` marks the supervisor stopped and closes nothing.
+- `flow up`: from a shell pane inside herdr, keep one supervisor for the state directory and focus its pane; anywhere else it exits 1. With no supervisor running, or one recorded on a host the inventory marks gone, it starts one in this herdr session on this host, resuming the recorded Claude Code session, and records both in the lock. With one recorded on this host in this herdr session, it focuses it when one listing finds it, by the Claude Code session herdr reports for it or, with none reported, as the agent in the lock's pane under the `flow-supervisor` label; finding none, it starts one. With one recorded on another host or in another herdr session, it asks no host and exits 1: run `flow down` first. It ends by printing `supervisor is in workspace flow-supervisor`. Starting one first writes `state/supervisor/watch-state.json` with every closed task marked read when that file does not exist, so the first `flow watch` replays only open tasks.
+- `flow down`: stop the supervisor, leaving every worker and task running. It closes the supervisor's pane on the lock's host, found by its Claude Code session in any listed herdr session or as the agent in the lock's pane under the `flow-supervisor` label; finding none, it closes nothing and says so. It marks the lock stopped keeping that session for the next `flow up` to resume, removes the watch lock, which ends the watcher at its next cycle, and says how many open tasks keep running. It fails, changing nothing, when the supervisor's host cannot be reached.
 - `flow status [--all] [--json]`: open tasks, their holds, pending dispatch requests from workers (`req-id  from-task  host  title`), and observed sessions; `--all` includes done and orphaned tasks.
 - `flow inventory [--refresh] [--json]`: worktrees, agents, and PRs per host; `--refresh` first discovers hosts from Ona (or the static list), probes each running one, and lists open PRs. `--json` gives each host its ssh alias, whether it is the host flow runs on (`local`), its Ona phase, when it was last seen, and whether it is reachable or gone.
 - `flow inventory --sync [--yes] [--refresh] [--json]`: bring herdr's saved SSH machines on this machine in step with the hosts, in place of showing them. Every other host that is not gone gets a machine labelled with its name, for its ssh alias and the herdr session flow runs in; a gone host's machine is removed when it still has that alias, and a host's machines for another alias or session are removed, before its new one is added when it has none current, since herdr names each machine once; when that add fails, flow says the host is left without a machine. Machines whose label is not a host's name are never touched. A host that did not answer the last refresh, or that Ona reports stopped, is not added, since herdr must reach it to add it: it is listed on stderr, and its machine stays as it is. With nothing to change it says so, noting any host it did not add. It prints the plan and asks before applying it; `--yes` applies it without asking, and with no terminal and no `--yes` it exits 1 having changed nothing. `--refresh` refreshes first, and `--json` prints the plan as JSON, applied only with `--yes`. A failing step stops the rest and says how many were applied.
 - `flow run <host> -- <argv>...`: run a command on a host, passing its output and exit code through.
-- `flow sessions [--summaries] [--json]`: herdr agents across hosts, with their tasks, as the supervisor, as observed sessions, or as `unconfirmed`: an agent in the supervisor's pane herdr reports no session for, which flow neither watches, follows nor adopts. `--summaries` adds each session's latest summary, and `--json` includes summaries, pane ids and each agent's `owner`.
+- `flow sessions [--summaries] [--json]`: herdr agents across hosts, with their tasks, as the supervisor, or as observed sessions. `--summaries` adds each session's latest summary, and `--json` includes summaries, pane ids and each agent's `owner`.
 - `flow follow <host> <session>`: wake the supervisor when a session started by hand goes idle or done, not only when it turns blocked. `<session>` is the session's title as `flow sessions` shows it, or its pane id when several share the title, or `<herdr session>/<pane id>` when several herdr sessions hold that pane id; `flow sessions` then marks it `followed`.
 - `flow unfollow <host> <session>`: stop waking the supervisor for a followed session except when it turns blocked; also accepts the pane id, or `<herdr session>/<pane id>`, of a followed session that is gone.
 

@@ -5,52 +5,21 @@ use std::path::PathBuf;
 use anyhow::{Context, anyhow, bail};
 use serde::Deserialize;
 
-use crate::herdr;
 use crate::paths::StateDir;
 
 /// Operator configuration from `state/config.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(from = "RawConfig")]
 pub struct Config {
     /// Where the host set comes from, and overrides for discovered hosts. The hosts themselves
     /// are the cached records in `state/hosts/`.
+    #[serde(default)]
     pub hosts: HostsConfig,
     /// The repositories tasks can get worktrees of, checked out at the same path on every host.
+    #[serde(default)]
     pub repos: Vec<Repo>,
-    /// flow's own herdr session, where the supervisor and workers run: herdr's `default`, the
-    /// one the user's herdr window shows, unless set.
-    pub herdr_session: String,
-    /// The herdr sessions whose agents flow lists, `herdr_session` always among them: first when
-    /// the configured list leaves it out, and alone when none is configured.
+    /// herdr sessions whose agents flow lists beside its own (see `listed_sessions`).
+    #[serde(default)]
     pub herdr_sessions: Vec<String>,
-}
-
-/// `config.toml` as written, before `herdr_sessions` is made to hold `herdr_session`.
-#[derive(Deserialize)]
-struct RawConfig {
-    #[serde(default)]
-    hosts: HostsConfig,
-    #[serde(default)]
-    repos: Vec<Repo>,
-    #[serde(default = "default_herdr_session")]
-    herdr_session: String,
-    #[serde(default)]
-    herdr_sessions: Vec<String>,
-}
-
-impl From<RawConfig> for Config {
-    fn from(raw: RawConfig) -> Config {
-        let mut herdr_sessions = raw.herdr_sessions;
-        if !herdr_sessions.contains(&raw.herdr_session) {
-            herdr_sessions.insert(0, raw.herdr_session.clone());
-        }
-        Config {
-            hosts: raw.hosts,
-            repos: raw.repos,
-            herdr_session: raw.herdr_session,
-            herdr_sessions,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -115,10 +84,6 @@ fn parse(text: &str) -> anyhow::Result<Config> {
     Ok(toml::from_str(text)?)
 }
 
-fn default_herdr_session() -> String {
-    herdr::DEFAULT_SESSION.to_owned()
-}
-
 fn default_list() -> Vec<String> {
     ["wt", "--json", "list"].map(str::to_owned).to_vec()
 }
@@ -129,6 +94,16 @@ impl Config {
         let text =
             fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
         parse(&text).with_context(|| format!("parsing {}", path.display()))
+    }
+
+    /// The herdr sessions flow lists agents in: `own`, flow's own session, first unless
+    /// `herdr_sessions` names it, then `herdr_sessions`.
+    pub fn listed_sessions(&self, own: &str) -> Vec<String> {
+        let mut sessions = self.herdr_sessions.clone();
+        if !sessions.iter().any(|session| session == own) {
+            sessions.insert(0, own.to_owned());
+        }
+        sessions
     }
 
     /// The repo named `name`, or with no name the only configured repo.
@@ -253,22 +228,12 @@ ssh_alias = "host-a.example"
     }
 
     #[test]
-    fn config_herdr_session_defaults_to_herdrs_default_and_is_always_listed() {
-        let config = parse("");
-        assert_eq!(config.herdr_session, "default");
-        assert_eq!(config.herdr_sessions, ["default"]);
-
+    fn flows_own_herdr_session_is_always_listed() {
+        assert_eq!(parse("").listed_sessions("default"), ["default"]);
+        let config = parse("herdr_sessions = [\"default\", \"work\"]\n");
+        assert_eq!(config.listed_sessions("flow"), ["flow", "default", "work"]);
+        assert_eq!(config.listed_sessions("work"), ["default", "work"]);
         let config = parse("herdr_session = \"flow\"\n");
-        assert_eq!(config.herdr_session, "flow");
-        assert_eq!(config.herdr_sessions, ["flow"]);
-
-        let config = parse("herdr_session = \"flow\"\nherdr_sessions = [\"default\", \"work\"]\n");
-        assert_eq!(config.herdr_sessions, ["flow", "default", "work"]);
-
-        let config = parse("herdr_sessions = [\"work\", \"default\"]\n");
-        assert_eq!(config.herdr_sessions, ["work", "default"]);
-
-        let config = parse("herdr_sessions = []\n");
-        assert_eq!(config.herdr_sessions, ["default"]);
+        assert_eq!(config.listed_sessions("default"), ["default"]);
     }
 }

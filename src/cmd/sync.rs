@@ -18,7 +18,8 @@ use crate::host;
 use crate::inventory::{self, HostInventory};
 use crate::paths::StateDir;
 use crate::runner::Runner;
-use crate::state::config::{Config, Host};
+use crate::state::config::Host;
+use crate::supervisor;
 
 /// One change to herdr's saved machines.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -172,7 +173,6 @@ impl Step {
 /// were applied.
 pub fn run(
     state: &StateDir,
-    config: &Config,
     runner: &dyn Runner,
     json: bool,
     yes: bool,
@@ -183,7 +183,7 @@ pub fn run(
     let plan = plan(
         &inventory::load_all(state)?,
         host::local_env_id().as_deref(),
-        &config.herdr_session,
+        &supervisor::herdr_session(state)?,
         &machines,
     );
     for name in &plan.skipped {

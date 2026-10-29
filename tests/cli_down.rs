@@ -301,33 +301,36 @@ fn down_removes_the_watch_lock_whoever_holds_it() {
 }
 
 #[test]
-fn down_refuses_beside_an_agent_it_cannot_tell_from_the_supervisor() {
+fn down_closes_an_agent_with_no_session_in_the_supervisors_pane_only_under_its_label() {
+    let workspaces = |label: &str| {
+        let list = json!({"id": "cli:workspace:list", "result": {"type": "workspace_list",
+            "workspaces": [{"workspace_id": "w1", "label": label}]}});
+        ok(&list.to_string())
+    };
+    let unreported = ok(&in_lock_pane("/workspaces/flow", None));
+
     let fx = Fixture::new();
     fx.write_lock("env-0001", "host-a", "default");
-    fx.write_watch_lock("env-0001", std::process::id());
-    let before = fs::read_to_string(fx.lock_path()).unwrap();
-
-    let out = fx
-        .flow(&[ok(&in_lock_pane("/workspaces/flow", None))])
-        .arg("down")
-        .assert()
-        .code(2)
-        .get_output()
-        .clone();
-
-    let stderr = String::from_utf8(out.stderr).unwrap();
-    assert!(
-        stderr.ends_with(
-            "flow down stopped nothing and kept the lock. If it is your own session, `flow down \
-             --forget` marks the supervisor stopped and leaves the pane alone; if it is the \
-             supervisor, exit it and run `flow down`; then `flow up`.\n"
-        ),
-        "{stderr}"
+    let script = [
+        unreported.clone(),
+        workspaces("flow-supervisor"),
+        ok(PANE_CLOSED),
+    ];
+    let stdout = stdout_of(fx.flow(&script).arg("down"));
+    assert_eq!(
+        stdout,
+        format!(
+            "closed the supervisor's pane w1:p1 on host-a (herdr session default)\n{KEPT}{NOTE}"
+        )
     );
-    assert!(out.stdout.is_empty());
-    assert_eq!(fx.argvs().len(), 1);
-    assert_eq!(fs::read_to_string(fx.lock_path()).unwrap(), before);
-    assert!(fx.watch_lock().exists());
+    fx.assert_stopped();
+
+    let fx = Fixture::new();
+    fx.write_lock("env-0001", "host-a", "default");
+    let stdout = stdout_of(fx.flow(&[unreported, workspaces("Notes")]).arg("down"));
+    assert_eq!(stdout, format!("{NOWHERE_ON_A}{KEPT}{NOTE}"));
+    assert_eq!(fx.argvs().len(), 2);
+    fx.assert_stopped();
 }
 
 #[test]
@@ -428,20 +431,5 @@ fn down_closes_the_supervisors_pane_wherever_herdr_moved_it() {
         fx.argvs()[1],
         words(&["herdr", "--session", "default", "pane", "close", "w4:p2"])
     );
-    fx.assert_stopped();
-}
-
-#[test]
-fn down_forget_closes_nothing_and_marks_the_lock_stopped() {
-    let fx = Fixture::new();
-    fx.write_lock("env-0001", "host-a", "default");
-
-    let stdout = stdout_of(fx.flow(&[]).args(["down", "--forget"]));
-
-    assert_eq!(
-        stdout,
-        format!("left pane w1:p1 on host-a as it is (--forget)\n{KEPT}{NOTE}")
-    );
-    assert!(fx.argvs().is_empty());
     fx.assert_stopped();
 }

@@ -335,13 +335,19 @@ fn dispatch_allows_shared_dir_when_asked() {
 }
 
 #[test]
-fn dispatch_starts_the_worker_in_the_configured_herdr_session() {
+fn dispatch_starts_the_worker_in_the_herdr_session_the_lock_records() {
     let fx = Fixture::new();
-    fs::write(
-        fx.state.join("config.toml"),
-        format!("herdr_session = \"flow\"\n{CONFIG}"),
-    )
-    .unwrap();
+    let dir = fx.state.join("supervisor");
+    fs::create_dir_all(&dir).unwrap();
+    let lock = json!({
+        "host_env_id": "env-0001",
+        "herdr": {"host": "host-a", "workspace_id": "w9", "pane_id": "w9:p1", "agent": "claude",
+            "session": "flow"},
+        "claude_session": null,
+        "since": "2026-10-26T12:00:00Z",
+        "stopped": "2026-10-26T13:00:00Z",
+    });
+    fs::write(dir.join("lock.json"), lock.to_string()).unwrap();
 
     fx.flow(&starts_working(Vec::new()))
         .args(dispatch_args(&["--dir", WORKTREE]))

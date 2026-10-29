@@ -4,7 +4,6 @@
 
 use std::sync::Arc;
 
-use super::Refused;
 use crate::herdr::Herdr;
 use crate::inventory;
 use crate::paths::StateDir;
@@ -12,13 +11,12 @@ use crate::runner::{self, Runner};
 use crate::state::Store;
 use crate::state::config::{Config, Host};
 use crate::state::task::{Status, TaskRecord};
-use crate::supervisor::{self, Found, Lock};
+use crate::supervisor::{self, Lock};
 use crate::watch::lock as watch_lock;
 
-/// Stops the supervisor `state/supervisor/lock.json` records. With `forget`, closes nothing.
-/// Fails, changing nothing, when the supervisor's host cannot be reached, and refuses beside an
-/// agent in its pane flow cannot tell from the supervisor.
-pub fn run(state: &StateDir, forget: bool) -> anyhow::Result<()> {
+/// Stops the supervisor `state/supervisor/lock.json` records. Fails, changing nothing, when the
+/// supervisor's host cannot be reached.
+pub fn run(state: &StateDir) -> anyhow::Result<()> {
     let Some(lock) = supervisor::load(state)? else {
         return super::print("no supervisor recorded; nothing to stop\n");
     };
@@ -26,14 +24,9 @@ pub fn run(state: &StateDir, forget: bool) -> anyhow::Result<()> {
         return super::print("the supervisor is already stopped; nothing to stop\n");
     }
     let tasks = Store::open(state).list_tasks()?;
-    if forget {
-        super::print(&format!(
-            "left pane {} on {} as it is (--forget)\n",
-            lock.herdr.pane_id, lock.herdr.host
-        ))?;
-    } else if let Some(host) = reachable_host(state, &lock)? {
+    if let Some(host) = reachable_host(state, &lock)? {
         let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
-        let sessions = Config::load(state)?.herdr_sessions;
+        let sessions = Config::load(state)?.listed_sessions(&lock.herdr.session);
         close_supervisor(&runner, &host, &lock, &sessions, &tasks)?;
     }
     supervisor::mark_stopped(state)?;
@@ -81,9 +74,8 @@ fn reachable_host(state: &StateDir, lock: &Lock) -> anyhow::Result<Option<Host>>
     Ok(Some(record.host()))
 }
 
-/// Closes the supervisor's pane on `host`, wherever herdr shows it in `sessions`. Refuses
-/// beside an unconfirmed agent in the lock's pane; when the supervisor runs nowhere, closes
-/// nothing, since a pane id alone does not say whose pane it is.
+/// Closes the supervisor's pane on `host`, wherever herdr shows it in `sessions`. When the
+/// supervisor runs nowhere, closes nothing, since a pane id alone does not say whose pane it is.
 fn close_supervisor(
     runner: &Arc<dyn Runner>,
     host: &Host,
@@ -105,17 +97,8 @@ fn close_supervisor(
         ))
     };
     let found = supervisor::find(runner, host, lock, sessions, tasks).map_err(unreachable)?;
-    let agent = match found {
-        Found::Supervisor(agent) => agent,
-        Found::Unconfirmed => {
-            return Err(Refused(format!(
-                "{}. flow down stopped nothing and kept the lock. {}",
-                supervisor::unconfirmed(lock),
-                supervisor::UNCONFIRMED_WAY_OUT
-            ))
-            .into());
-        }
-        Found::Nowhere => return nowhere(),
+    let Some(agent) = found else {
+        return nowhere();
     };
     let herdr = Herdr::with_session(runner.clone(), &agent.session);
     if !herdr

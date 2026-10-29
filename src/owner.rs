@@ -1,7 +1,8 @@
 //! Who a herdr agent belongs to: the supervisor, a task's worker, or nobody flow manages. herdr
 //! reuses pane and workspace ids after a server restart, so the Claude Code session id herdr
-//! reports decides; a pane decides only for an agent herdr reports no id for, and only under a
-//! workspace label naming the task unless the task was adopted from a session that reported none.
+//! reports decides; a pane decides only for an agent herdr reports no id for, and only under the
+//! workspace label flow wrote: `flow-supervisor` for the lock's pane, one naming the task for a
+//! task's, or any label for a task adopted from a session that reported no id.
 
 use jiff::Timestamp;
 use serde::Serialize;
@@ -12,7 +13,7 @@ use crate::state::Store;
 use crate::state::config::Host;
 use crate::state::events::Event;
 use crate::state::task::{HerdrTarget, Origin, Status, TaskRecord};
-use crate::supervisor::Lock;
+use crate::supervisor::{Lock, SUPERVISOR_NAME};
 
 /// The event a retired herdr target is logged as.
 pub const TARGET_RETIRED: &str = "target.retired";
@@ -23,15 +24,12 @@ pub enum Owner {
     Supervisor,
     /// The worker of this task.
     Task(String),
-    /// No session reported, in the running supervisor's pane: it may be the supervisor, so flow
-    /// neither watches it nor lets it be followed or adopted.
-    Unconfirmed,
     Observed,
 }
 
 /// Who owns `agent` on `host`, given the running supervisor's `lock` and `tasks`. A reported
-/// session id decides; with none, the newest task that `claims` the agent's pane owns it, else it
-/// is unconfirmed in the lock's pane.
+/// session id decides; with none, the newest task that `claims` the agent's pane owns it, else
+/// the supervisor does in the lock's pane under the `flow-supervisor` label.
 pub fn owner(
     host: &str,
     agent: &Agent,
@@ -61,8 +59,9 @@ pub fn owner(
     if let Some((record, _)) = task {
         return Owner::Task(record.id.clone());
     }
-    if lock.is_some_and(|lock| in_pane(host, agent, &lock.herdr)) {
-        return Owner::Unconfirmed;
+    let supervisors = agent.workspace_label.as_deref() == Some(SUPERVISOR_NAME);
+    if supervisors && lock.is_some_and(|lock| in_pane(host, agent, &lock.herdr)) {
+        return Owner::Supervisor;
     }
     Owner::Observed
 }
@@ -92,18 +91,24 @@ fn claims(host: &str, agent: &Agent, task: &(TaskRecord, Status)) -> bool {
                 .is_some_and(|label| herdr::label_names_task(label, &record.id)))
 }
 
-/// Whether `agent`'s workspace label can decide its owner: herdr reports no id for it, and a
-/// task whose label decides records its pane.
-pub fn needs_label(host: &str, agent: &Agent, tasks: &[(TaskRecord, Status)]) -> bool {
+/// Whether `agent`'s workspace label can decide its owner: herdr reports no id for it, and the
+/// running supervisor's `lock` or a task whose label decides records its pane.
+pub fn needs_label(
+    host: &str,
+    agent: &Agent,
+    lock: Option<&Lock>,
+    tasks: &[(TaskRecord, Status)],
+) -> bool {
     agent.agent_session_id.is_none()
-        && tasks.iter().any(|task| {
-            label_decides(task)
-                && task
-                    .1
-                    .herdr
-                    .as_ref()
-                    .is_some_and(|target| in_pane(host, agent, target))
-        })
+        && (lock.is_some_and(|lock| in_pane(host, agent, &lock.herdr))
+            || tasks.iter().any(|task| {
+                label_decides(task)
+                    && task
+                        .1
+                        .herdr
+                        .as_ref()
+                        .is_some_and(|target| in_pane(host, agent, target))
+            }))
 }
 
 /// Labels `agents`, listed in `herdr`'s session on `host`, with one workspace listing when any
@@ -112,11 +117,12 @@ pub fn label_where_needed(
     herdr: &Herdr,
     host: &Host,
     agents: &mut [Agent],
+    lock: Option<&Lock>,
     tasks: &[(TaskRecord, Status)],
 ) -> anyhow::Result<()> {
     if agents
         .iter()
-        .any(|agent| needs_label(&host.name, agent, tasks))
+        .any(|agent| needs_label(&host.name, agent, lock, tasks))
     {
         let workspaces = herdr.workspaces_if_running(host)?.unwrap_or_default();
         herdr::label_agents(&workspaces, agents);
@@ -406,11 +412,32 @@ mod tests {
                 Owner::Observed,
             ),
             (
-                "no id in the lock's pane",
+                "no id in the lock's pane under the supervisor's label",
+                labelled(Some("flow-supervisor"), agent("w1:p1", None)),
+                Some(&sup),
+                vec![],
+                Owner::Supervisor,
+            ),
+            (
+                "no id in the lock's pane under another label",
                 agent("w1:p1", None),
                 Some(&sup),
                 vec![],
-                Owner::Unconfirmed,
+                Owner::Observed,
+            ),
+            (
+                "no id in the lock's pane under a label flow did not look up",
+                labelled(None, agent("w1:p1", None)),
+                Some(&sup),
+                vec![],
+                Owner::Observed,
+            ),
+            (
+                "no id under the supervisor's label outside the lock's pane",
+                labelled(Some("flow-supervisor"), agent("w1:p9", None)),
+                Some(&sup),
+                vec![],
+                Owner::Observed,
             ),
             (
                 "no id in the lock's pane that is an open task's target",
@@ -428,7 +455,7 @@ mod tests {
             ),
             (
                 "no id in the lock's pane without a running lock",
-                agent("w1:p1", None),
+                labelled(Some("flow-supervisor"), agent("w1:p1", None)),
                 None,
                 vec![],
                 Owner::Observed,
@@ -443,9 +470,14 @@ mod tests {
     fn a_dispatched_tasks_pane_under_another_label_is_reused() {
         let tasks = [task("aaaaaaab", State::Done, Some("w1:p2"), Some("s-w"))];
         let unlabelled = labelled(None, agent("w1:p2", None));
-        assert!(needs_label("host-a", &unlabelled, &tasks));
-        assert!(!needs_label("host-a", &agent("w1:p2", Some("s-x")), &tasks));
-        assert!(!needs_label("host-a", &agent("w1:p9", None), &tasks));
+        assert!(needs_label("host-a", &unlabelled, None, &tasks));
+        assert!(!needs_label(
+            "host-a",
+            &agent("w1:p2", Some("s-x")),
+            None,
+            &tasks
+        ));
+        assert!(!needs_label("host-a", &agent("w1:p9", None), None, &tasks));
 
         let user = labelled(Some("Notes"), agent("w1:p2", None));
         let reused = reused_targets("host-a", &[user], &tasks);
@@ -474,11 +506,31 @@ mod tests {
         let user = labelled(Some("Notes"), agent("w1:p2", None));
         let unlabelled = labelled(None, agent("w1:p2", None));
 
-        assert!(needs_label("host-a", &unlabelled, &adopted(Some("s-w"))));
-        assert!(!needs_label("host-a", &unlabelled, &adopted(None)));
+        assert!(needs_label(
+            "host-a",
+            &unlabelled,
+            None,
+            &adopted(Some("s-w"))
+        ));
+        assert!(!needs_label("host-a", &unlabelled, None, &adopted(None)));
         let reused = reused_targets("host-a", std::slice::from_ref(&user), &adopted(Some("s-w")));
         assert_eq!(reused.len(), 1);
         assert!(reused_targets("host-a", &[user], &adopted(None)).is_empty());
+    }
+
+    #[test]
+    fn an_agent_with_no_id_in_the_locks_pane_needs_its_label() {
+        let sup = lock(Some("s-sup"));
+        let unlabelled = labelled(None, agent("w1:p1", None));
+        assert!(needs_label("host-a", &unlabelled, Some(&sup), &[]));
+        assert!(!needs_label("host-a", &unlabelled, None, &[]));
+        assert!(!needs_label(
+            "host-a",
+            &agent("w1:p1", Some("s-x")),
+            Some(&sup),
+            &[]
+        ));
+        assert!(!needs_label("host-b", &unlabelled, Some(&sup), &[]));
     }
 
     #[test]

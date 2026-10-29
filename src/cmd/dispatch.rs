@@ -125,7 +125,7 @@ pub fn run(state: &StateDir, args: &DispatchArgs) -> anyhow::Result<ExitCode> {
         }
         WorkDir::Task => store.task_dir(&id)?.join(WORK_DIR),
     };
-    let herdr = Herdr::with_session(runner, &config.herdr_session);
+    let herdr = Herdr::with_session(runner, &supervisor::herdr_session(state)?);
     herdr.ensure_server(host)?;
     if !args.allow_shared_dir {
         refuse_shared_dir(&herdr.agents(host)?, host, &cwd)?;

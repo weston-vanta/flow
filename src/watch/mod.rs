@@ -25,7 +25,7 @@
 //! the supervisor. A task whose worker herdr last reported `working` does not count as quiet.
 //!
 //! Hand sessions are the herdr agents on live hosts, in any herdr session flow lists, as of the
-//! cached inventory, other than the supervisor and any agent that may be it, each with its owner
+//! cached inventory, other than the supervisor, each with its owner
 //! (see `owner::owner`) as of the listing. The observed ones are the sessions the user started
 //! by hand. One a task owns,
 //! adopted ones included, is waited on as that task's worker, in the herdr session it was
@@ -188,14 +188,12 @@ impl HandSession {
     }
 }
 
-/// The agents in the cached inventory other than the supervisor and any agent that may be it,
-/// owned as of one reading of the lock and the tasks, and a note for each agent left out that may
-/// be the supervisor. Unreadable tasks own nothing here; `HandSession::owner` reads them again.
-fn hand_sessions(state: &StateDir) -> anyhow::Result<(Vec<HandSession>, Vec<String>)> {
+/// The agents in the cached inventory other than the supervisor, owned as of one reading of the
+/// lock and the tasks. Unreadable tasks own nothing here; `HandSession::owner` reads them again.
+fn hand_sessions(state: &StateDir) -> anyhow::Result<Vec<HandSession>> {
     let lock = supervisor::running(state)?;
     let tasks = Store::open(state).list_tasks().unwrap_or_default();
     let mut hands = Vec::new();
-    let mut notes = Vec::new();
     for inv in inventory::load_all(state)?
         .into_iter()
         .filter(|inv| !inv.gone)
@@ -203,12 +201,6 @@ fn hand_sessions(state: &StateDir) -> anyhow::Result<(Vec<HandSession>, Vec<Stri
         for agent in inv.agents {
             match owner::owner(&inv.name, &agent, lock.as_ref(), &tasks) {
                 Owner::Supervisor => {}
-                Owner::Unconfirmed => {
-                    if let Some(lock) = &lock {
-                        let unconfirmed = supervisor::unconfirmed(lock);
-                        notes.push(format!("{unconfirmed}; flow does not watch it"));
-                    }
-                }
                 listed => hands.push(HandSession {
                     host: inv.name.clone(),
                     agent,
@@ -217,7 +209,7 @@ fn hand_sessions(state: &StateDir) -> anyhow::Result<(Vec<HandSession>, Vec<Stri
             }
         }
     }
-    Ok((hands, notes))
+    Ok(hands)
 }
 
 /// How a watch that fails after taking the lock retries.
@@ -454,8 +446,8 @@ impl<'a> Watcher<'a> {
         std::fs::create_dir_all(&supervisor)
             .with_context(|| format!("creating {}", supervisor.display()))?;
         let memory = load_watch_state(state)?;
-        let (hands, notes) = hand_sessions(state)?;
-        let mut watcher = Watcher {
+        let hands = hand_sessions(state)?;
+        Ok(Watcher {
             state,
             store: Store::open(state),
             hosts: inventory::hosts(state)?,
@@ -475,11 +467,7 @@ impl<'a> Watcher<'a> {
             worktree_checks: BTreeMap::new(),
             logged: HashSet::new(),
             started: Instant::now(),
-        };
-        for note in notes {
-            watcher.log(&note);
-        }
-        Ok(watcher)
+        })
     }
 
     /// One poll cycle: the wake reason when something woke the supervisor.
@@ -575,14 +563,11 @@ impl<'a> Watcher<'a> {
         let skipped = self.list_agents(lock);
         self.listed_at = Instant::now();
         match hand_sessions(self.state) {
-            Ok((hands, notes)) => {
+            Ok(hands) => {
                 self.hands = hands
                     .into_iter()
                     .filter(|hand| !skipped.contains(&hand.host))
                     .collect();
-                for note in notes {
-                    self.log(&note);
-                }
             }
             Err(err) => self.log(&format!("{err:#}")),
         }
@@ -598,9 +583,11 @@ impl<'a> Watcher<'a> {
     /// failures are logged and never end the run.
     fn list_agents(&mut self, lock: &Guard) -> Vec<String> {
         let state = self.state;
-        let found =
-            Config::load(state).and_then(|config| Ok((config, inventory::live_hosts(state)?)));
-        let (config, hosts) = match found {
+        let found = Config::load(state).and_then(|config| {
+            let sessions = config.listed_sessions(&supervisor::herdr_session(state)?);
+            Ok((sessions, inventory::live_hosts(state)?))
+        });
+        let (sessions, hosts) = match found {
             Ok(found) => found,
             Err(err) => {
                 append_log(state, &format!("listing agents: {err:#}"));
@@ -631,7 +618,7 @@ impl<'a> Watcher<'a> {
             let sender = sender.clone();
             let state = state.clone();
             let runner = self.runner.clone();
-            let sessions = config.herdr_sessions.clone();
+            let sessions = sessions.clone();
             let host = host.clone();
             let listing = self.listing.clone();
             thread::spawn(move || {
@@ -1179,7 +1166,6 @@ mod tests {
     use classify::DEFAULT_QUIET_SECS;
 
     const CONFIG: &str = r#"
-herdr_session = "flow"
 herdr_sessions = ["flow", "default"]
 
 [[repos]]
@@ -1937,24 +1923,18 @@ default_branch = "main"
     }
 
     #[test]
-    fn an_agent_that_may_be_the_supervisor_is_neither_watched_nor_excluded_silently() {
-        let fx = Fixture::new();
-        fx.agent("env-0001", "default", "w1:p1", "flow-supervisor");
-        fx.supervisor_in("default", "w1:p1");
-        let runner = fake(vec![Scripted {
-            repeat: true,
-            ..on("host-a", &["agent", "wait"], WORKING)
-        }]);
+    fn an_agent_with_no_session_in_the_supervisors_pane_is_the_supervisor_only_under_its_label() {
+        for (label, watched) in [("flow-supervisor", false), ("Notes", true)] {
+            let fx = Fixture::new();
+            fx.agent("env-0001", "default", "w1:p1", "flow-supervisor");
+            fx.labelled("env-0001", "w1:p1", label);
+            fx.supervisor_in("default", "w1:p1");
+            let runner = fake(Vec::new());
 
-        let mut watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
-        assert!(watcher.hands.is_empty());
-        assert_eq!(watcher.cycle().unwrap(), None);
-        assert_eq!(watcher.cycle().unwrap(), None);
+            let watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
 
-        assert!(watcher.waits.is_empty());
-        let note = "pane w1:p1 on host-a holds an agent herdr reports no Claude Code session for, \
-                    so flow cannot tell it from the supervisor; flow does not watch it";
-        assert_eq!(fx.log().matches(note).count(), 1, "{}", fx.log());
+            assert_eq!(!watcher.hands.is_empty(), watched, "{label}");
+        }
     }
 
     #[test]

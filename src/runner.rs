@@ -65,14 +65,13 @@ fn control_dir_for(xdg_runtime_dir: Option<&OsStr>, uid: Option<u32>) -> PathBuf
     }
 }
 
-/// Whether `$FLOW_FAKE_RUNNER` is set, so `from_env` returns a `FakeRunner`. Commands that
-/// would replace this process with an interactive one print what they would run instead.
+/// Whether `$FLOW_FAKE_RUNNER` is set, so `from_env` returns a `FakeRunner`.
 pub fn fake_runner_active() -> bool {
     std::env::var_os(FAKE_RUNNER_VAR).is_some()
 }
 
 /// Creates `control_dir` if missing and sets it to mode 0700.
-pub fn ensure_control_dir(control_dir: &Path) -> anyhow::Result<()> {
+fn ensure_control_dir(control_dir: &Path) -> anyhow::Result<()> {
     DirBuilder::new()
         .recursive(true)
         .mode(0o700)

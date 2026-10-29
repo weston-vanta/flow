@@ -1,25 +1,26 @@
-//! `flow up`: attaches to the agent herdr reports the lock's Claude Code session for on the lock's
-//! host, or starts a supervisor here resuming that session, after seeding `watch-state.json`. It
-//! starts none beside an agent in the lock's pane herdr reports no session for.
+//! `flow up`: keeps at most one live supervisor per state directory. Run from a shell pane inside
+//! herdr, it focuses the supervisor the lock records on this host in this pane's herdr session,
+//! or starts one here, after seeding `watch-state.json`, when none runs or its host is gone. It
+//! refuses, asking no host, when the lock records a supervisor anywhere else.
 
-use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::Command;
 use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, anyhow, bail};
+use jiff::Timestamp;
 
 use crate::harness::handshake::{self, AgentStart, StoppedEarly};
 use crate::herdr::{self, Herdr};
 use crate::host;
 use crate::inventory;
 use crate::paths::{STATE_ENV, StateDir};
+use crate::render;
 use crate::runner::{self, Runner};
 use crate::state::Store;
-use crate::state::config::{Config, Host};
-use crate::state::task::{HerdrTarget, Status, TaskRecord};
-use crate::supervisor::{self, Found, Lock, SUPERVISOR_CWD, SUPERVISOR_ENV, SUPERVISOR_NAME};
+use crate::state::config::Host;
+use crate::state::task::HerdrTarget;
+use crate::supervisor::{self, Lock, SUPERVISOR_CWD, SUPERVISOR_ENV, SUPERVISOR_NAME};
 use crate::watch::{self, lock as watch_lock};
 
 const AGENT_KIND: &str = "claude";
@@ -28,26 +29,81 @@ const AGENT_KIND: &str = "claude";
 const START_PROMPT: &str = "Run the session start procedure in CLAUDE.md.";
 
 pub fn run(state: &StateDir) -> anyhow::Result<()> {
-    let config = Config::load(state)?;
+    let Some(session) = herdr::invoking_session()? else {
+        bail!("flow up runs from a shell pane inside herdr");
+    };
     let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
-    let hosts = inventory::hosts(state)?;
     let live = inventory::live_hosts(state)?;
-    if let Some(lock) = supervisor::running(state)? {
-        let tasks = Store::open(state).list_tasks()?;
-        let sessions = &config.herdr_sessions;
-        let live_one = live_supervisor(state, &hosts, &live, &runner, sessions, lock, &tasks)?;
-        if let Some((host, lock)) = live_one {
-            eprintln!(
-                "attaching to the supervisor on {} (pane {})",
-                host.name, lock.herdr.pane_id
-            );
-            return attach(&lock, host);
-        }
-    }
-    let herdr = Herdr::with_session(runner, &config.herdr_session);
     let here = local_host(&live)?;
-    // No supervisor is live, so whatever holds the watch lock is a watcher that outlived its
-    // supervisor, possibly on another host where it cannot be seen to be dead.
+    let found = match supervisor::running(state)? {
+        Some(lock) => recorded(state, &runner, here, &session, lock)?,
+        None => None,
+    };
+    let herdr = Herdr::with_session(runner, &session);
+    let pane_id = match found {
+        Some(pane_id) => pane_id,
+        None => start_here(state, &herdr, here)?,
+    };
+    if let Err(err) = herdr.focus_agent(here, &pane_id) {
+        eprintln!("could not focus the supervisor's pane {pane_id}: {err:#}");
+    }
+    super::print(&format!("supervisor is in workspace {SUPERVISOR_NAME}\n"))
+}
+
+/// The pane of the running supervisor `lock` records, when it is here: on `here` in herdr session
+/// `session`, where one listing finds it by its Claude Code session or its pane's label. `None`
+/// when it runs nowhere there or its host is gone. Refuses for a lock anywhere else.
+fn recorded(
+    state: &StateDir,
+    runner: &Arc<dyn Runner>,
+    here: &Host,
+    session: &str,
+    lock: Lock,
+) -> anyhow::Result<Option<String>> {
+    if let Some(record) = inventory::load(state, &lock.host_env_id)?
+        && record.gone
+    {
+        eprintln!(
+            "supervisor host {} is gone; starting a new supervisor here",
+            record.name
+        );
+        return Ok(None);
+    }
+    if lock.host_env_id != here.env_id || lock.herdr.session != session {
+        bail!(
+            "a supervisor is recorded on {} in herdr session {} (pane {}) since {} ago; run flow \
+             down to stop it before starting one here",
+            lock.herdr.host,
+            lock.herdr.session,
+            lock.herdr.pane_id,
+            render::relative(lock.since, Timestamp::now())
+        );
+    }
+    let tasks = Store::open(state).list_tasks()?;
+    let Some(agent) = supervisor::find(runner, here, &lock, &[], &tasks)? else {
+        return Ok(None);
+    };
+    eprintln!(
+        "found the supervisor on {} (pane {})",
+        here.name, agent.pane_id
+    );
+    if !lock.herdr.is(&here.name, &agent.session, &agent.pane_id) {
+        supervisor::set_target(
+            state,
+            HerdrTarget {
+                workspace_id: agent.workspace_id.clone(),
+                pane_id: agent.pane_id.clone(),
+                ..lock.herdr
+            },
+        )?;
+    }
+    Ok(Some(agent.pane_id))
+}
+
+/// Starts a supervisor on `here` in `herdr`'s session and returns its pane. Whatever holds the
+/// watch lock outlived its supervisor, possibly on another host where it cannot be seen to be
+/// dead, so the lock is cleared first.
+fn start_here(state: &StateDir, herdr: &Herdr, here: &Host) -> anyhow::Result<String> {
     if watch_lock::clear(state)? {
         eprintln!("removed state/supervisor/watch.lock left by the previous supervisor");
     }
@@ -57,7 +113,7 @@ pub fn run(state: &StateDir) -> anyhow::Result<()> {
     let state_root = state
         .canonical()
         .with_context(|| format!("resolving {}", state.root().display()))?;
-    let lock = start(state, &herdr, here, state_root.root())?;
+    let lock = start(state, herdr, here, state_root.root())?;
     match &lock.claude_session {
         Some(session) => eprintln!(
             "resumed supervisor session {session} on {} (pane {})",
@@ -68,70 +124,7 @@ pub fn run(state: &StateDir) -> anyhow::Result<()> {
             here.name, lock.herdr.pane_id
         ),
     }
-    attach(&lock, here)
-}
-
-/// The lock's host and the lock, moved to where herdr shows the supervisor in any of `sessions`,
-/// when it runs there. Fails, starting nothing, beside an unconfirmed agent in the lock's pane or
-/// when the host cannot be reached; a gone host is not asked.
-fn live_supervisor<'a>(
-    state: &StateDir,
-    hosts: &'a [Host],
-    live: &[Host],
-    runner: &Arc<dyn Runner>,
-    sessions: &[String],
-    lock: Lock,
-    tasks: &[(TaskRecord, Status)],
-) -> anyhow::Result<Option<(&'a Host, Lock)>> {
-    let Some(host) = hosts.iter().find(|host| host.env_id == lock.host_env_id) else {
-        eprintln!(
-            "supervisor host {} is not a known host; starting a new supervisor here",
-            lock.host_env_id
-        );
-        return Ok(None);
-    };
-    if !live.contains(host) {
-        eprintln!(
-            "supervisor host {} is gone; starting a new supervisor here",
-            host.name
-        );
-        return Ok(None);
-    }
-    let found = supervisor::find(runner, host, &lock, sessions, tasks);
-    let agent = match found {
-        Ok(Found::Supervisor(agent)) => agent,
-        Ok(Found::Unconfirmed) => bail!(
-            "{}. flow up started nothing, since a second supervisor would resume the same \
-             session. {}",
-            supervisor::unconfirmed(&lock),
-            supervisor::UNCONFIRMED_WAY_OUT
-        ),
-        Ok(Found::Nowhere) => return Ok(None),
-        Err(err) if herdr::is_unreachable(&err) => bail!(
-            "supervisor host {} unreachable: {err:#}\nrunning or attaching to the supervisor \
-             from this machine needs the operator's Ona login (`gitpod login`) and `gitpod \
-             environment ssh-config` here; set them up, or run `flow up` where they are",
-            host.name
-        ),
-        Err(err) => return Err(err),
-    };
-    if lock.herdr.is(&host.name, &agent.session, &agent.pane_id) {
-        return Ok(Some((host, lock)));
-    }
-    let moved = HerdrTarget {
-        workspace_id: agent.workspace_id.clone(),
-        pane_id: agent.pane_id.clone(),
-        session: agent.session.clone(),
-        ..lock.herdr.clone()
-    };
-    supervisor::set_target(state, moved.clone())?;
-    Ok(Some((
-        host,
-        Lock {
-            herdr: moved,
-            ..lock
-        },
-    )))
+    Ok(lock.herdr.pane_id)
 }
 
 /// The host in `live` this process runs on.
@@ -271,7 +264,7 @@ fn finish(lock: Lock, started: AgentStart) -> anyhow::Result<Lock> {
     if let AgentStart::BlockedAtStart { .. } = started {
         eprintln!(
             "supervisor in pane {} is blocked on a prompt other than the trust dialog; \
-             answer it once attached",
+             answer it in its pane",
             lock.herdr.pane_id
         );
     }
@@ -299,37 +292,4 @@ fn launch_argv(state_root: &Path, session: Option<&str>) -> anyhow::Result<Vec<S
     }
     argv.push(START_PROMPT);
     Ok(argv.into_iter().map(str::to_owned).collect())
-}
-
-/// Runs the attach command in place of this process, so it owns the terminal. When stdout is
-/// not a terminal, which the attach command needs, it prints the attach command to run from one
-/// and returns. Under the fake runner it prints `attach: <argv>` in place of running it.
-fn attach(lock: &Lock, host: &Host) -> anyhow::Result<()> {
-    let local = host::is_local(host, host::local_env_id().as_deref());
-    let control_dir = runner::default_control_dir();
-    let argv = supervisor::attach_argv(lock, host, local, &control_dir);
-    if !super::stdout_is_terminal() {
-        // The printed ssh command names a socket in the control dir, which is gone after a
-        // reboot.
-        if !local {
-            runner::ensure_control_dir(&control_dir)?;
-        }
-        let command = argv
-            .iter()
-            .map(|word| herdr::shell_word(word))
-            .collect::<Vec<_>>()
-            .join(" ");
-        return super::print(&format!(
-            "stdout is not a terminal, so flow did not attach; to attach, run: {command}\n"
-        ));
-    }
-    if runner::fake_runner_active() {
-        return super::print(&format!("attach: {}\n", argv.join(" ")));
-    }
-    if !local {
-        runner::ensure_control_dir(&control_dir)?;
-    }
-    let (program, args) = argv.split_first().expect("the attach argv names a program");
-    let err = Command::new(program).args(args).exec();
-    Err(err).with_context(|| format!("running `{}`", argv.join(" ")))
 }

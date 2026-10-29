@@ -8,9 +8,8 @@ use flow::state::task::{ClaudeSession, Harness, HerdrTarget, Origin, State, Task
 use jiff::Timestamp;
 use serde_json::{Value, json};
 
-/// flow in its own herdr session, `flow`, listing herdr's `default` session too.
+/// Lists herdr's `default` session beside flow's own, `flow` once `write_stopped_lock` records it.
 const CONFIG: &str = r#"
-herdr_session = "flow"
 herdr_sessions = ["flow", "default"]
 
 [[repos]]
@@ -49,6 +48,21 @@ const DEFAULT_AGENTS: &str = r#"{"id":"cli:agent:list","result":{"agents":[{"age
 const HAND_SESSION_ID: &str = "00000000-0000-4000-8000-000000000001";
 const TASK_SESSION_ID: &str = "00000000-0000-4000-8000-000000000002";
 const TASK_ID: &str = "aaaaaaab";
+/// Records a stopped supervisor that `flow up` ran in herdr session `session`, which makes it
+/// flow's own session.
+fn write_stopped_lock(state: &Path, session: &str) {
+    let dir = state.join("supervisor");
+    fs::create_dir_all(&dir).unwrap();
+    let lock = json!({
+        "host_env_id": "env-0001",
+        "herdr": {"host": "host-a", "workspace_id": "w9", "pane_id": "w9:p1", "agent": "claude",
+            "session": session},
+        "claude_session": null,
+        "since": "2026-10-26T12:00:00Z",
+        "stopped": "2026-10-26T13:00:00Z",
+    });
+    fs::write(dir.join("lock.json"), lock.to_string()).unwrap();
+}
 
 struct Fixture {
     dir: tempfile::TempDir,
@@ -65,6 +79,7 @@ impl Fixture {
         fs::create_dir(&state).unwrap();
         fs::write(state.join("config.toml"), CONFIG).unwrap();
         write_hosts(&state);
+        write_stopped_lock(&state, SESSION);
 
         let claude_fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude");
         let home = dir.path().join("claude");
@@ -792,10 +807,7 @@ impl Fixture {
     fn sharing_default(&self) {
         fs::write(
             self.state.join("config.toml"),
-            CONFIG.replace(
-                "herdr_session = \"flow\"\nherdr_sessions = [\"flow\", \"default\"]\n",
-                "",
-            ),
+            CONFIG.replace("herdr_sessions = [\"flow\", \"default\"]\n", ""),
         )
         .unwrap();
         let store = Store::open(&StateDir::resolve(self.dir.path()).unwrap());
@@ -953,30 +965,41 @@ fn hand_sessions_in_reused_panes_are_observed() {
 }
 
 #[test]
-fn an_agent_with_no_session_in_the_supervisors_pane_is_unconfirmed_and_not_followed() {
-    let fx = Fixture::new();
-    fx.single_host();
-    fx.sharing_default();
+fn an_agent_with_no_session_in_the_supervisors_pane_is_the_supervisor_only_under_its_label() {
     let unreported =
         SHARED_SESSION_AGENTS.replace(r#""agent_session":{"kind":"id","value":"s-sup"},"#, "");
     assert_ne!(unreported, SHARED_SESSION_AGENTS);
-    let script = [on("host-a", SERVER_RUNNING), on("host-a", &unreported)];
+    let labelled = |label: &str| {
+        let workspaces = json!({"id": "cli:workspace:list", "result": {"type": "workspace_list",
+            "workspaces": [{"workspace_id": "w1", "label": label}]}});
+        [
+            on("host-a", SERVER_RUNNING),
+            on("host-a", &unreported),
+            on("host-a", &workspaces.to_string()),
+        ]
+    };
+    let fx = Fixture::new();
+    fx.single_host();
+    fx.sharing_default();
 
+    let script = labelled("flow-supervisor");
     let text = stdout_of(fx.flow(&script).arg("sessions"));
-
     assert!(
-        text.contains("host-a  idle     unconfirmed  flow-supervisor\n"),
+        text.contains("host-a  idle     supervisor  flow-supervisor\n"),
         "{text}"
     );
     fx.flow(&script)
         .args(["follow", "host-a", "flow-supervisor"])
         .assert()
         .code(2)
-        .stderr(
-            "pane w1:p1 on host-a is the supervisor's, and herdr reports no Claude Code session \
-             for the agent there, so flow cannot tell it from the supervisor\n",
-        );
+        .stderr("pane w1:p1 on host-a is the supervisor's\n");
     assert!(!fx.state.join("supervisor/follow.json").exists());
+
+    let text = stdout_of(fx.flow(&labelled("Notes")).arg("sessions"));
+    assert!(
+        text.contains("host-a  idle     observed  flow-supervisor\n"),
+        "{text}"
+    );
 }
 
 /// One agent herdr reports no session id for, in task `TASK_ID`'s recorded pane `w2:p1` of the

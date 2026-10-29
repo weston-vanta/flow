@@ -19,7 +19,7 @@ const CHECKLIST: [&str; 5] = [
     "init: still yours to provide:",
     "  - herdr installed, with `herdr integration install claude`",
     "  - Claude Code installed and logged in on every host",
-    "  - `gitpod login` and `gitpod environment ssh-config` on every host that may run or attach to the supervisor",
+    "  - `gitpod login` and `gitpod environment ssh-config` on every host that may run the supervisor",
     "  - `gh auth login` on hosts where PR listing matters (optional)",
 ];
 

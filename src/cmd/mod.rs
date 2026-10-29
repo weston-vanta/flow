@@ -74,11 +74,6 @@ fn task_rows(tasks: &[(TaskRecord, Status)], now: Timestamp) -> Vec<Vec<String>>
         .collect()
 }
 
-/// Whether stdout is a terminal, or the fake runner is told to treat it as one.
-fn stdout_is_terminal() -> bool {
-    io::stdout().is_terminal() || fake_tty()
-}
-
 /// Whether someone is at a terminal to answer a question: stdin and stdout are both terminals,
 /// or the fake runner is told to treat them as such.
 fn interactive() -> bool {

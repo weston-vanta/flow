@@ -17,7 +17,7 @@ use crate::render;
 use crate::runner::{self, Runner};
 use crate::state::Store;
 use crate::state::config::{Config, Host, Repo};
-use crate::state::task::{Status, TaskRecord};
+use crate::supervisor;
 use crate::worktree;
 
 const DETACHED: &str = "(detached)";
@@ -49,10 +49,11 @@ pub fn run(state: &StateDir, refresh: bool, json: bool) -> anyhow::Result<()> {
     } else if inventories.is_empty() {
         super::print("no inventory cached; run `flow inventory --refresh`\n")?;
     } else {
+        let own = supervisor::herdr_session(state)?;
         super::print(&render_all(
             &inventories,
             &config.repos,
-            tagged_session(&config),
+            tagged_session(&config, &own),
             local.as_deref(),
             Timestamp::now(),
         ))?;
@@ -79,7 +80,7 @@ pub fn run_sync(
     } else {
         Vec::new()
     };
-    let code = super::sync::run(state, &config, runner.as_ref(), json, yes)?;
+    let code = super::sync::run(state, runner.as_ref(), json, yes)?;
     if !failed.is_empty() {
         bail!("could not refresh {}", failed.join(", "));
     }
@@ -169,6 +170,8 @@ fn refresh_all(
 ) -> anyhow::Result<Vec<String>> {
     let now = Timestamp::now();
     let tasks = &Store::open(state).list_tasks().unwrap_or_default();
+    let lock = &supervisor::running(state)?;
+    let own = &supervisor::herdr_session(state)?;
     let discovered = discovery::discover(state, &config.hosts, now)?;
     if let Some(warning) = &discovered.warning {
         eprintln!("{warning}");
@@ -184,8 +187,9 @@ fn refresh_all(
             .iter()
             .map(|(host, record)| {
                 scope.spawn(move || {
-                    let fresh = refresh_one(runner, config, host, record, tasks, now);
-                    (host, fresh)
+                    let fresh =
+                        inventory::refresh(runner, host, config, own, lock.as_ref(), tasks, now);
+                    (host, keep_discovered(host, record, fresh, now))
                 })
             })
             .collect();
@@ -245,26 +249,15 @@ fn refresh_all(
     Ok(failed)
 }
 
-/// `host`'s fresh inventory keeping what discovery recorded in `record`, or `record` marked
-/// unreachable, with why, when the host does not answer.
-fn refresh_one(
-    runner: &Arc<dyn Runner>,
-    config: &Config,
+/// `host`'s `fresh` inventory keeping what discovery recorded in `record`, or `record` marked
+/// unreachable, with why, when the host did not answer.
+fn keep_discovered(
     host: &Host,
     record: &HostInventory,
-    tasks: &[(TaskRecord, Status)],
+    fresh: anyhow::Result<HostInventory>,
     now: Timestamp,
 ) -> anyhow::Result<HostInventory> {
-    let sessions = &config.herdr_sessions;
-    match inventory::refresh(
-        runner,
-        host,
-        &config.repos,
-        sessions,
-        &config.herdr_session,
-        tasks,
-        now,
-    ) {
+    match fresh {
         Ok(fresh) => Ok(HostInventory {
             ssh_alias: record.ssh_alias.clone(),
             ona_name: record.ona_name.clone(),
@@ -318,9 +311,9 @@ fn list_prs(
         .collect()
 }
 
-/// flow's own herdr session when flow lists others too, so its agents are tagged with it.
-fn tagged_session(config: &Config) -> Option<&str> {
-    (config.herdr_sessions.len() > 1).then_some(config.herdr_session.as_str())
+/// flow's own herdr session, `own`, when flow lists others too, so its agents are tagged with it.
+fn tagged_session<'a>(config: &Config, own: &'a str) -> Option<&'a str> {
+    (config.listed_sessions(own).len() > 1).then_some(own)
 }
 
 /// Each host's block, separated by blank lines: the local host first, then by name. Agents in
@@ -816,11 +809,10 @@ default_branch = "main"
     #[test]
     fn only_flows_own_session_is_tagged_and_only_beside_others() {
         let alone = config();
-        assert_eq!(tagged_session(&alone), None);
-        let isolated: Config =
-            toml::from_str("herdr_session = \"flow\"\nherdr_sessions = [\"flow\", \"default\"]\n")
-                .unwrap();
-        assert_eq!(tagged_session(&isolated), Some("flow"));
+        assert_eq!(tagged_session(&alone, "flow"), None);
+        let beside: Config = toml::from_str("herdr_sessions = [\"default\"]\n").unwrap();
+        assert_eq!(tagged_session(&beside, "flow"), Some("flow"));
+        assert_eq!(tagged_session(&beside, "default"), None);
     }
 
     #[test]

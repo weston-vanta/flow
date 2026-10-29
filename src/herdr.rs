@@ -18,7 +18,7 @@ use crate::state::config::Host;
 use crate::vars;
 
 /// herdr's main session, the one its window shows unless told otherwise: flow's own session
-/// unless `config.toml` names another.
+/// until a supervisor lock records another.
 pub const DEFAULT_SESSION: &str = "default";
 /// The lowest herdr private protocol whose CLI output this module parses.
 pub const MIN_PROTOCOL: u32 = 22;
@@ -627,9 +627,11 @@ impl Herdr {
         Ok(self.call(host, &argv)?.stdout)
     }
 
-    /// The argv that attaches a terminal to the agent in `pane_id`, to run on the agent's host.
-    pub fn attach_argv(&self, pane_id: &str) -> Vec<String> {
-        attach_argv(&self.session, pane_id)
+    /// Moves the user's herdr focus to the agent in `pane_id`; fails with `agent_not_found` when
+    /// herdr sees no agent there.
+    pub fn focus_agent(&self, host: &Host, pane_id: &str) -> anyhow::Result<()> {
+        self.call_json::<AgentResult>(host, &self.argv(&["agent", "focus", pane_id]))?;
+        Ok(())
     }
 
     /// `herdr --session <session> <args...>`.
@@ -757,9 +759,55 @@ pub fn remove_machine_argv(id: &str) -> Vec<String> {
     words(&["herdr", "machine", "remove", id])
 }
 
-/// The argv that attaches a terminal to the agent in `pane_id` of herdr session `session`.
-pub fn attach_argv(session: &str, pane_id: &str) -> Vec<String> {
-    words(&["herdr", "--session", session, "agent", "attach", pane_id])
+/// Set to `1` in every herdr pane.
+const ENV_MARKER: &str = "HERDR_ENV";
+const PANE_ID_ENV: &str = "HERDR_PANE_ID";
+/// The socket of the herdr server whose pane this is.
+const SOCKET_ENV: &str = "HERDR_SOCKET_PATH";
+const SOCKET_FILE: &str = "herdr.sock";
+
+/// The herdr session of the pane this process runs in, from `HERDR_SOCKET_PATH`; `None` outside
+/// a herdr pane. Fails when the socket is not where herdr puts a session's.
+pub fn invoking_session() -> anyhow::Result<Option<String>> {
+    let in_pane = std::env::var_os(ENV_MARKER).is_some_and(|marker| marker == "1")
+        && std::env::var_os(PANE_ID_ENV).is_some_and(|pane| !pane.is_empty());
+    if !in_pane {
+        return Ok(None);
+    }
+    let socket = std::env::var_os(SOCKET_ENV)
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow!("{SOCKET_ENV} is unset in this herdr pane"))?;
+    let config_dir = match std::env::var_os("XDG_CONFIG_HOME").filter(|dir| !dir.is_empty()) {
+        Some(dir) => PathBuf::from(dir),
+        None => PathBuf::from(std::env::var_os("HOME").context("HOME is unset")?).join(".config"),
+    }
+    .join("herdr");
+    session_of_socket(&socket, &config_dir)
+        .map(Some)
+        .ok_or_else(|| {
+            anyhow!(
+                "{SOCKET_ENV} {} is neither herdr's main socket nor a named session's under {}",
+                socket.display(),
+                config_dir.display()
+            )
+        })
+}
+
+/// The session whose server listens on `socket`: `default` for `<config_dir>/herdr.sock`,
+/// `<name>` for `<config_dir>/sessions/<name>/herdr.sock`. Paths compare resolved.
+fn session_of_socket(socket: &Path, config_dir: &Path) -> Option<String> {
+    let resolved = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+    let socket = resolved(socket);
+    let config_dir = resolved(config_dir);
+    if socket == config_dir.join(SOCKET_FILE) {
+        return Some(DEFAULT_SESSION.to_owned());
+    }
+    let session_dir = socket
+        .parent()
+        .filter(|_| socket.file_name() == Some(SOCKET_FILE.as_ref()))?;
+    (session_dir.parent() == Some(&config_dir.join("sessions")))
+        .then(|| session_dir.file_name()?.to_str().map(str::to_owned))
+        .flatten()
 }
 
 /// How a `wait_for_agent` call ended.
@@ -854,7 +902,7 @@ fn error_code(stderr: &str) -> Option<String> {
 
 /// `word` as typed into an interactive shell: bare when it has no characters any shell treats
 /// specially, single-quoted otherwise.
-pub(crate) fn shell_word(word: &str) -> Cow<'_, str> {
+fn shell_word(word: &str) -> Cow<'_, str> {
     let plain = !word.is_empty()
         && word
             .chars()
@@ -1520,15 +1568,6 @@ mod tests {
     }
 
     #[test]
-    fn attach_argv_targets_the_pane() {
-        let (herdr, _) = herdr(Vec::new());
-        assert_eq!(
-            herdr.attach_argv("w2:p1"),
-            words(&["herdr", "--session", "flow", "agent", "attach", "w2:p1"])
-        );
-    }
-
-    #[test]
     fn every_call_passes_session_flow() {
         let (herdr, fake) = herdr(vec![
             ok(STATUS_NOT_RUNNING),
@@ -1544,6 +1583,7 @@ mod tests {
             ok(""),
             ok(PANE_WAIT_OUTPUT_MATCHED),
             ok(""),
+            ok(AGENT_GET),
         ]);
         let target = host();
         herdr.ensure_server(&target).unwrap();
@@ -1570,15 +1610,50 @@ mod tests {
             .pane_send_keys(&target, "w3:p1", &[KEY_ENTER])
             .unwrap();
 
-        let mut calls = argvs(&fake);
-        assert_eq!(calls.len(), 13, "{calls:?}");
-        calls.push(herdr.attach_argv("w3:p1"));
+        herdr.focus_agent(&target, "w3:p1").unwrap();
+
+        let calls = argvs(&fake);
+        assert_eq!(calls.len(), 14, "{calls:?}");
         for argv in calls {
             assert!(
                 argv.windows(2).any(|pair| pair == ["--session", "flow"]),
                 "{argv:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_panes_herdr_session_is_named_by_its_socket() {
+        let dir = Path::new("/home/dev/.config/herdr");
+        let session = |socket: &str| session_of_socket(Path::new(socket), dir);
+        assert_eq!(
+            session("/home/dev/.config/herdr/herdr.sock").as_deref(),
+            Some("default")
+        );
+        assert_eq!(
+            session("/home/dev/.config/herdr/sessions/work/herdr.sock").as_deref(),
+            Some("work")
+        );
+        assert_eq!(session("/home/dev/.config/herdr/sessions/herdr.sock"), None);
+        assert_eq!(
+            session("/home/dev/.config/herdr/sessions/work/other.sock"),
+            None
+        );
+        assert_eq!(session("/tmp/herdr.sock"), None);
+    }
+
+    #[test]
+    fn a_session_socket_behind_a_symlink_is_named_by_its_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("herdr");
+        std::fs::create_dir_all(dir.join("sessions/work")).unwrap();
+        std::fs::write(dir.join("sessions/work/herdr.sock"), "").unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(dir.join("sessions/work"), &link).unwrap();
+        assert_eq!(
+            session_of_socket(&link.join("herdr.sock"), &dir).as_deref(),
+            Some("work")
+        );
     }
 
     #[test]

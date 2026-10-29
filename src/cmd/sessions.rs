@@ -26,7 +26,6 @@ use crate::supervisor;
 const OBSERVED: &str = "observed";
 const FOLLOWED: &str = "followed";
 const SUPERVISOR: &str = "supervisor";
-const UNCONFIRMED: &str = "unconfirmed";
 const HEADER: [&str; 4] = ["HOST", "STATUS", "TASK", "TITLE"];
 const SUMMARY_WIDTH: usize = 100;
 
@@ -177,12 +176,12 @@ pub(super) fn host_agents(
     else {
         return Ok(HostAgents::default());
     };
-    let config = Config::load(state)?;
+    let own = supervisor::herdr_session(state)?;
     let listed = inventory::list_agents(
         state,
         runner,
-        &config.herdr_sessions,
-        FlowServer::Start(&config.herdr_session),
+        &Config::load(state)?.listed_sessions(&own),
+        FlowServer::Start(&own),
         &host,
         Timestamp::now(),
     );
@@ -222,9 +221,6 @@ pub(super) fn host_agents(
             }
             Owner::Task(id) => format!("already task {id}"),
             Owner::Supervisor => "the supervisor's".to_owned(),
-            Owner::Unconfirmed => "the supervisor's, and herdr reports no Claude Code session for \
-                                   the agent there, so flow cannot tell it from the supervisor"
-                .to_owned(),
         };
         split.held.push((agent, holder));
     }
@@ -343,9 +339,10 @@ fn live_inventories(
     hosts: &[Host],
     now: Timestamp,
 ) -> anyhow::Result<Vec<HostInventory>> {
-    let sessions = &config.herdr_sessions;
-    let start = FlowServer::Start(&config.herdr_session);
-    inventory::list_agents_on(state, runner, sessions, start, hosts, now)
+    let own = supervisor::herdr_session(state)?;
+    let sessions = config.listed_sessions(&own);
+    let start = FlowServer::Start(&own);
+    inventory::list_agents_on(state, runner, &sessions, start, hosts, now)
         .into_iter()
         .map(|listed| {
             let listed = listed?;
@@ -397,7 +394,6 @@ fn render_text(
                 match &entry.owner {
                     Owner::Task(id) => id.clone(),
                     Owner::Supervisor => SUPERVISOR.to_owned(),
-                    Owner::Unconfirmed => UNCONFIRMED.to_owned(),
                     Owner::Observed if entry.followed => FOLLOWED.to_owned(),
                     Owner::Observed => OBSERVED.to_owned(),
                 },

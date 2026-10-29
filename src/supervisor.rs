@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::herdr::{self, Agent, Herdr};
 use crate::owner::{self, Owner};
 use crate::paths::StateDir;
-use crate::runner::{self, Runner};
+use crate::runner::Runner;
 use crate::state::config::Host;
 use crate::state::fs::{with_lock, write_atomic};
 use crate::state::task::{HerdrTarget, Status, TaskRecord};
@@ -29,12 +29,9 @@ pub fn is_supervisor_session() -> bool {
 /// The supervisor always runs from the clone's fixed path, because the harness keys
 /// transcripts by cwd and `--resume` must find the same conversation on every host.
 pub const SUPERVISOR_CWD: &str = "/workspaces/flow";
-/// The supervisor's herdr workspace label and Claude Code session name.
+/// The supervisor's herdr workspace label and Claude Code session name. An agent herdr reports no
+/// session for is the supervisor only in the lock's pane under this label (see `owner::owner`).
 pub const SUPERVISOR_NAME: &str = "flow-supervisor";
-/// How the refusals beside an `Owner::Unconfirmed` agent tell the user out.
-pub const UNCONFIRMED_WAY_OUT: &str = "If it is your own session, `flow down --forget` marks \
-     the supervisor stopped and leaves the pane alone; if it is the supervisor, exit it and run \
-     `flow down`; then `flow up`.";
 const LOCK_FILE: &str = "supervisor/lock.json";
 
 /// Where the supervisor runs, and the Claude Code session to resume when it has to start again.
@@ -49,54 +46,39 @@ pub struct Lock {
     pub stopped: Option<Timestamp>,
 }
 
-/// Why the agent in `lock`'s pane, an `Owner::Unconfirmed` one, cannot be told from the
-/// supervisor, for messages.
-pub fn unconfirmed(lock: &Lock) -> String {
-    format!(
-        "pane {} on {} holds an agent herdr reports no Claude Code session for, so flow cannot \
-         tell it from the supervisor",
-        lock.herdr.pane_id, lock.herdr.host
-    )
-}
-
-/// Where herdr shows the supervisor `lock` records on its host.
-#[derive(Debug)]
-pub enum Found {
-    Supervisor(Agent),
-    /// The lock's pane holds an `Owner::Unconfirmed` agent.
-    Unconfirmed,
-    Nowhere,
-}
-
 /// Looks for `lock`'s supervisor on `host` in the lock's herdr session, then in the rest of
-/// `sessions`. An unconfirmed agent in the lock's pane ends the search.
+/// `sessions`.
 pub fn find(
     runner: &Arc<dyn Runner>,
     host: &Host,
     lock: &Lock,
     sessions: &[String],
     tasks: &[(TaskRecord, Status)],
-) -> anyhow::Result<Found> {
+) -> anyhow::Result<Option<Agent>> {
     let others = sessions
         .iter()
         .filter(|session| **session != lock.herdr.session);
     for session in std::iter::once(&lock.herdr.session).chain(others) {
         let herdr = Herdr::with_session(runner.clone(), session);
         let mut agents = herdr.agents_if_running(host)?.unwrap_or_default();
-        owner::label_where_needed(&herdr, host, &mut agents, tasks)?;
-        let mut unconfirmed = false;
-        for agent in agents {
-            match owner::owner(&host.name, &agent, Some(lock), tasks) {
-                Owner::Supervisor => return Ok(Found::Supervisor(agent)),
-                Owner::Unconfirmed => unconfirmed = true,
-                _ => {}
-            }
-        }
-        if unconfirmed {
-            return Ok(Found::Unconfirmed);
+        owner::label_where_needed(&herdr, host, &mut agents, Some(lock), tasks)?;
+        let supervisor = agents
+            .into_iter()
+            .find(|agent| owner::owner(&host.name, agent, Some(lock), tasks) == Owner::Supervisor);
+        if supervisor.is_some() {
+            return Ok(supervisor);
         }
     }
-    Ok(Found::Nowhere)
+    Ok(None)
+}
+
+/// flow's herdr session, where the supervisor and workers run: the one the lock records, which
+/// `flow up` ran in, else herdr's `default`.
+pub fn herdr_session(state: &StateDir) -> anyhow::Result<String> {
+    Ok(load(state)?.map_or_else(
+        || herdr::DEFAULT_SESSION.to_owned(),
+        |lock| lock.herdr.session,
+    ))
 }
 
 pub fn lock_path(state: &StateDir) -> PathBuf {
@@ -186,24 +168,8 @@ fn write(path: &Path, lock: &Lock) -> io::Result<()> {
     write_atomic(path, &bytes)
 }
 
-/// The argv that attaches this terminal to the supervisor's pane: herdr itself when `host`, the
-/// lock's host, is this machine, else ssh with a tty, multiplexed through `control_dir`.
-pub fn attach_argv(lock: &Lock, host: &Host, local: bool, control_dir: &Path) -> Vec<String> {
-    let attach = herdr::attach_argv(&lock.herdr.session, &lock.herdr.pane_id);
-    if local {
-        return attach;
-    }
-    let mut argv = vec!["ssh".to_owned(), "-t".to_owned()];
-    argv.extend(runner::ssh_connection_options(control_dir));
-    argv.push(host.ssh_alias.clone());
-    argv.push(runner::remote_command(&attach));
-    argv
-}
-
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use super::*;
 
     fn lock() -> Lock {
@@ -220,19 +186,6 @@ mod tests {
             since: "2026-10-26T12:00:00Z".parse().unwrap(),
             stopped: None,
         }
-    }
-
-    fn host() -> Host {
-        Host {
-            name: "host-b".to_owned(),
-            env_id: "env-0002".to_owned(),
-            ssh_alias: "host-b.example".to_owned(),
-            local_marker_env: None,
-        }
-    }
-
-    fn words(items: &[&str]) -> Vec<String> {
-        items.iter().map(|word| (*word).to_owned()).collect()
     }
 
     fn state() -> (tempfile::TempDir, StateDir) {
@@ -279,33 +232,13 @@ mod tests {
     }
 
     #[test]
-    fn attach_argv_runs_herdr_directly_on_the_local_host() {
-        assert_eq!(
-            attach_argv(&lock(), &host(), true, Path::new("/run/flow")),
-            words(&["herdr", "--session", "default", "agent", "attach", "w1:p1"])
-        );
-    }
-
-    #[test]
-    fn attach_argv_goes_through_ssh_with_a_tty_for_a_remote_host() {
-        let control_dir = PathBuf::from("/run/flow");
-        assert_eq!(
-            attach_argv(&lock(), &host(), false, &control_dir),
-            words(&[
-                "ssh",
-                "-t",
-                "-o",
-                "ConnectTimeout=10",
-                "-o",
-                "ControlMaster=auto",
-                "-o",
-                "ControlPath=/run/flow/ssh-%C",
-                "-o",
-                "ControlPersist=600",
-                "host-b.example",
-                "zsh -lc ''\\''herdr'\\'' '\\''--session'\\'' '\\''default'\\'' '\\''agent'\\'' \
-                 '\\''attach'\\'' '\\''w1:p1'\\'''",
-            ])
-        );
+    fn flows_herdr_session_is_the_locks_even_once_stopped() {
+        let (_dir, state) = state();
+        assert_eq!(herdr_session(&state).unwrap(), "default");
+        let mut herdr = lock().herdr;
+        herdr.session = "work".to_owned();
+        take(&state, "env-0002", herdr).unwrap();
+        mark_stopped(&state).unwrap();
+        assert_eq!(herdr_session(&state).unwrap(), "work");
     }
 }

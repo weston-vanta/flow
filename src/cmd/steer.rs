@@ -41,7 +41,7 @@ pub fn run(state: &StateDir, id: &str, text: &str) -> anyhow::Result<()> {
     let tasks = store.list_tasks()?;
     let lock = supervisor::running(state)?;
     let mut agents = herdr.agents(host)?;
-    owner::label_where_needed(&herdr, host, &mut agents, &tasks)?;
+    owner::label_where_needed(&herdr, host, &mut agents, lock.as_ref(), &tasks)?;
     if owner::retire_reused(&store, &target.host, &agents, &tasks)?.contains(&id.to_owned()) {
         return Err(no_target(&store, id)?.into());
     }
@@ -54,7 +54,6 @@ pub fn run(state: &StateDir, id: &str, text: &str) -> anyhow::Result<()> {
             None => "no agent".to_owned(),
             Some(Owner::Supervisor) => "the supervisor".to_owned(),
             Some(Owner::Task(other)) => format!("task {other}'s worker"),
-            Some(Owner::Unconfirmed) => "an agent flow cannot tell from the supervisor".to_owned(),
             Some(Owner::Observed) => {
                 "another agent than the task's worker, since herdr reuses pane ids".to_owned()
             }

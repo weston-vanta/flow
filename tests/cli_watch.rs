@@ -14,9 +14,8 @@ use flow::watch::queue;
 use jiff::Timestamp;
 use serde_json::{Value, json};
 
-/// flow in its own herdr session, `flow`, listing herdr's `default` session too.
+/// Lists herdr's `default` session beside flow's own, `flow` once `write_stopped_lock` records it.
 const CONFIG: &str = r#"
-herdr_session = "flow"
 herdr_sessions = ["flow", "default"]
 
 [[repos]]
@@ -51,6 +50,21 @@ const WATCH_BUDGET: Duration = Duration::from_secs(5);
 const POLL_MS: &str = "200";
 /// The first delay before a failed watch retries, so a retry or two fits in these tests.
 const RETRY_MS: &str = "100";
+/// Records a stopped supervisor that `flow up` ran in herdr session `session`, which makes it
+/// flow's own session.
+fn write_stopped_lock(state: &Path, session: &str) {
+    let dir = state.join("supervisor");
+    fs::create_dir_all(&dir).unwrap();
+    let lock = json!({
+        "host_env_id": "env-0001",
+        "herdr": {"host": "host-a", "workspace_id": "w9", "pane_id": "w9:p1", "agent": "claude",
+            "session": session},
+        "claude_session": null,
+        "since": "2026-10-26T12:00:00Z",
+        "stopped": "2026-10-26T13:00:00Z",
+    });
+    fs::write(dir.join("lock.json"), lock.to_string()).unwrap();
+}
 
 struct Fixture {
     dir: tempfile::TempDir,
@@ -64,6 +78,7 @@ impl Fixture {
         fs::create_dir(&state).unwrap();
         fs::write(state.join("config.toml"), CONFIG).unwrap();
         write_hosts(&state);
+        write_stopped_lock(&state, "flow");
         let fixture = Fixture { dir, state };
         fixture.script(&[]);
         fixture

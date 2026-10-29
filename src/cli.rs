@@ -127,15 +127,10 @@ pub enum Command {
         #[arg(allow_hyphen_values = true)]
         text: String,
     },
-    /// Attach to the live supervisor session, or start one on this host and attach
+    /// From a shell pane inside herdr, focus the supervisor, starting it here when none runs
     Up,
     /// Stop the supervisor, leaving workers and tasks running; `flow up` resumes it
-    Down {
-        /// Close nothing and mark the supervisor stopped, keeping its session to resume, when
-        /// the agent in its pane is not the supervisor
-        #[arg(long)]
-        forget: bool,
-    },
+    Down,
 }
 
 impl Command {
@@ -461,7 +456,7 @@ pub fn run(cli: Cli, state: &StateDir, repo_root: &Path) -> anyhow::Result<ExitC
         Command::Guard => return cmd::guard::run(state),
         Command::Steer { id, text } => cmd::steer::run(state, &id, &text),
         Command::Up => cmd::up::run(state),
-        Command::Down { forget } => cmd::down::run(state, forget),
+        Command::Down => cmd::down::run(state),
     };
     done.map(|()| ExitCode::SUCCESS)
 }
