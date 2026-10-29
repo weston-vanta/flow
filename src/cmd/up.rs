@@ -1,7 +1,9 @@
-//! `flow up`: attaches to the live supervisor, or starts one on this host and attaches to it.
-//! A live supervisor is found in the herdr session its lock records, whatever the configured
-//! one; a new one starts in the configured session. One `flow down` stopped is not looked for:
-//! a new one starts here at once, resuming its Claude Code session.
+//! `flow up`: attaches to the live supervisor, or starts one on this host and attaches to it. A
+//! live supervisor is found in the herdr session its lock records, whatever the configured one; a
+//! new one starts in the configured session. One `flow down` stopped is not looked for: a new one
+//! starts here at once, resuming its Claude Code session. When the lock's pane holds an agent that
+//! runs in the supervisor's cwd and workspace but cannot be confirmed as the supervisor, it refuses
+//! rather than start a second supervisor on the same session; `flow down --force` clears the way.
 
 use std::os::unix::process::CommandExt;
 use std::path::Path;
@@ -18,7 +20,7 @@ use crate::paths::{STATE_ENV, StateDir};
 use crate::runner::{self, Runner};
 use crate::state::config::{Config, Host};
 use crate::state::task::HerdrTarget;
-use crate::supervisor::{self, Lock, SUPERVISOR_CWD, SUPERVISOR_ENV, SUPERVISOR_NAME};
+use crate::supervisor::{self, Identity, Lock, SUPERVISOR_CWD, SUPERVISOR_ENV, SUPERVISOR_NAME};
 use crate::watch::lock as watch_lock;
 
 const AGENT_KIND: &str = "claude";
@@ -67,10 +69,13 @@ pub fn run(state: &StateDir) -> anyhow::Result<()> {
     attach(&lock, here)
 }
 
-/// The host running the supervisor `lock` names, when its pane still holds an agent. When it
-/// does not, the lock's workspace is closed there, so a supervisor that did not come up leaves
-/// no workspace behind. Fails when that host cannot be reached, since the supervisor may well be
-/// alive there; a gone host is not asked, since the supervisor went with it.
+/// The host running the supervisor `lock` names, when its pane holds the supervisor (see
+/// `Lock::identify`). When it holds nothing, or clearly another agent, the lock's workspace is
+/// closed there when it is still the supervisor's, so a supervisor that did not come up leaves no
+/// workspace behind. Fails, starting nothing, when the pane holds an agent that may be the
+/// supervisor, since a second one would resume the same session. Fails when that host cannot be
+/// reached, since the supervisor may well be alive there; a gone host is not asked, since the
+/// supervisor went with it.
 fn live_host<'a>(
     hosts: &'a [Host],
     live: &[Host],
@@ -109,8 +114,16 @@ fn live_host<'a>(
     let in_pane = agents
         .iter()
         .find(|agent| agent.pane_id == lock.herdr.pane_id);
-    if in_pane.is_some_and(|agent| lock.runs(agent)) {
-        return Ok(Some(host));
+    if let Some(agent) = in_pane {
+        match lock.identify(agent) {
+            Identity::Supervisor => return Ok(Some(host)),
+            Identity::Unconfirmed => bail!(
+                "{}. flow up started nothing, since a second supervisor would resume the same \
+                 session; if it is not the supervisor, run `flow down --force`, then `flow up`",
+                supervisor::unconfirmed(lock, &host.name, agent)
+            ),
+            Identity::Other => {}
+        }
     }
     close_left_workspace(herdr, host, lock, &agents);
     Ok(None)

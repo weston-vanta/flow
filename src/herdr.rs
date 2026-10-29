@@ -37,6 +37,7 @@ const TIMEOUT_CODE: &str = "timeout";
 const AGENT_NOT_FOUND_CODE: &str = "agent_not_found";
 /// The `error.code` herdr reports when a target workspace does not exist.
 const WORKSPACE_NOT_FOUND_CODE: &str = "workspace_not_found";
+const PANE_NOT_FOUND_CODE: &str = "pane_not_found";
 /// The `error.code` herdr reports when no server runs for the session.
 const SERVER_NOT_RUNNING_CODE: &str = "server_not_running";
 /// Not a herdr code: `call_or_code` returns it for a non-zero exit with nothing on stdout or
@@ -201,12 +202,14 @@ struct WorkspaceList {
     workspaces: Vec<Workspace>,
 }
 
-/// A herdr workspace: its id and its label.
+/// A herdr workspace: its id, its label, and how many panes its tabs hold.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Workspace {
     pub workspace_id: String,
     #[serde(default)]
     pub label: String,
+    #[serde(default)]
+    pub pane_count: Option<u32>,
 }
 
 impl Workspace {
@@ -351,20 +354,14 @@ impl Herdr {
     }
 
     /// Starts the server in its own session with every stream on /dev/null, so it outlives
-    /// this process and, over ssh, does not hold the connection open. It runs without any of
-    /// flow's variables, since every pane opened there later, the user's included, inherits its
-    /// environment; flow sets what its own launches need on their command lines.
+    /// this process and, over ssh, does not hold the connection open. It runs without flow's
+    /// variables or those of a Claude Code session running flow (see
+    /// `vars::scrubbed_exec_script`), since every pane opened there later, the user's included,
+    /// inherits its environment; flow sets what its own launches need on their command lines.
     fn start_detached_server(&self, host: &Host) -> anyhow::Result<()> {
-        let mut argv = words(&["setsid", "-f", "env"]);
-        for name in vars::ALL {
-            argv.extend(words(&["-u", name]));
-        }
-        argv.extend(words(&[
-            "sh",
-            "-c",
-            r#"exec "$@" </dev/null >/dev/null 2>&1"#,
-            "sh",
-        ]));
+        let mut argv = words(&["setsid", "-f", "sh", "-c"]);
+        argv.push(vars::scrubbed_exec_script());
+        argv.push("sh".to_owned());
         argv.extend(self.argv(&["server"]));
         let status = self
             .runner
@@ -462,6 +459,17 @@ impl Herdr {
     pub fn close_workspace(&self, host: &Host, workspace_id: &str) -> anyhow::Result<bool> {
         let argv = self.argv(&["workspace", "close", workspace_id]);
         let Some(output) = self.call_unless(host, &argv, WORKSPACE_NOT_FOUND_CODE)? else {
+            return Ok(false);
+        };
+        parse_result::<Ack>(host, &argv, &output)?;
+        Ok(true)
+    }
+
+    /// Closes `pane_id`; `false` when herdr no longer knows it. herdr closes a workspace with
+    /// its last pane.
+    pub fn close_pane(&self, host: &Host, pane_id: &str) -> anyhow::Result<bool> {
+        let argv = self.argv(&["pane", "close", pane_id]);
+        let Some(output) = self.call_unless(host, &argv, PANE_NOT_FOUND_CODE)? else {
             return Ok(false);
         };
         parse_result::<Ack>(host, &argv, &output)?;
@@ -1311,28 +1319,21 @@ mod tests {
         herdr.ensure_server(&host()).unwrap();
         let calls = argvs(&fake);
         assert_eq!(calls.len(), 3, "{calls:?}");
-        let mut expected = words(&["setsid", "-f", "env"]);
-        for name in vars::ALL {
-            expected.extend(words(&["-u", name]));
-        }
-        expected.extend(words(&[
-            "sh",
-            "-c",
-            r#"exec "$@" </dev/null >/dev/null 2>&1"#,
-            "sh",
-            "herdr",
-            "--session",
-            "flow",
-            "server",
-        ]));
-        assert_eq!(calls[1], expected);
-        for name in [vars::SUPERVISOR, vars::STATE] {
-            assert!(
-                calls[1].windows(2).any(|pair| pair == ["-u", name]),
-                "{name} is not unset: {:?}",
-                calls[1]
-            );
-        }
+        assert_eq!(
+            calls[1],
+            [
+                "setsid".to_owned(),
+                "-f".to_owned(),
+                "sh".to_owned(),
+                "-c".to_owned(),
+                vars::scrubbed_exec_script(),
+                "sh".to_owned(),
+                "herdr".to_owned(),
+                "--session".to_owned(),
+                "flow".to_owned(),
+                "server".to_owned(),
+            ]
+        );
     }
 
     #[test]
@@ -1340,6 +1341,7 @@ mod tests {
         let labelled = |label: &str| Workspace {
             workspace_id: "w2".to_owned(),
             label: label.to_owned(),
+            pane_count: None,
         };
         let label = task_workspace_label("Fix the login form", "aaaaaaab");
         assert_eq!(label, "Fix the login form · aaaaaaab");
@@ -1356,7 +1358,7 @@ mod tests {
     }
 
     #[test]
-    fn workspaces_lists_ids_and_labels() {
+    fn workspaces_lists_ids_labels_and_pane_counts() {
         let (herdr, fake) = herdr(vec![ok(include_str!(
             "../tests/fixtures/herdr/workspace_list.json"
         ))]);
@@ -1365,17 +1367,33 @@ mod tests {
             [
                 Workspace {
                     workspace_id: "w1".to_owned(),
-                    label: "login-form".to_owned()
+                    label: "login-form".to_owned(),
+                    pane_count: Some(1),
                 },
                 Workspace {
                     workspace_id: "w2".to_owned(),
-                    label: "cache-fix".to_owned()
+                    label: "cache-fix".to_owned(),
+                    pane_count: Some(1),
                 },
             ]
         );
         assert_eq!(
             argvs(&fake),
             [words(&["herdr", "--session", "flow", "workspace", "list"])]
+        );
+    }
+
+    #[test]
+    fn close_pane_reports_a_pane_already_gone() {
+        let closed = r#"{"id":"cli:pane:close","result":{"type":"ok"}}"#;
+        let missing = r#"{"error":{"code":"pane_not_found","message":"pane w1:p9 not found"},"id":"cli:pane:close"}"#;
+        let (herdr, fake) = herdr(vec![ok(closed), failed(missing), failed("boom")]);
+        assert!(herdr.close_pane(&host(), "w1:p2").unwrap());
+        assert!(!herdr.close_pane(&host(), "w1:p9").unwrap());
+        assert!(herdr.close_pane(&host(), "w1:p3").is_err());
+        assert_eq!(
+            argvs(&fake)[0],
+            words(&["herdr", "--session", "flow", "pane", "close", "w1:p2"])
         );
     }
 

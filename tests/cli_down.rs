@@ -511,25 +511,35 @@ fn down_closes_the_workspace_a_dead_supervisor_left_under_its_label() {
 
 #[test]
 fn down_refuses_when_the_supervisors_pane_runs_another_session() {
-    for (agents, listed, what) in [
+    let unconfirmed = |why: &str| {
+        format!(
+            "pane w1:p1 on host-a holds an agent flow cannot tell from the supervisor: it runs in \
+             /workspaces/flow in the supervisor's workspace w1, but {why}. flow down stopped \
+             nothing and kept the lock; if it is not the supervisor, `flow down --force` stops \
+             it\n"
+        )
+    };
+    for (agents, listed, refusal) in [
         (
             in_lock_pane("/workspaces/flow", Some("s-hand")),
             supervisor_listed(),
-            "Claude Code session s-hand, not the supervisor's s9".to_owned(),
+            unconfirmed("herdr reports Claude Code session s-hand for it, not the supervisor's s9"),
         ),
         (
             AGENT_LIST.to_owned(),
             supervisor_listed(),
-            "claude in /workspaces/acme-worktrees/login-form, workspace w1, not the supervisor \
-             in /workspaces/flow, workspace w1 labelled \"flow-supervisor\""
+            "pane w1:p1 on host-a runs claude in /workspaces/acme-worktrees/login-form, \
+             workspace w1, not the supervisor in /workspaces/flow, workspace w1 labelled \
+             \"flow-supervisor\"; flow down stopped nothing and kept the lock\n"
                 .to_owned(),
         ),
         (
             in_lock_pane("/workspaces/flow", None),
             relabelled("my notes"),
-            "claude in /workspaces/flow, workspace w1 labelled \"my notes\", not the supervisor \
-             in /workspaces/flow, workspace w1 labelled \"flow-supervisor\""
-                .to_owned(),
+            unconfirmed(
+                "herdr reports no Claude Code session for it, and its workspace is labelled \
+                 \"my notes\", not \"flow-supervisor\"",
+            ),
         ),
     ] {
         let fx = Fixture::new();
@@ -547,13 +557,7 @@ fn down_refuses_when_the_supervisors_pane_runs_another_session() {
             .get_output()
             .clone();
 
-        assert_eq!(
-            String::from_utf8(out.stderr).unwrap(),
-            format!(
-                "pane w1:p1 on host-a runs {what}; flow down stopped nothing and kept the \
-                 lock\n"
-            )
-        );
+        assert_eq!(String::from_utf8(out.stderr).unwrap(), refusal);
         assert!(out.stdout.is_empty());
         assert_eq!(fx.argvs().len(), 2);
         assert_eq!(fs::read_to_string(fx.lock_path()).unwrap(), before);
@@ -678,6 +682,107 @@ fn down_tells_a_supervisor_herdr_reports_no_session_for_by_its_workspace() {
         stdout.starts_with(
             "closed the supervisor's workspace w1 on host-a (herdr session default)\n"
         ),
+        "{stdout}"
+    );
+    fx.assert_stopped();
+}
+
+/// `supervisor_listed` with `w1` holding `panes` panes.
+fn supervisor_listed_with_panes(panes: u32) -> String {
+    let listed =
+        supervisor_listed().replacen(r#""pane_count":1"#, &format!(r#""pane_count":{panes}"#), 1);
+    assert_ne!(listed, supervisor_listed());
+    listed
+}
+
+const PANE_CLOSED: &str = r#"{"id":"cli:pane:close","result":{"type":"ok"}}"#;
+
+#[test]
+fn down_closes_only_the_supervisors_pane_when_its_workspace_holds_others() {
+    let fx = Fixture::new();
+    fx.write_lock("env-0001", "host-a", Some("default"));
+
+    let stdout = stdout_of(
+        fx.flow(&[
+            ok(&supervisor_agent()),
+            ok(&supervisor_listed_with_panes(3)),
+            ok(PANE_CLOSED),
+        ])
+        .arg("down"),
+    );
+
+    assert_eq!(
+        stdout,
+        format!(
+            "closed the supervisor's pane w1:p1 on host-a (herdr session default); workspace w1 \
+             keeps its other 2 panes\n{KEPT}{NOTE}"
+        )
+    );
+    assert_eq!(
+        fx.argvs()[2],
+        words(&["herdr", "--session", "default", "pane", "close", "w1:p1"])
+    );
+    fx.assert_stopped();
+}
+
+#[test]
+fn down_force_closes_the_locks_workspace_whatever_runs_there() {
+    for (agents, panes, closed) in [
+        (
+            in_lock_pane("/workspaces/flow", Some("s-hand")),
+            1,
+            "workspace w1",
+        ),
+        (AGENT_LIST.to_owned(), 2, "pane w1:p1"),
+        (NO_AGENTS.to_owned(), 1, "workspace w1"),
+    ] {
+        let fx = Fixture::new();
+        fx.write_lock("env-0001", "host-a", Some("default"));
+        let listed = if panes == 1 {
+            relabelled("my notes")
+        } else {
+            relabelled("my notes").replacen(r#""pane_count":1"#, r#""pane_count":2"#, 1)
+        };
+        let script = [
+            json!({"argv": ["agent", "list"], "status": 0, "stdout": agents, "stderr": ""}),
+            ok(&listed),
+            ok(WORKSPACE_CLOSED),
+        ];
+
+        let stdout = stdout_of(fx.flow(&script).args(["down", "--force"]));
+
+        let close = if panes == 1 {
+            words(&["herdr", "--session", "default", "workspace", "close", "w1"])
+        } else {
+            words(&["herdr", "--session", "default", "pane", "close", "w1:p1"])
+        };
+        assert_eq!(
+            fx.argvs(),
+            [
+                words(&["herdr", "--session", "default", "workspace", "list"]),
+                close
+            ]
+        );
+        assert!(
+            stdout.starts_with(&format!(
+                "closed the lock's {closed} on host-a (herdr session default) without checking \
+                 what runs there (--force)\n"
+            )),
+            "{stdout}"
+        );
+        fx.assert_stopped();
+    }
+}
+
+#[test]
+fn down_force_notes_a_workspace_already_gone() {
+    let fx = Fixture::new();
+    fx.write_lock("env-0001", "host-a", Some("default"));
+
+    let stdout = stdout_of(fx.flow(&[ok(EMPTY_WORKSPACES)]).args(["down", "--force"]));
+
+    assert!(
+        stdout.starts_with("the supervisor's pane w1:p1 on host-a is already gone\n"),
         "{stdout}"
     );
     fx.assert_stopped();

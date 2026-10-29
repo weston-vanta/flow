@@ -31,6 +31,18 @@ pub const SUPERVISOR_CWD: &str = "/workspaces/flow";
 pub const SUPERVISOR_NAME: &str = "flow-supervisor";
 const LOCK_FILE: &str = "supervisor/lock.json";
 
+/// What an agent in the lock's pane is to the supervisor, as `Lock::identify` tells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Identity {
+    Supervisor,
+    /// Not the supervisor: it runs elsewhere, or herdr reports another session while it runs
+    /// outside the supervisor's cwd or workspace.
+    Other,
+    /// Possibly the supervisor: it runs in the supervisor's cwd and workspace, but herdr's view
+    /// does not confirm it.
+    Unconfirmed,
+}
+
 /// Where the supervisor runs, and the Claude Code session to resume when it has to start again.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Lock {
@@ -51,30 +63,49 @@ impl Lock {
     }
 
     /// Whether `agent`, which herdr lists on `host`, is the supervisor: it sits in the lock's
-    /// pane and `runs` the supervisor.
+    /// pane and `identify` confirms it.
     pub fn is_supervisor(&self, host: &str, agent: &Agent) -> bool {
-        self.herdr.is(host, &agent.session, &agent.pane_id) && self.runs(agent)
+        self.in_pane(host, agent) == Some(Identity::Supervisor)
     }
 
-    /// Whether `agent`, found in the lock's pane, runs the supervisor. herdr reuses pane ids
-    /// after a server restart, so the pane alone could hold anyone's agent. When the lock has
-    /// the supervisor's Claude Code session and herdr reports the agent's, they must be the
-    /// same. Otherwise, before the session is recorded or when herdr reports none, the agent
-    /// must run in the supervisor's cwd, in the lock's workspace, still labelled as the
-    /// supervisor's: the user starts sessions in the same checkout, but not in that workspace.
-    /// Without this fallback a live supervisor herdr reports no session for would go
-    /// unrecognized, and `flow up` would start a second one on the same session.
-    pub fn runs(&self, agent: &Agent) -> bool {
-        match (
+    /// What `agent`, which herdr lists on `host`, is to the supervisor when it sits in the
+    /// lock's pane; `None` when it sits elsewhere.
+    pub fn in_pane(&self, host: &str, agent: &Agent) -> Option<Identity> {
+        self.herdr
+            .is(host, &agent.session, &agent.pane_id)
+            .then(|| self.identify(agent))
+    }
+
+    /// What `agent`, found in the lock's pane, is to the supervisor. herdr reuses pane ids after
+    /// a server restart, so the pane alone could hold anyone's agent.
+    /// - When the lock has the supervisor's Claude Code session and herdr reports the agent's,
+    ///   equal ids confirm it.
+    /// - Otherwise an agent outside the supervisor's cwd or the lock's workspace is another.
+    /// - One inside both is confirmed when herdr reports no session, or flow has not recorded
+    ///   the supervisor's, and its workspace is still labelled as the supervisor's. Different
+    ///   ids, as after a missed SessionStart hook, or another label leave it unconfirmed: the
+    ///   user starts sessions in the same checkout, but a second supervisor beside the live
+    ///   one would resume the same session.
+    pub fn identify(&self, agent: &Agent) -> Identity {
+        let ids = (
             self.claude_session.as_deref(),
             agent.agent_session_id.as_deref(),
-        ) {
-            (Some(recorded), Some(reported)) => recorded == reported,
-            _ => {
-                agent.cwd == Path::new(SUPERVISOR_CWD)
-                    && agent.workspace_id == self.herdr.workspace_id
-                    && agent.workspace_label.as_deref() == Some(SUPERVISOR_NAME)
-            }
+        );
+        if let (Some(recorded), Some(reported)) = ids
+            && recorded == reported
+        {
+            return Identity::Supervisor;
+        }
+        let at_home =
+            agent.cwd == Path::new(SUPERVISOR_CWD) && agent.workspace_id == self.herdr.workspace_id;
+        if !at_home {
+            return Identity::Other;
+        }
+        let labelled = agent.workspace_label.as_deref() == Some(SUPERVISOR_NAME);
+        match ids {
+            (Some(_), Some(_)) => Identity::Unconfirmed,
+            _ if labelled => Identity::Supervisor,
+            _ => Identity::Unconfirmed,
         }
     }
 }
@@ -139,6 +170,35 @@ pub fn not_the_supervisor(lock: &Lock, agent: &Agent) -> String {
             )
         }
     }
+}
+
+/// Why `agent`, an `Identity::Unconfirmed` one in `lock`'s pane on `host`, cannot be told from
+/// the supervisor, for messages.
+pub fn unconfirmed(lock: &Lock, host: &str, agent: &Agent) -> String {
+    let label = match agent.workspace_label.as_deref() {
+        Some(label) => format!("its workspace is labelled \"{label}\", not \"{SUPERVISOR_NAME}\""),
+        None => "its workspace's label could not be read".to_owned(),
+    };
+    let why = match (
+        lock.claude_session.as_deref(),
+        agent.agent_session_id.as_deref(),
+    ) {
+        (Some(recorded), Some(reported)) => {
+            format!(
+                "herdr reports Claude Code session {reported} for it, not the supervisor's \
+                 {recorded}"
+            )
+        }
+        (Some(_), None) => format!("herdr reports no Claude Code session for it, and {label}"),
+        (None, _) => {
+            format!("flow has not recorded the supervisor's Claude Code session, and {label}")
+        }
+    };
+    format!(
+        "pane {} on {host} holds an agent flow cannot tell from the supervisor: it runs in \
+         {SUPERVISOR_CWD} in the supervisor's workspace {}, but {why}",
+        agent.pane_id, agent.workspace_id
+    )
 }
 
 pub fn lock_path(state: &StateDir) -> PathBuf {

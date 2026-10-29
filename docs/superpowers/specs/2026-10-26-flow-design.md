@@ -214,10 +214,10 @@ designer's call.
     in herdr panes. `flow` uses herdr for: starting a harness in a pane, native
     idle/working/blocked/done state, waiting on state transitions, reading terminal output,
     steering with confirmation, session identity (once the hook path is fixed), and
-    attaching. A herdr server is started on demand on each CDE, without any of flow's
-    environment variables, since the panes a user opens there later inherit its environment.
-    The adapter pins a minimum herdr protocol and fails loudly on mismatch. tmux is not a
-    fallback.
+    attaching. A herdr server is started on demand on each CDE, without flow's environment
+    variables or an invoking Claude Code session's, since the panes a user opens there later
+    inherit its environment. The adapter pins a minimum herdr protocol and fails loudly on
+    mismatch. tmux is not a fallback.
 15. **Every host that may run or attach to the supervisor needs the user's Ona login**
     (`gitpod login`, then `gitpod environment ssh-config`). There is no dedicated check or
     repair command. When an ssh or `gitpod` call fails because the login is missing or
@@ -333,12 +333,14 @@ supervisor session when one exists and a first prompt to run the session start p
 (whose turn end arms `flow watch`), takes the lock, and attaches.
 
 **Stop.** `flow down` finds the supervisor in its pane by its Claude Code session, closes
-the workspace that pane sits in, marks its lock stopped, keeping the Claude Code session to
-resume, clears the watch lock, stopping a fresh `flow watch` holder on this CDE, and leaves
-every worker running; a watcher on another CDE ends at its next cycle once its lock is gone.
-Another session in the supervisor's pane makes it refuse. The next `flow up`
-does not look for the stopped supervisor: it starts one on its own CDE resuming that
-session.
+that pane, or its workspace when it is the only pane, marks its lock stopped, keeping the
+Claude Code session to resume, clears the watch lock, stopping a fresh `flow watch` holder
+on this CDE, and leaves every worker running; a watcher on another CDE ends at its next
+cycle once its lock is gone. Another session in the supervisor's pane, or one it cannot tell
+from the supervisor, makes it refuse; `--force` closes the lock's pane or workspace
+regardless. `flow up` likewise refuses to start beside an agent in the supervisor's pane,
+cwd and workspace that it cannot confirm. The next `flow up` does not look for the stopped
+supervisor: it starts one on its own CDE resuming that session.
 
 **Dispatch.** User asks for work. Supervisor picks a CDE from inventory (or asks), writes
 the task directory and brief with completion criteria, ensures a worktree, ensures a herdr
@@ -377,8 +379,8 @@ given. Commands that take `--json` print raw JSON instead of the compact view.
 Operator:
 
 - `flow init [--force]`: write `state/config.toml` from what this machine can tell, then refresh the inventory; `--force` replaces an existing file.
-- `flow up`: attach to the live supervisor session, or start one on this host and attach. When stdout is not a terminal, it prints the command to attach with instead of attaching.
-- `flow down [--yes]`: stop the supervisor, leaving every worker and task running. It finds the supervisor in the pane its lock records, by its Claude Code session as `flow up` does, and closes the herdr workspace that pane sits in, whatever its label; when the pane holds no agent, it closes the supervisor's workspace only while herdr lists it as `flow-supervisor`, and otherwise notes that the pane is already gone. When another session runs in that pane it refuses and changes nothing. It then marks the lock stopped, keeping the supervisor's Claude Code session, and clears the watch lock. It stops the watcher, and the herdr waits and ssh connections it started, only when it runs on this machine, has touched the lock in the last 10 minutes, and is a `flow watch` process; otherwise it removes the lock alone and says why. A watcher on another host ends at its next cycle. When the supervisor ran in a herdr session that is neither the configured one nor herdr's `default`, and that session has no agents and no workspaces left, it offers to stop that session's server; `--yes` stops it without asking, and with no terminal it is left running with the command to stop it. It ends by saying how many open tasks keep running. The next `flow up` starts the supervisor on the host it runs on and resumes that session, so the conversation carries on. A supervisor already stopped has nothing to stop. When the supervisor's host cannot be reached it fails and changes nothing. A flow from before the stopped mark, still installed on another host, reads a stopped lock as a supervisor that died, so its `flow up` starts one there resuming the same session.
+- `flow up`: attach to the live supervisor session, or start one on this host and attach. When stdout is not a terminal, it prints the command to attach with instead of attaching. When the supervisor's pane holds an agent in `/workspaces/flow` and the supervisor's workspace that flow cannot confirm is the supervisor, it starts nothing and exits 1, saying what herdr shows there, since a second supervisor would resume the same session; `flow down --force`, then `flow up`, is the way out.
+- `flow down [--yes] [--force]`: stop the supervisor, leaving every worker and task running. It finds the supervisor in the pane its lock records, as `flow up` does, and closes that pane, or the whole workspace when the pane is its only one, saying which; when the pane holds no agent, it does so only while herdr lists the lock's workspace as `flow-supervisor`, and otherwise notes that the pane is already gone. When another session runs in that pane, or one flow cannot tell from the supervisor, it refuses and changes nothing. `--force` closes the lock's pane or workspace without checking what runs there. It then marks the lock stopped, keeping the supervisor's Claude Code session, and clears the watch lock. It stops the watcher, and the herdr waits and ssh connections it started, only when it runs on this machine, has touched the lock in the last 10 minutes, and is a `flow watch` process; otherwise it removes the lock alone and says why. A watcher on another host ends at its next cycle. When the supervisor ran in a herdr session that is neither the configured one nor herdr's `default`, and that session has no agents and no workspaces left, it offers to stop that session's server; `--yes` stops it without asking, and with no terminal it is left running with the command to stop it. It ends by saying how many open tasks keep running. The next `flow up` starts the supervisor on the host it runs on and resumes that session, so the conversation carries on. A supervisor already stopped has nothing to stop. When the supervisor's host cannot be reached it fails and changes nothing. A flow from before the stopped mark, still installed on another host, reads a stopped lock as a supervisor that died, so its `flow up` starts one there resuming the same session.
 - `flow status [--all] [--json]`: open tasks, their holds, pending dispatch requests from workers (`req-id  from-task  host  title`), and observed sessions; `--all` includes done and orphaned tasks.
 - `flow inventory [--refresh] [--json]`: worktrees, agents, and PRs per host; `--refresh` first discovers hosts from Ona (or the static list), probes each running one, and lists open PRs. `--json` gives each host its ssh alias, whether it is the host flow runs on (`local`), its Ona phase, when it was last seen, and whether it is reachable or gone.
 - `flow inventory --sync [--yes] [--refresh] [--json]`: bring herdr's saved SSH machines on this machine in step with the hosts, in place of showing them. Every other host that is not gone gets a machine labelled with its name, for its ssh alias and the herdr session flow runs in; a gone host's machine is removed when it still has that alias, and a host's machines for another alias or session are removed, before its new one is added when it has none current, since herdr names each machine once; when that add fails, flow says the host is left without a machine. Machines whose label is not a host's name are never touched. A host that did not answer the last refresh, or that Ona reports stopped, is not added, since herdr must reach it to add it: it is listed on stderr, and its machine stays as it is. With nothing to change it says so, noting any host it did not add. It prints the plan and asks before applying it; `--yes` applies it without asking, and with no terminal and no `--yes` it exits 1 having changed nothing. `--refresh` refreshes first, and `--json` prints the plan as JSON, applied only with `--yes`. A failing step stops the rest and says how many were applied.

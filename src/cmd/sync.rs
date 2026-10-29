@@ -278,9 +278,17 @@ fn left_without_profile<'a>(applied: &[Step], step: &'a Step) -> Option<&'a str>
     let Step::Add { host, .. } = step else {
         return None;
     };
+    let removed_its_profile = |done: &Step| match done {
+        Step::Remove {
+            host: removed,
+            gone: false,
+            ..
+        } => removed == host,
+        _ => false,
+    };
     applied
         .iter()
-        .any(|done| matches!(done, Step::Remove { host: removed, gone: false, .. } if removed == host))
+        .any(removed_its_profile)
         .then_some(host.as_str())
 }
 

@@ -25,6 +25,7 @@ use crate::supervisor;
 const OBSERVED: &str = "observed";
 const FOLLOWED: &str = "followed";
 const SUPERVISOR: &str = "supervisor";
+const MAYBE_SUPERVISOR: &str = "supervisor?";
 const HEADER: [&str; 4] = ["HOST", "STATUS", "TASK", "TITLE"];
 const SUMMARY_WIDTH: usize = 100;
 
@@ -219,6 +220,10 @@ pub(super) fn host_agents(
                 split.held.push((agent, held));
             }
             Some(Holder::Supervisor) => split.held.push((agent, "the supervisor's".to_owned())),
+            Some(Holder::MaybeSupervisor) => split.held.push((
+                agent,
+                "in the supervisor's workspace and may be the supervisor".to_owned(),
+            )),
         }
     }
     Ok(split)
@@ -390,6 +395,8 @@ fn render_text(
                 entry.task.clone().unwrap_or_else(|| {
                     let mark = if entry.supervisor {
                         SUPERVISOR
+                    } else if entry.maybe_supervisor {
+                        MAYBE_SUPERVISOR
                     } else if entry.followed {
                         FOLLOWED
                     } else {
@@ -490,6 +497,7 @@ mod tests {
             },
             task: task.map(str::to_owned),
             supervisor: false,
+            maybe_supervisor: false,
             followed: false,
             session: None,
             matched_by: None,
@@ -594,6 +602,7 @@ mod tests {
     fn render_marks_the_supervisor() {
         let matched = [MatchedAgent {
             supervisor: true,
+            maybe_supervisor: false,
             ..entry("host-a", AgentStatus::Idle, "flow-supervisor", None)
         }];
 

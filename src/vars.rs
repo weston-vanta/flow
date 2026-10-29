@@ -1,6 +1,6 @@
-//! Every environment variable flow reads, named in one place so that a herdr server flow starts
-//! runs with none of them set: the panes a user later opens there inherit the server's
-//! environment.
+//! Every environment variable flow reads, named in one place, and the ones a herdr server flow
+//! starts runs without: flow's, and those of a Claude Code session that runs flow, since the
+//! panes a user later opens there inherit the server's environment.
 
 /// Names the state directory, in place of `<repo_root>/state`.
 pub const STATE: &str = "FLOW_STATE";
@@ -48,6 +48,26 @@ pub const ALL: [&str; 13] = [
     WATCH_LIST_TIMEOUT_MS,
 ];
 
+/// Prefixes of the variables a herdr server flow starts runs without.
+const SCRUBBED_PREFIXES: [&str; 2] = ["FLOW_", "CLAUDE_"];
+/// The variable a Claude Code session sets for the commands it runs.
+const CLAUDE_CODE: &str = "CLAUDECODE";
+
+/// A `sh -c` script that unsets, in the environment it runs in, `CLAUDECODE` and every variable
+/// starting with one of `SCRUBBED_PREFIXES`, then runs its arguments with every stream on
+/// /dev/null. It reads that environment where it runs, so over ssh it scrubs the remote one.
+pub fn scrubbed_exec_script() -> String {
+    let expressions: Vec<String> = SCRUBBED_PREFIXES
+        .iter()
+        .map(|prefix| format!(r"-e 's/^\({prefix}[A-Za-z0-9_]*\)=.*/\1/p'"))
+        .collect();
+    let expressions = expressions.join(" ");
+    let unset = format!(
+        r#"for name in $(env | sed -n {expressions}) {CLAUDE_CODE}; do unset "$name"; done"#
+    );
+    format!(r#"{unset}; exec "$@" </dev/null >/dev/null 2>&1"#)
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -67,6 +87,43 @@ mod tests {
                 ));
             }
         }
+    }
+
+    #[test]
+    fn the_scrubbed_exec_script_drops_flow_and_claude_code_variables_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("env");
+        let status = std::process::Command::new("sh")
+            .args([
+                "-c",
+                &scrubbed_exec_script(),
+                "sh",
+                "sh",
+                "-c",
+                r#"env > "$0""#,
+            ])
+            .arg(&out)
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap())
+            .env(STATE, "/state")
+            .env(SUPERVISOR, "1")
+            .env("FLOW_BIN_DIR", "/bin")
+            .env(CLAUDE_CODE, "1")
+            .env("CLAUDE_CODE_ENTRYPOINT", "cli")
+            .env("CLAUDE_PROJECT_DIR", "/workspaces/flow")
+            .env("KEEP_ME", "1")
+            .env("NOT_CLAUDE_X", "1")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let mut names: Vec<String> = fs::read_to_string(&out)
+            .unwrap()
+            .lines()
+            .filter_map(|line| Some(line.split_once('=')?.0.to_owned()))
+            .filter(|name| name != "PWD" && name != "SHLVL" && name != "_" && name != "OLDPWD")
+            .collect();
+        names.sort();
+        assert_eq!(names, ["KEEP_ME", "NOT_CLAUDE_X", "PATH"]);
     }
 
     #[test]

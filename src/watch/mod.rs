@@ -28,16 +28,17 @@
 //! the supervisor. A task whose worker herdr last reported `working` does not count as quiet.
 //!
 //! Hand sessions are the herdr agents on live hosts, in any herdr session flow lists, as of the
-//! cached inventory, other than the supervisor and the agents tasks run (see `observe::task_runs`):
-//! sessions the user started by hand. One adopted as a task is waited on as that task's worker, in
-//! the herdr session it was started in, and not as a hand session. A run first lists every live
-//! host's agents into that cache, in parallel, without starting any herdr server, and giving each
-//! host at most `Settings::list_timeout`. A host whose listing fails keeps its cached agents. The
-//! run waits on every hand session it then finds, except on hosts that ssh could not reach, that
-//! run no herdr server, or that did not answer in time: those wait for the next listing. A host
-//! whose earlier listing has still not returned is not asked again in the same run. Any hand
-//! session turning `blocked` wakes the supervisor; the ones in the follow list also wake it on
-//! `idle` and `done`. Whether a session is followed is read every cycle.
+//! cached inventory, other than the supervisor, an agent that may be the supervisor (logged once
+//! per run), and the agents tasks run (see `observe::task_runs`): sessions the user started by
+//! hand. One adopted as a task is waited on as that task's worker, in the herdr session it was
+//! started in, and not as a hand session. A run first lists every live host's agents into that
+//! cache, in parallel, without starting any herdr server, and giving each host at most
+//! `Settings::list_timeout`. A host whose listing fails keeps its cached agents. The run waits on
+//! every hand session it then finds, except on hosts that ssh could not reach, that run no herdr
+//! server, or that did not answer in time: those wait for the next listing. A host whose earlier
+//! listing has still not returned is not asked again in the same run. Any hand session turning
+//! `blocked` wakes the supervisor; the ones in the follow list also wake it on `idle` and `done`.
+//! Whether a session is followed is read every cycle.
 //!
 //! A run with nothing to watch, no open task, followed session or hand session, ends after its
 //! first cycle rather than waiting for the heartbeat. A cycle that could not read the tasks or
@@ -80,7 +81,7 @@ use crate::state::config::{Config, Host};
 use crate::state::events::{EVENTS_FILE, Event};
 use crate::state::fs::{append_line, write_atomic};
 use crate::state::task::{Origin, State, Status, TaskRecord};
-use crate::supervisor;
+use crate::supervisor::{self, Identity};
 use classify::{Observation, Reported, Thresholds, Verdict, classify};
 use files::{Checked, NewEvents, Seen, WorktreeCheck, file_len, new_events};
 use lock::Guard;
@@ -168,29 +169,75 @@ struct HandSession {
     agent_session_id: Option<String>,
 }
 
-fn hand_sessions(state: &StateDir) -> anyhow::Result<Vec<HandSession>> {
+/// The hand sessions, and a note for each agent in the supervisor's pane that may be the
+/// supervisor: such an agent is neither waited on, lest the supervisor wake itself, nor taken
+/// for the supervisor.
+fn hand_sessions(state: &StateDir) -> anyhow::Result<(Vec<HandSession>, Vec<String>)> {
     let supervisor = supervisor::running(state)?;
     let mut hands = Vec::new();
+    let mut notes = Vec::new();
     for inv in inventory::load_all(state)?
         .into_iter()
         .filter(|inv| !inv.gone)
     {
         for agent in inv.agents {
-            let is_supervisor = supervisor
+            let identity = supervisor
                 .as_ref()
-                .is_some_and(|lock| lock.is_supervisor(&inv.name, &agent));
-            if !is_supervisor {
-                hands.push(HandSession {
+                .and_then(|lock| Some((lock, lock.in_pane(&inv.name, &agent)?)));
+            match identity {
+                Some((_, Identity::Supervisor)) => {}
+                Some((lock, Identity::Unconfirmed)) => notes.push(format!(
+                    "{}; flow does not watch it",
+                    supervisor::unconfirmed(lock, &inv.name, &agent)
+                )),
+                Some((_, Identity::Other)) | None => hands.push(HandSession {
                     host: inv.name.clone(),
                     session: agent.session,
                     pane_id: agent.pane_id,
                     title: agent.title,
                     agent_session_id: agent.agent_session_id,
-                });
+                }),
             }
         }
     }
-    Ok(hands)
+    Ok((hands, notes))
+}
+
+/// Each task's recorded Claude Code session; empty when the tasks cannot be read.
+fn task_sessions(store: &Store) -> HashMap<String, Option<String>> {
+    store
+        .list_tasks()
+        .map(|tasks| {
+            tasks
+                .into_iter()
+                .map(|(rec, status)| {
+                    (
+                        rec.id,
+                        status.claude_session.map(|claude| claude.session_id),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The Claude Code session `hand`, an agent in the pane of the task `rec` and `status` name,
+/// runs as far as the hand sessions tell: what herdr reported when they were listed, or `None`
+/// once the task's recorded session has changed since, which makes that report stale.
+fn reported_session<'h>(
+    listed_sessions: &HashMap<String, Option<String>>,
+    rec: &TaskRecord,
+    status: &Status,
+    hand: &'h HandSession,
+) -> Option<&'h str> {
+    let recorded = status
+        .claude_session
+        .as_ref()
+        .map(|claude| claude.session_id.as_str());
+    let listed = listed_sessions.get(&rec.id).and_then(Option::as_deref);
+    (listed == recorded)
+        .then_some(hand.agent_session_id.as_deref())
+        .flatten()
 }
 
 /// How a watch that fails after taking the lock retries.
@@ -430,6 +477,10 @@ struct Watcher<'a> {
     state_saved: bool,
     /// The hand sessions as of this run's start.
     hands: Vec<HandSession>,
+    /// Each task's recorded Claude Code session when `hands` were listed. A task whose
+    /// recorded session has changed since, as after `/clear`, may run under a session id newer
+    /// than the one `hands` cached for its pane.
+    listed_sessions: HashMap<String, Option<String>>,
     /// Whether the last cycle found anything to watch: an open task, a followed or hand
     /// session, or a task list or follow list it could not read.
     watching: bool,
@@ -462,11 +513,13 @@ impl<'a> Watcher<'a> {
         std::fs::create_dir_all(&supervisor)
             .with_context(|| format!("creating {}", supervisor.display()))?;
         let (memory, replay_unseen) = load_watch_state(state)?;
-        Ok(Watcher {
+        let (hands, notes) = hand_sessions(state)?;
+        let mut watcher = Watcher {
             state,
             store: Store::open(state),
             hosts: inventory::hosts(state)?,
-            hands: hand_sessions(state)?,
+            hands,
+            listed_sessions: task_sessions(&Store::open(state)),
             runner,
             settings: settings.clone(),
             saved: memory.clone(),
@@ -484,7 +537,11 @@ impl<'a> Watcher<'a> {
             worktree_checks: BTreeMap::new(),
             logged: HashSet::new(),
             started: Instant::now(),
-        })
+        };
+        for note in notes {
+            watcher.log(&note);
+        }
+        Ok(watcher)
     }
 
     /// One poll cycle: the wake reason when something woke the supervisor.
@@ -597,11 +654,15 @@ impl<'a> Watcher<'a> {
         let skipped = self.list_agents(lock);
         self.listed_at = Instant::now();
         match hand_sessions(self.state) {
-            Ok(hands) => {
+            Ok((hands, notes)) => {
                 self.hands = hands
                     .into_iter()
                     .filter(|hand| !skipped.contains(&hand.host))
                     .collect();
+                self.listed_sessions = task_sessions(&self.store);
+                for note in notes {
+                    self.log(&note);
+                }
             }
             Err(err) => self.log(&format!("{err:#}")),
         }
@@ -839,7 +900,10 @@ impl<'a> Watcher<'a> {
                 .iter()
                 .find(|hand| target.is(&hand.host, &hand.session, &hand.pane_id));
             if let Some(hand) = in_pane
-                && observe::pane_reused(status, hand.agent_session_id.as_deref())
+                && observe::pane_reused(
+                    status,
+                    reported_session(&self.listed_sessions, rec, status, hand),
+                )
             {
                 reused.push(format!(
                     "pane {} on {} (herdr session {}) runs Claude Code session {}, not task {}'s \
@@ -872,16 +936,21 @@ impl<'a> Watcher<'a> {
             );
         }
         let tasked = |host: &str, session: &str, pane_id: &str| {
-            let agent_session_id = self
-                .hands
-                .iter()
-                .find(|hand| {
-                    hand.host == host && hand.session == session && hand.pane_id == pane_id
-                })
-                .and_then(|hand| hand.agent_session_id.as_deref());
-            observe::tasks_in_pane(tasks, host, session, pane_id, agent_session_id)
-                .next()
-                .is_some()
+            let hand = self.hands.iter().find(|hand| {
+                hand.host == host && hand.session == session && hand.pane_id == pane_id
+            });
+            tasks.iter().any(|(rec, status)| {
+                status
+                    .herdr
+                    .as_ref()
+                    .is_some_and(|target| target.is(host, session, pane_id))
+                    && observe::task_runs(
+                        status,
+                        hand.and_then(|hand| {
+                            reported_session(&self.listed_sessions, rec, status, hand)
+                        }),
+                    )
+            })
         };
         for hand in &self.hands {
             if tasked(&hand.host, &hand.session, &hand.pane_id) {
@@ -1776,6 +1845,27 @@ default_branch = "main"
     }
 
     #[test]
+    fn a_worker_whose_session_changed_since_the_listing_keeps_its_wait() {
+        let fx = Fixture::new();
+        fx.hand();
+        fx.reports_session("env-0001", "w1:p1", "s-old");
+        fx.adopted_task();
+        fx.task_session("s-old");
+        let runner = fake(vec![Scripted {
+            repeat: true,
+            ..on("host-a", &["agent", "wait"], WORKING)
+        }]);
+        let mut watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+        assert_eq!(watcher.cycle().unwrap(), None);
+
+        fx.task_session("s-new");
+        assert_eq!(watcher.cycle().unwrap(), None);
+
+        assert_eq!(watcher.waits.keys().collect::<Vec<_>>(), [TASK]);
+        assert!(!fx.log().contains("reused"), "{}", fx.log());
+    }
+
+    #[test]
     fn an_open_tasks_pane_running_its_session_is_the_tasks_wait_only() {
         let fx = Fixture::new();
         fx.hand();
@@ -1795,21 +1885,47 @@ default_branch = "main"
     }
 
     #[test]
-    fn a_hand_session_in_the_supervisors_reused_pane_is_watched() {
+    fn an_agent_that_may_be_the_supervisor_is_neither_watched_nor_excluded_silently() {
         let fx = Fixture::new();
         fx.supervisor_agent("default", "w1:p1");
         fx.supervisor_in("default", "w1:p1");
         supervisor::set_session(&fx.state, Some("s-sup")).unwrap();
-        let runner = fake(Vec::new());
-
         fx.reports_session("env-0001", "w1:p1", "s-hand");
-        let watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
-        let hands: Vec<&str> = watcher.hands.iter().map(|h| h.pane_id.as_str()).collect();
-        assert_eq!(hands, ["w1:p1"]);
+        let runner = fake(vec![Scripted {
+            repeat: true,
+            ..on("host-a", &["agent", "wait"], WORKING)
+        }]);
+
+        let mut watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+        assert!(watcher.hands.is_empty());
+        assert_eq!(watcher.cycle().unwrap(), None);
+        assert_eq!(watcher.cycle().unwrap(), None);
+
+        assert!(watcher.waits.is_empty());
+        let note = "pane w1:p1 on host-a holds an agent flow cannot tell from the supervisor: it \
+                    runs in /workspaces/flow in the supervisor's workspace w1, but herdr reports \
+                    Claude Code session s-hand for it, not the supervisor's s-sup; flow does not \
+                    watch it";
+        assert_eq!(fx.log().matches(note).count(), 1, "{}", fx.log());
 
         fx.reports_session("env-0001", "w1:p1", "s-sup");
         let watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
         assert!(watcher.hands.is_empty());
+    }
+
+    #[test]
+    fn a_hand_session_in_the_supervisors_reused_pane_elsewhere_is_watched() {
+        let fx = Fixture::new();
+        fx.agent("env-0001", "default", "w1:p1", "Tidy docs");
+        fx.supervisor_in("default", "w1:p1");
+        supervisor::set_session(&fx.state, Some("s-sup")).unwrap();
+        fx.reports_session("env-0001", "w1:p1", "s-hand");
+        let runner = fake(Vec::new());
+
+        let watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+
+        let hands: Vec<&str> = watcher.hands.iter().map(|h| h.pane_id.as_str()).collect();
+        assert_eq!(hands, ["w1:p1"]);
     }
 
     #[test]

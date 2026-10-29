@@ -909,7 +909,7 @@ const REUSED_PANE_AGENTS: &str = r#"{"id":"cli:agent:list","result":{"agents":[
 ],"type":"agent_list"}}"#;
 
 #[test]
-fn hand_sessions_in_reused_panes_are_observed_and_can_be_followed() {
+fn hand_sessions_in_reused_panes_are_observed_unless_they_may_be_the_supervisor() {
     let fx = Fixture::new();
     fx.single_host();
     fx.sharing_default();
@@ -927,7 +927,7 @@ fn hand_sessions_in_reused_panes_are_observed_and_can_be_followed() {
     let json_out = stdout_of(fx.flow(&script).args(["sessions", "--json"]));
 
     let parsed: Value = serde_json::from_str(&json_out).unwrap();
-    let rows: Vec<(String, Value, bool)> = parsed
+    let rows: Vec<(String, Value, bool, bool)> = parsed
         .as_array()
         .unwrap()
         .iter()
@@ -936,18 +936,26 @@ fn hand_sessions_in_reused_panes_are_observed_and_can_be_followed() {
                 entry["agent"]["pane_id"].as_str().unwrap().to_owned(),
                 entry["task"].clone(),
                 entry["supervisor"].as_bool().unwrap(),
+                entry["maybe_supervisor"].as_bool().unwrap(),
             )
         })
         .collect();
     assert_eq!(
         rows,
         [
-            ("w1:p1".to_owned(), Value::Null, false),
-            ("w2:p1".to_owned(), Value::Null, false),
-            ("w4:p1".to_owned(), Value::Null, false),
+            ("w1:p1".to_owned(), Value::Null, false, true),
+            ("w2:p1".to_owned(), Value::Null, false, false),
+            ("w4:p1".to_owned(), Value::Null, false, false),
         ]
     );
-    for target in ["Read the docs", "Try a fix", "Fix links"] {
+    fx.flow(&script)
+        .args(["follow", "host-a", "Read the docs"])
+        .assert()
+        .code(2)
+        .stderr(
+            "pane w1:p1 on host-a is in the supervisor's workspace and may be the supervisor\n",
+        );
+    for target in ["Try a fix", "Fix links"] {
         stdout_of(fx.flow(&script).args(["follow", "host-a", target]));
     }
     let list = fx.follow_list();
@@ -957,11 +965,11 @@ fn hand_sessions_in_reused_panes_are_observed_and_can_be_followed() {
         .iter()
         .map(|entry| entry["pane_id"].as_str().unwrap())
         .collect();
-    assert_eq!(followed, ["w1:p1", "w2:p1", "w4:p1"]);
+    assert_eq!(followed, ["w2:p1", "w4:p1"]);
 }
 
 #[test]
-fn a_session_in_the_flow_checkout_is_the_supervisor_only_in_its_labelled_workspace() {
+fn a_session_in_the_flow_checkout_is_the_supervisor_only_in_its_labelled_workspace_else_maybe() {
     let fx = Fixture::new();
     fx.single_host();
     fx.sharing_default();
@@ -979,10 +987,31 @@ fn a_session_in_the_flow_checkout_is_the_supervisor_only_in_its_labelled_workspa
             .unwrap()
             .iter()
             .filter(|entry| entry["agent"]["pane_id"] == "w1:p1")
-            .map(|entry| entry["supervisor"].as_bool().unwrap())
+            .map(|entry| {
+                (
+                    entry["supervisor"].as_bool().unwrap(),
+                    entry["maybe_supervisor"].as_bool().unwrap(),
+                )
+            })
             .collect::<Vec<_>>()
     };
 
-    assert_eq!(rows(SHARED_SESSION_WORKSPACES), [true]);
-    assert_eq!(rows(&relabelled), [false]);
+    assert_eq!(rows(SHARED_SESSION_WORKSPACES), [(true, false)]);
+    assert_eq!(rows(&relabelled), [(false, true)]);
+    let script = [
+        on("host-a", SERVER_RUNNING),
+        on("host-a", SHARED_SESSION_AGENTS),
+        on("host-a", &relabelled),
+    ];
+    let text = stdout_of(fx.flow(&script).arg("sessions"));
+    assert!(
+        text.contains("host-a  idle     supervisor?  flow-supervisor\n"),
+        "{text}"
+    );
+    let status = stdout_of(fx.flow(&[]).arg("status"));
+    assert_eq!(
+        status.lines().last(),
+        Some("observed: 1 sessions"),
+        "{status}"
+    );
 }

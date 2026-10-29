@@ -4,10 +4,12 @@
 //! herdr session it is in, with the Claude Code session it runs and that session's latest summary,
 //! read from Claude Code's session registry and transcripts. herdr reuses pane ids after a server
 //! restart, so a pane match holds only when the Claude Code session herdr reports for the agent
-//! does not contradict the task's or the supervisor's (see `task_runs` and `Lock::runs`). Reading
-//! is all flow does there; it never writes Claude Code's state. Any observed session turning
-//! `blocked` wakes the supervisor; the follow list, `state/supervisor/follow.json`, names the
-//! followed ones, whose other state changes should wake it too.
+//! does not contradict the task's or the supervisor's (see `task_runs` and `Lock::identify`). An
+//! agent in the supervisor's pane, cwd and workspace whose identity cannot be confirmed may be the
+//! supervisor, and is neither the supervisor nor observed. Reading is all flow does there; it never
+//! writes Claude Code's state. Any observed session turning `blocked` wakes the supervisor; the
+//! follow list, `state/supervisor/follow.json`, names the followed ones, whose other state changes
+//! should wake it too.
 //!
 //! herdr can report an agent's Claude Code session id, which names its registry session
 //! exactly. An agent it reports none for is matched by cwd, and only when no other such agent
@@ -28,7 +30,7 @@ use crate::herdr::Agent;
 use crate::paths::StateDir;
 use crate::state::fs::{with_lock, write_atomic};
 use crate::state::task::{Status, TaskRecord};
-use crate::supervisor::Lock;
+use crate::supervisor::{Identity, Lock};
 
 /// The most of a transcript's end `latest_summary` reads.
 const SUMMARY_WINDOW: u64 = 1024 * 1024;
@@ -82,6 +84,9 @@ pub struct MatchedAgent {
     pub task: Option<String>,
     /// Whether the agent is the supervisor.
     pub supervisor: bool,
+    /// Whether the agent sits in the supervisor's pane, cwd and workspace but herdr's view does
+    /// not confirm it is the supervisor (see `Lock::identify`). Such an agent is not observed.
+    pub maybe_supervisor: bool,
     /// Whether the agent is a hand-started session in the follow list.
     pub followed: bool,
     pub session: Option<RegistrySession>,
@@ -91,9 +96,10 @@ pub struct MatchedAgent {
 }
 
 impl MatchedAgent {
-    /// Whether the agent is an observed session: neither a task's worker nor the supervisor.
+    /// Whether the agent is an observed session: neither a task's worker nor the supervisor, nor
+    /// possibly the supervisor.
     pub fn is_observed(&self) -> bool {
-        self.task.is_none() && !self.supervisor
+        self.task.is_none() && !self.supervisor && !self.maybe_supervisor
     }
 }
 
@@ -103,11 +109,13 @@ pub enum Holder<'a> {
     /// The task whose herdr target is the agent's pane.
     Task(&'a TaskRecord),
     Supervisor,
+    /// An agent in the supervisor's pane that may be the supervisor.
+    MaybeSupervisor,
 }
 
 /// What holds `agent`, which herdr lists on `host`: the task running it (see `task_in_pane`),
-/// else the supervisor when `supervisor`, its running lock, shows the agent is the supervisor;
-/// `None` for an observed session.
+/// else the supervisor when `supervisor`, its running lock, shows the agent is or may be the
+/// supervisor; `None` for an observed session.
 pub fn holder<'a>(
     tasks: &'a [(TaskRecord, Status)],
     supervisor: Option<&Lock>,
@@ -117,9 +125,11 @@ pub fn holder<'a>(
     if let Some((record, _)) = task_in_pane(host, agent, tasks) {
         return Some(Holder::Task(record));
     }
-    supervisor
-        .is_some_and(|lock| lock.is_supervisor(host, agent))
-        .then_some(Holder::Supervisor)
+    match supervisor?.in_pane(host, agent)? {
+        Identity::Supervisor => Some(Holder::Supervisor),
+        Identity::Unconfirmed => Some(Holder::MaybeSupervisor),
+        Identity::Other => None,
+    }
 }
 
 /// How an agent's registry session was found.
@@ -334,8 +344,9 @@ pub fn match_agents(
         .flat_map(|(host, agents)| agents.iter().map(move |agent| (*host, agent)))
         .map(|(host, agent)| {
             let task = task_in_pane(host, agent, tasks);
-            let supervisor =
-                task.is_none() && supervisor.is_some_and(|lock| lock.is_supervisor(host, agent));
+            let identity = supervisor
+                .filter(|_| task.is_none())
+                .and_then(|lock| lock.in_pane(host, agent));
             let task_session = task
                 .and_then(|(_, status)| status.claude_session.as_ref())
                 .and_then(|claude| by_id(&claude.session_id));
@@ -343,7 +354,8 @@ pub fn match_agents(
                 host,
                 agent,
                 task,
-                supervisor,
+                supervisor: identity == Some(Identity::Supervisor),
+                maybe_supervisor: identity == Some(Identity::Unconfirmed),
                 task_session,
             }
         })
@@ -384,6 +396,7 @@ pub fn match_agents(
                 agent: f.agent.clone(),
                 task: f.task.map(|(record, _)| record.id.clone()),
                 supervisor: f.supervisor,
+                maybe_supervisor: f.maybe_supervisor,
                 followed: false,
                 session: session.cloned(),
                 matched_by: session.map(|_| matched_by),
@@ -400,6 +413,7 @@ struct Found<'a> {
     agent: &'a Agent,
     task: Option<&'a (TaskRecord, Status)>,
     supervisor: bool,
+    maybe_supervisor: bool,
     task_session: Option<&'a RegistrySession>,
 }
 
@@ -878,13 +892,6 @@ mod tests {
         task
     }
 
-    fn holders(matched: &[MatchedAgent]) -> Vec<(Option<&str>, bool)> {
-        matched
-            .iter()
-            .map(|m| (m.task.as_deref(), m.supervisor))
-            .collect()
-    }
-
     #[test]
     fn a_task_claims_its_pane_while_open_or_when_its_session_runs_there() {
         let open = in_default(task("aaaaaaab", "host-a", "w1:p1", "s-worker"));
@@ -915,7 +922,7 @@ mod tests {
             assert_eq!(
                 held.map(|held| match held {
                     Holder::Task(record) => record.id.as_str(),
-                    Holder::Supervisor => "supervisor",
+                    Holder::Supervisor | Holder::MaybeSupervisor => "supervisor",
                 }),
                 expected
             );
@@ -953,39 +960,52 @@ mod tests {
             workspace_id: "w4".to_owned(),
             ..in_clone()
         };
+        // (supervisor, maybe the supervisor)
+        let yes = (true, false);
+        let other = (false, false);
+        let maybe = (false, true);
         let cases = [
-            (Some("s-sup"), reporting("s-sup", elsewhere()), true),
+            (Some("s-sup"), reporting("s-sup", elsewhere()), yes),
             (
                 Some("s-sup"),
                 reporting("s-sup", agent("default", "w1:p1", "/work/repo")),
-                true,
+                yes,
             ),
-            (Some("s-sup"), reporting("s-hand", in_clone()), false),
-            (Some("s-sup"), in_clone(), true),
-            (None, in_clone(), true),
-            (None, reporting("s-hand", in_clone()), true),
-            (None, elsewhere(), false),
-            (None, agent("default", "w2:p1", "/workspaces/flow"), false),
-            (Some("s-sup"), moved(), false),
-            (None, moved(), false),
-            (Some("s-sup"), labelled("my notes", in_clone()), false),
-            (None, labelled("my notes", in_clone()), false),
-            (None, agent("default", "w1:p1", "/workspaces/flow"), false),
+            (Some("s-sup"), reporting("s-hand", in_clone()), maybe),
+            (Some("s-sup"), reporting("s-hand", elsewhere()), other),
+            (Some("s-sup"), in_clone(), yes),
+            (None, in_clone(), yes),
+            (None, reporting("s-hand", in_clone()), yes),
+            (None, elsewhere(), other),
+            (None, agent("default", "w2:p1", "/workspaces/flow"), other),
+            (Some("s-sup"), moved(), other),
+            (None, moved(), other),
+            (Some("s-sup"), reporting("s-hand", moved()), other),
+            (Some("s-sup"), labelled("my notes", in_clone()), maybe),
+            (None, labelled("my notes", in_clone()), maybe),
+            (None, agent("default", "w1:p1", "/workspaces/flow"), maybe),
         ];
-        for (recorded, agent, expected) in cases {
+        for (recorded, agent, (supervisor, maybe_supervisor)) in cases {
             let lock = supervisor_lock("w1:p1", recorded);
             let agents = [agent];
             let matched = match_agents(&[("host-a", &agents)], &[], Some(&lock), &[]);
+            let seen = (matched[0].supervisor, matched[0].maybe_supervisor);
             assert_eq!(
-                holders(&matched),
-                [(None, expected)],
+                seen,
+                (supervisor, maybe_supervisor),
                 "lock {recorded:?}, agent {:?}",
                 agents[0]
             );
-            assert_eq!(
-                holder(&[], Some(&lock), "host-a", &agents[0]).is_some(),
-                expected
-            );
+            assert_eq!(matched[0].is_observed(), !supervisor && !maybe_supervisor);
+            let held = holder(&[], Some(&lock), "host-a", &agents[0]);
+            let expected = if supervisor {
+                Some(Holder::Supervisor)
+            } else if maybe_supervisor {
+                Some(Holder::MaybeSupervisor)
+            } else {
+                None
+            };
+            assert_eq!(held, expected);
         }
     }
 }
