@@ -1,6 +1,6 @@
 //! `flow watch`: blocks on the fleet and returns the first reason the supervisor should wake.
 //! Each poll cycle reads every task's `status.json` and `events.jsonl`, reads the herdr waits
-//! it keeps running per worker and followed pane, checks tasks gone quiet, and classifies what
+//! it keeps running per worker and hand session, checks tasks gone quiet, and classifies what
 //! it saw. Absorbed observations go to `state/supervisor/watch.log`; the first wake is queued
 //! and returned. Nothing here changes a task: the supervisor acts on what watch reports.
 //!
@@ -20,9 +20,19 @@
 //! `needs-decision` or `blocked` is absorbed: it stopped to wait on the hold that already woke
 //! the supervisor. A task whose worker herdr last reported `working` does not count as quiet.
 //!
-//! A run with nothing to watch, no open task and no followed session, ends after its first
-//! cycle rather than waiting for the heartbeat. A cycle that could not read the tasks or the
-//! follow list counts as having something to watch.
+//! Hand sessions are the herdr agents outside flow's herdr session on live hosts, as of the
+//! cached inventory: sessions the user started by hand. A run first lists every live host's
+//! agents into that cache, once, keeping a host's cached agents when its listing fails, and
+//! waits on every hand session it then finds. Any of them turning `blocked` wakes the
+//! supervisor; the ones in the follow list also wake it on `idle` and `done`. Whether a session
+//! is followed is read every cycle.
+//!
+//! A run with nothing to watch, no open task, followed session or hand session, ends after its
+//! first cycle rather than waiting for the heartbeat. A cycle that could not read the tasks or
+//! the follow list counts as having something to watch. The heartbeat fires only for open
+//! tasks, followed sessions or what could not be read: a run watching hand sessions alone ends
+//! without waking once the heartbeat interval has passed, rather than waking the supervisor
+//! hourly or outliving the Stop hook's timeout.
 //!
 //! An error after the lock is taken wakes the supervisor as `watch-failed` once per distinct
 //! error; `run_retrying` keeps retrying a repeat of it in the background, holding the lock.
@@ -50,7 +60,7 @@ use crate::inventory;
 use crate::paths::StateDir;
 use crate::runner::Runner;
 use crate::state::Store;
-use crate::state::config::Host;
+use crate::state::config::{Config, Host};
 use crate::state::events::EVENTS_FILE;
 use crate::state::fs::{append_line, write_atomic};
 use crate::state::task::{State, Status, TaskRecord};
@@ -74,6 +84,8 @@ pub struct Settings {
     pub heartbeat: Duration,
     pub once: bool,
     pub quiet_secs: u64,
+    /// Whether the run first lists every live host's agents into the cached inventory.
+    pub list_agents: bool,
 }
 
 /// Watches until something wakes the supervisor and returns the reason, already queued; with
@@ -84,6 +96,9 @@ pub fn run(
     settings: &Settings,
     lock: &Guard,
 ) -> anyhow::Result<Option<String>> {
+    if settings.list_agents {
+        list_agents(state, &runner);
+    }
     let mut watcher = Watcher::new(state, runner, settings)?;
     let mut cycles = 0;
     loop {
@@ -92,7 +107,11 @@ pub fn run(
             return Ok(Some(reason));
         }
         if !watcher.watching {
-            watcher.log("nothing to watch: no open tasks and no followed sessions; exiting");
+            watcher.log("nothing to watch: no open tasks, followed or hand sessions; exiting");
+            return Ok(None);
+        }
+        if !watcher.beating && watcher.started.elapsed() >= settings.heartbeat {
+            watcher.log("heartbeat interval passed with only hand sessions watched; exiting");
             return Ok(None);
         }
         cycles += 1;
@@ -101,6 +120,66 @@ pub fn run(
         }
         thread::sleep(settings.poll);
     }
+}
+
+/// Refreshes every live host's cached agents with one herdr listing each, the way
+/// `flow sessions` does. A host whose listing fails keeps its cached agents; failures are
+/// logged and never end the run.
+fn list_agents(state: &StateDir, runner: &Arc<dyn Runner>) {
+    let found = Config::load(state).and_then(|config| Ok((config, inventory::live_hosts(state)?)));
+    let (config, hosts) = match found {
+        Ok(found) => found,
+        Err(err) => {
+            append_log(state, &format!("listing agents: {err:#}"));
+            return;
+        }
+    };
+    let listed = inventory::list_agents_on(
+        state,
+        runner,
+        &config.herdr_sessions,
+        &hosts,
+        Timestamp::now(),
+    );
+    for (host, listed) in hosts.iter().zip(listed) {
+        let problem = match listed {
+            Ok(listed) => listed.error,
+            Err(err) => Some(format!("{err:#}")),
+        };
+        if let Some(problem) = problem {
+            append_log(
+                state,
+                &format!("listing agents on {}: {problem}", host.name),
+            );
+        }
+    }
+}
+
+/// A herdr agent outside flow's herdr session on a live host, as of the cached inventory.
+struct HandSession {
+    host: String,
+    session: String,
+    pane_id: String,
+    title: String,
+}
+
+fn hand_sessions(state: &StateDir) -> anyhow::Result<Vec<HandSession>> {
+    Ok(inventory::load_all(state)?
+        .into_iter()
+        .filter(|inv| !inv.gone)
+        .flat_map(|inv| {
+            let host = inv.name;
+            inv.agents
+                .into_iter()
+                .filter(|agent| agent.session != herdr::SESSION)
+                .map(move |agent| HandSession {
+                    host: host.clone(),
+                    session: agent.session,
+                    pane_id: agent.pane_id,
+                    title: agent.title,
+                })
+        })
+        .collect())
 }
 
 /// How a watch that fails after taking the lock retries.
@@ -292,9 +371,14 @@ struct Watcher<'a> {
     /// a cycle that listed the tasks, so a first run that could not list them leaves the next
     /// run a first run too, rather than one that replays every task it finds.
     state_saved: bool,
-    /// Whether the last cycle found anything to watch: an open task or a followed session, or
-    /// a task list or follow list it could not read.
+    /// The hand sessions as of this run's start.
+    hands: Vec<HandSession>,
+    /// Whether the last cycle found anything to watch: an open task, a followed or hand
+    /// session, or a task list or follow list it could not read.
     watching: bool,
+    /// Whether the heartbeat fires: the last cycle found something to watch besides hand
+    /// sessions.
+    beating: bool,
     /// Whether `unreachable` entries no wait targets were dropped yet this run.
     pruned: bool,
     waits: BTreeMap<String, PaneWait>,
@@ -319,6 +403,7 @@ impl<'a> Watcher<'a> {
             state,
             store: Store::open(state),
             hosts: inventory::hosts(state)?,
+            hands: hand_sessions(state)?,
             runner,
             settings: settings.clone(),
             saved: memory.clone(),
@@ -326,6 +411,7 @@ impl<'a> Watcher<'a> {
             replay_unseen,
             state_saved: replay_unseen,
             watching: true,
+            beating: true,
             pruned: false,
             waits: BTreeMap::new(),
             quiet_checked: HashMap::new(),
@@ -354,8 +440,16 @@ impl<'a> Watcher<'a> {
             |list| list.follow,
         );
         // What could not be read may well be open, so an error never ends the run as idle.
-        self.watching =
+        self.beating =
             unread || !follow.is_empty() || tasks.iter().any(|(_, status)| status.state.is_open());
+        self.watching = self.beating || !self.hands.is_empty();
+        if !self.beating && self.watching {
+            let n = self.hands.len();
+            let plural = if n == 1 { "" } else { "s" };
+            self.log(&format!(
+                "watching {n} hand session{plural} for blocked only; heartbeat off"
+            ));
+        }
         let mut observed = self.read_task_files(&tasks);
         self.reconcile_waits(&tasks, &follow);
         if !self.pruned {
@@ -364,7 +458,7 @@ impl<'a> Watcher<'a> {
         }
         observed.extend(self.poll_waits());
         observed.extend(self.quiet_tasks(&tasks));
-        if self.started.elapsed() >= self.settings.heartbeat {
+        if self.beating && self.started.elapsed() >= self.settings.heartbeat {
             observed.push((Observation::Heartbeat, Progress::Nothing));
         }
         let thresholds = Thresholds {
@@ -519,8 +613,9 @@ impl<'a> Watcher<'a> {
         observed
     }
 
-    /// Keeps one wait per open task with a herdr target and one per followed pane, dropping
-    /// waits whose task closed, whose target moved, or which were unfollowed.
+    /// Keeps one wait per open task with a herdr target and one per hand session or followed
+    /// pane, dropping waits whose task closed or whose target moved. A hand session's wait
+    /// starts afresh when it is followed or unfollowed, since that changes what it ends on.
     fn reconcile_waits(&mut self, tasks: &[(TaskRecord, Status)], follow: &[Followed]) {
         let mut wanted: BTreeMap<String, WaitSpec> = BTreeMap::new();
         for (rec, status) in tasks {
@@ -537,14 +632,34 @@ impl<'a> Watcher<'a> {
                 },
             );
         }
+        for hand in &self.hands {
+            let followed = follow.iter().any(|followed| {
+                followed.host == hand.host
+                    && followed.session == hand.session
+                    && followed.pane_id == hand.pane_id
+            });
+            let spec = WaitSpec {
+                target: WaitTarget::Adopted {
+                    followed,
+                    title: hand.title.clone(),
+                },
+                host: hand.host.clone(),
+                session: hand.session.clone(),
+                pane_id: hand.pane_id.clone(),
+            };
+            wanted.insert(spec.key(), spec);
+        }
         for followed in follow {
             let spec = WaitSpec {
-                target: WaitTarget::Adopted,
+                target: WaitTarget::Adopted {
+                    followed: true,
+                    title: String::new(),
+                },
                 host: followed.host.clone(),
                 session: followed.session.clone(),
                 pane_id: followed.pane_id.clone(),
             };
-            wanted.insert(spec.key(), spec);
+            wanted.entry(spec.key()).or_insert(spec);
         }
         self.waits
             .retain(|key, wait| wanted.get(key).is_some_and(|spec| *spec == wait.spec));
@@ -563,7 +678,8 @@ impl<'a> Watcher<'a> {
     }
 
     /// Starts the waits not running and reads the ones that ended. A status not worth waking
-    /// for is logged rather than observed.
+    /// for, or an unreachable host seen only by an unfollowed hand session's wait, is logged
+    /// rather than observed.
     fn poll_waits(&mut self) -> Vec<(Observation, Progress)> {
         let timeout_ms = u64::try_from(self.settings.heartbeat.as_millis()).unwrap_or(u64::MAX);
         let mut observed = Vec::new();
@@ -588,6 +704,14 @@ impl<'a> Watcher<'a> {
                 Polled::Gone => {
                     reported.reachable(&wait.host.name);
                     wait.spec.gone()
+                }
+                Polled::Unreachable if wait.spec.unfollowed_hand() => {
+                    notes.push(format!(
+                        "{}: host {} unreachable",
+                        wait.spec.key(),
+                        wait.host.name
+                    ));
+                    continue;
                 }
                 Polled::Unreachable => Observation::HostUnreachable {
                     host: wait.host.name.clone(),
@@ -807,6 +931,12 @@ default_branch = "main"
     const WORKING: &str = r#"{"id":"cli:agent:wait","result":{"agent":{"agent":"claude","agent_status":"working","pane_id":"w1:p1","workspace_id":"w1"},"type":"agent_info"}}"#;
     const DONE: &str = r#"{"id":"cli:agent:wait","result":{"agent":{"agent":"claude","agent_status":"done","pane_id":"w1:p1","workspace_id":"w1"},"type":"agent_info"}}"#;
     const NOT_FOUND: &str = r#"{"error":{"code":"agent_not_found","message":"agent target w1:p1 not found"},"id":"cli:agent:wait"}"#;
+    const SERVER_RUNNING: &str = "status: running\nversion: 0.9.5\nendpoint_compatible: yes\n\
+         private_protocol: 22\nprivate_protocol_compatible: yes\n\
+         socket: /home/dev/.config/herdr/sessions/flow/herdr.sock\n";
+    const NO_AGENTS: &str = r#"{"id":"cli:agent:list","result":{"agents":[],"type":"agent_list"}}"#;
+    const DEFAULT_AGENTS: &str = r#"{"id":"cli:agent:list","result":{"agents":[{"agent":"claude","agent_status":"idle","cwd":"/work/repo","pane_id":"w1:p1","terminal_title":"✳ Tidy docs","terminal_title_stripped":"Tidy docs","workspace_id":"w1"}],"type":"agent_list"}}"#;
+    const TIDY_DOCS_BLOCKED: &str = r#"adopted-blocked: host-a w1:p1 "Tidy docs""#;
 
     struct Fixture {
         _dir: tempfile::TempDir,
@@ -858,6 +988,41 @@ default_branch = "main"
                 .unwrap();
         }
 
+        fn host_b(&self) -> Host {
+            Host {
+                name: "host-b".to_owned(),
+                env_id: "env-0002".to_owned(),
+                ssh_alias: "host-b.example".to_owned(),
+                local_marker_env: None,
+            }
+        }
+
+        /// Adds an agent in `session`'s pane `pane_id` to the cached inventory of `env_id`.
+        fn agent(&self, env_id: &str, session: &str, pane_id: &str, title: &str) {
+            let mut inv = inventory::load(&self.state, env_id).unwrap().unwrap();
+            inv.agents.push(herdr::Agent {
+                pane_id: pane_id.to_owned(),
+                workspace_id: pane_id.split(':').next().unwrap().to_owned(),
+                agent: "claude".to_owned(),
+                status: herdr::AgentStatus::Idle,
+                cwd: PathBuf::from("/work/repo"),
+                title: title.to_owned(),
+                session: session.to_owned(),
+                agent_session_id: None,
+            });
+            inventory::save(&self.state, &inv).unwrap();
+        }
+
+        /// A hand session titled "Tidy docs" in herdr's `default` session, pane `w1:p1` on
+        /// `host-a`.
+        fn hand(&self) {
+            self.agent("env-0001", "default", "w1:p1", "Tidy docs");
+        }
+
+        fn log(&self) -> String {
+            std::fs::read_to_string(self.state.root().join(WATCH_LOG_FILE)).unwrap_or_default()
+        }
+
         fn follow(&self) {
             FollowList::update(&self.state, |list| {
                 list.follow.push(Followed {
@@ -871,12 +1036,39 @@ default_branch = "main"
 
         fn watcher(&self, fake: &Arc<FakeRunner>, quiet_secs: u64) -> Watcher<'_> {
             let settings = Settings {
-                poll: Duration::from_millis(10),
-                heartbeat: Duration::from_secs(3600),
-                once: false,
                 quiet_secs,
+                ..settings(Duration::from_secs(3600))
             };
             Watcher::new(&self.state, fake.clone(), &settings).unwrap()
+        }
+    }
+
+    fn settings(heartbeat: Duration) -> Settings {
+        Settings {
+            poll: Duration::from_millis(10),
+            heartbeat,
+            once: false,
+            quiet_secs: DEFAULT_QUIET_SECS,
+            list_agents: false,
+        }
+    }
+
+    fn on(host: &str, argv: &[&str], stdout: &str) -> Scripted {
+        Scripted {
+            host: Some(host.to_owned()),
+            argv: Some(argv.iter().map(|word| (*word).to_owned()).collect()),
+            stdout: stdout.to_owned(),
+            ..Scripted::default()
+        }
+    }
+
+    fn host_b_unreachable() -> Scripted {
+        Scripted {
+            host: Some("host-b".to_owned()),
+            status: 255,
+            stderr: "ssh: connect to host host-b.example port 22: Connection refused".to_owned(),
+            repeat: true,
+            ..Scripted::default()
         }
     }
 
@@ -894,18 +1086,39 @@ default_branch = "main"
 
     /// Runs a cycle, lets every wait it started end, and runs another.
     fn two_cycles(watcher: &mut Watcher) -> Option<String> {
-        if let Some(reason) = watcher.cycle().unwrap() {
-            return Some(reason);
-        }
-        for wait in watcher.waits.values_mut() {
-            if let Some(child) = &mut wait.child {
-                child.wait().unwrap();
+        cycles(watcher, 2)
+    }
+
+    /// Runs `n` cycles, letting every wait and check started end between them, and returns the
+    /// first wake.
+    fn cycles(watcher: &mut Watcher, n: usize) -> Option<String> {
+        for _ in 0..n {
+            if let Some(reason) = watcher.cycle().unwrap() {
+                return Some(reason);
+            }
+            for wait in watcher.waits.values_mut() {
+                if let Some(child) = &mut wait.child {
+                    child.wait().unwrap();
+                }
+            }
+            for running in watcher.worktree_checks.values_mut() {
+                running.check.finish();
             }
         }
-        for running in watcher.worktree_checks.values_mut() {
-            running.check.finish();
-        }
-        watcher.cycle().unwrap()
+        None
+    }
+
+    fn hand_keys(watcher: &Watcher) -> Vec<String> {
+        watcher
+            .hands
+            .iter()
+            .map(|hand| {
+                format!(
+                    "{}/{}/{} {}",
+                    hand.host, hand.session, hand.pane_id, hand.title
+                )
+            })
+            .collect()
     }
 
     fn wait_untils(fake: &FakeRunner) -> Vec<Vec<String>> {
@@ -951,7 +1164,7 @@ default_branch = "main"
         let mut first = fx.watcher(&runner, DEFAULT_QUIET_SECS);
         assert_eq!(
             two_cycles(&mut first).as_deref(),
-            Some("adopted-idle: host-a/w1:p1")
+            Some(r#"adopted-idle: host-a w1:p1 "w1:p1""#)
         );
         drop(first);
 
@@ -967,6 +1180,206 @@ default_branch = "main"
             ]
         );
         assert!(runner.calls()[0].argv.contains(&"default".to_owned()));
+    }
+
+    #[test]
+    fn unfollowed_hand_session_wakes_once_when_blocked_until_it_leaves_blocked() {
+        let fx = Fixture::new();
+        fx.hand();
+        let runner = fake(vec![
+            answer(0, BLOCKED),
+            answer(0, BLOCKED),
+            answer(0, WORKING),
+            answer(0, BLOCKED),
+        ]);
+        let mut first = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+        assert_eq!(two_cycles(&mut first).as_deref(), Some(TIDY_DOCS_BLOCKED));
+        drop(first);
+        let queued = queue::latest(&fx.state).unwrap().unwrap();
+        assert_eq!(queued.reason, TIDY_DOCS_BLOCKED);
+
+        let mut second = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+        assert_eq!(cycles(&mut second, 6).as_deref(), Some(TIDY_DOCS_BLOCKED));
+        assert_eq!(
+            wait_untils(&runner),
+            [
+                vec!["blocked"],
+                vec!["blocked"],
+                vec!["idle", "working", "done"],
+                vec!["idle", "blocked", "done"],
+            ]
+        );
+        assert!(runner.calls()[0].argv.contains(&"default".to_owned()));
+    }
+
+    #[test]
+    fn unfollowed_hand_session_idle_working_done_or_gone_is_absorbed() {
+        let fx = Fixture::new();
+        fx.hand();
+        let runner = fake(vec![
+            answer(0, IDLE),
+            answer(0, WORKING),
+            answer(0, DONE),
+            answer(1, NOT_FOUND),
+        ]);
+        let mut watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+        assert_eq!(cycles(&mut watcher, 8), None);
+        assert_eq!(runner.calls().len(), 4);
+        assert!(queue::latest(&fx.state).unwrap().is_none());
+        let log = fx.log();
+        assert!(
+            log.lines().any(|line| line.contains("absorb")
+                && line.contains(r#""type":"adopted-changed""#)
+                && line.contains(r#""status":"unknown""#)),
+            "{log}"
+        );
+    }
+
+    #[test]
+    fn unfollowed_hand_session_on_an_unreachable_host_is_not_reported() {
+        let fx = Fixture::new();
+        fx.hand();
+        let runner = fake(vec![answer(255, "")]);
+        let mut watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+        assert_eq!(two_cycles(&mut watcher), None);
+        assert!(watcher.memory.reported.unreachable.is_empty());
+        assert!(queue::latest(&fx.state).unwrap().is_none());
+    }
+
+    #[test]
+    fn followed_hand_session_wakes_on_idle_with_its_title() {
+        let fx = Fixture::new();
+        fx.hand();
+        fx.follow();
+        let runner = fake(vec![answer(0, IDLE)]);
+        let mut watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+        assert_eq!(
+            two_cycles(&mut watcher).as_deref(),
+            Some(r#"adopted-idle: host-a w1:p1 "Tidy docs""#)
+        );
+        assert_eq!(wait_untils(&runner), [vec!["idle", "blocked", "done"]]);
+    }
+
+    #[test]
+    fn heartbeat_is_off_while_only_hand_sessions_are_watched() {
+        let fx = Fixture::new();
+        fx.hand();
+        let runner = fake(vec![Scripted {
+            repeat: true,
+            ..answer(0, WORKING)
+        }]);
+        let mut watcher =
+            Watcher::new(&fx.state, runner.clone(), &settings(Duration::ZERO)).unwrap();
+        assert_eq!(watcher.cycle().unwrap(), None);
+        assert!(watcher.watching);
+        assert!(!watcher.beating);
+        drop(watcher);
+        let lock = lock::acquire(&fx.state, std::process::id())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            run(&fx.state, runner.clone(), &settings(Duration::ZERO), &lock).unwrap(),
+            None
+        );
+        drop(lock);
+        let log = fx.log();
+        assert_eq!(
+            log.matches("watching 1 hand session for blocked only; heartbeat off")
+                .count(),
+            2,
+            "{log}"
+        );
+        assert!(log.contains("only hand sessions watched"), "{log}");
+        assert!(queue::latest(&fx.state).unwrap().is_none());
+
+        fx.task(true);
+        let mut watcher =
+            Watcher::new(&fx.state, runner.clone(), &settings(Duration::ZERO)).unwrap();
+        assert_eq!(watcher.cycle().unwrap().as_deref(), Some("heartbeat"));
+        assert!(watcher.beating);
+    }
+
+    #[test]
+    fn hand_sessions_exclude_flows_own_herdr_session_and_gone_hosts() {
+        let fx = Fixture::new();
+        fx.agent("env-0001", herdr::SESSION, "w1:p1", "supervisor");
+        let mut gone = HostInventory::new(&fx.host_b(), Timestamp::now());
+        gone.gone = true;
+        inventory::save(&fx.state, &gone).unwrap();
+        fx.agent("env-0002", "default", "w5:p1", "Upgrade toolchain");
+        let runner = fake(Vec::new());
+        let mut watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+        assert!(watcher.hands.is_empty());
+        assert_eq!(watcher.cycle().unwrap(), None);
+        assert!(!watcher.watching);
+        assert!(runner.calls().is_empty());
+    }
+
+    #[test]
+    fn listing_keeps_an_unreachable_hosts_cached_agents_and_the_run() {
+        let fx = Fixture::new();
+        inventory::save(
+            &fx.state,
+            &HostInventory::new(&fx.host_b(), Timestamp::now()),
+        )
+        .unwrap();
+        fx.agent("env-0002", "default", "w5:p1", "Upgrade toolchain");
+        let host_b_before = inventory::load(&fx.state, "env-0002").unwrap();
+        let runner = fake(vec![
+            host_b_unreachable(),
+            on(
+                "host-a",
+                &["--session", "flow", "status", "server"],
+                SERVER_RUNNING,
+            ),
+            on("host-a", &["--session", "flow", "agent", "list"], NO_AGENTS),
+            on(
+                "host-a",
+                &["--session", "default", "agent", "list"],
+                DEFAULT_AGENTS,
+            ),
+            Scripted {
+                repeat: true,
+                ..on("host-a", &["agent", "wait"], WORKING)
+            },
+        ]);
+        let lock = lock::acquire(&fx.state, std::process::id())
+            .unwrap()
+            .unwrap();
+        let once = Settings {
+            once: true,
+            list_agents: true,
+            ..settings(Duration::from_secs(3600))
+        };
+
+        assert_eq!(run(&fx.state, runner.clone(), &once, &lock).unwrap(), None);
+
+        assert_eq!(
+            inventory::load(&fx.state, "env-0002").unwrap(),
+            host_b_before
+        );
+        let host_a = inventory::load(&fx.state, "env-0001").unwrap().unwrap();
+        let titles: Vec<&str> = host_a.agents.iter().map(|a| a.title.as_str()).collect();
+        assert_eq!(titles, ["Tidy docs"]);
+        assert!(
+            fx.log().contains("host unreachable: host-b"),
+            "{}",
+            fx.log()
+        );
+        let listings = runner
+            .calls()
+            .iter()
+            .filter(|call| call.argv.windows(2).any(|w| w == ["agent", "list"]))
+            .count();
+        assert_eq!(listings, 2);
+        let watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+        assert_eq!(
+            hand_keys(&watcher),
+            [
+                "host-a/default/w1:p1 Tidy docs",
+                "host-b/default/w5:p1 Upgrade toolchain",
+            ]
+        );
     }
 
     #[test]

@@ -230,8 +230,9 @@ designer's call.
 20. **Actionable means:** a worker reached `done` or `blocked` or wrote `needs-decision`; a
     worker went quiet beyond a threshold without evidence it is working (herdr `working`,
     recent writes in its worktree); a worker's session or pane disappeared; a CDE became
-    unreachable; a dispatch request appeared; an adopted session changed state in a way
-    the user asked to hear about; the heartbeat fired.
+    unreachable; a dispatch request appeared; a session the user started by hand turned
+    `blocked`, or one the user follows went idle or done; the heartbeat fired. The heartbeat
+    fires only while tasks are open or sessions are followed.
 
 ### Decision authority
 

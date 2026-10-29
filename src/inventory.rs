@@ -357,6 +357,55 @@ pub fn herdr_agents(runner: &Arc<dyn Runner>, host: &Host, sessions: &[String]) 
     }
 }
 
+/// One host's inventory after asking herdr for its agents, with why herdr could not be asked
+/// for all of them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Listed {
+    pub inventory: HostInventory,
+    pub error: Option<String>,
+}
+
+/// `host`'s cached inventory with the agents and herdr error herdr reports now in `sessions`,
+/// saved; or, when the host does not answer, its cached inventory as is.
+pub fn list_agents(
+    state: &StateDir,
+    runner: &Arc<dyn Runner>,
+    sessions: &[String],
+    host: &Host,
+    now: Timestamp,
+) -> anyhow::Result<Listed> {
+    let cached = load(state, &host.env_id)?;
+    let found = herdr_agents(runner, host, sessions);
+    let error = found.error.clone();
+    if found.unreachable {
+        let inventory = cached.unwrap_or_else(|| unreachable(host, None, now));
+        return Ok(Listed { inventory, error });
+    }
+    let inventory = with_agents(host, cached, found, now);
+    save(state, &inventory)?;
+    Ok(Listed { inventory, error })
+}
+
+/// `list_agents` for each of `hosts`, asked in parallel, in the order given.
+pub fn list_agents_on(
+    state: &StateDir,
+    runner: &Arc<dyn Runner>,
+    sessions: &[String],
+    hosts: &[Host],
+    now: Timestamp,
+) -> Vec<anyhow::Result<Listed>> {
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = hosts
+            .iter()
+            .map(|host| scope.spawn(move || list_agents(state, runner, sessions, host, now)))
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("agent listing thread panicked"))
+            .collect()
+    })
+}
+
 /// `cached` with its agents and herdr error replaced by `found` as of `now`, or, with nothing
 /// cached, an inventory of only those agents. herdr answering means the host was reached, so a
 /// cached inventory is marked reachable and its probe error cleared; nothing else changes.

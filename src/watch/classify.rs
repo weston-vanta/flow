@@ -1,5 +1,6 @@
 //! What `flow watch` makes of what it sees: each observation either wakes the supervisor with a
-//! one-line reason or is absorbed. `Reported` remembers what earlier wakes already said, so a
+//! one-line reason or is absorbed. A hand session, an agent outside flow's herdr session, wakes
+//! it when it turns `blocked`, and on every other change only when followed. `Reported` remembers what earlier wakes already said, so a
 //! condition that persists wakes the supervisor once rather than on every turn end.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -44,11 +45,14 @@ pub enum Observation {
         since_secs: u64,
         worktree_written: bool,
     },
-    /// herdr reports an adopted session's agent in `status`.
+    /// herdr reports a hand session's agent in `status`: an agent outside flow's herdr session.
     AdoptedChanged {
         host: String,
         session: String,
         pane_id: String,
+        /// herdr's title for the agent as of the cached inventory; empty when it has none.
+        #[serde(default)]
+        title: String,
         status: AgentStatus,
     },
     /// `--heartbeat` seconds passed.
@@ -68,7 +72,8 @@ pub struct Thresholds {
     /// How long a task may go without an event, and without writes to its working directory, before it wakes
     /// the supervisor.
     pub quiet_secs: u64,
-    /// The adopted sessions whose state changes wake the supervisor, from `follow.json`.
+    /// The hand sessions whose every state change wakes the supervisor, from `follow.json`.
+    /// Any hand session turning `blocked` wakes it.
     pub follow: Vec<Followed>,
 }
 
@@ -114,18 +119,21 @@ pub fn classify(obs: &Observation, thresholds: &Thresholds) -> Verdict {
         }
         Observation::AdoptedChanged {
             host,
+            session,
             pane_id,
+            title,
             status,
-            ..
         } => {
-            let followed = thresholds
-                .follow
-                .iter()
-                .any(|followed| followed.host == *host && followed.pane_id == *pane_id);
-            if !followed {
+            let followed = thresholds.follow.iter().any(|followed| {
+                followed.host == *host
+                    && followed.session == *session
+                    && followed.pane_id == *pane_id
+            });
+            if !followed && *status != AgentStatus::Blocked {
                 return Verdict::Absorb;
             }
-            format!("adopted-{}: {host}/{pane_id}", status.as_str())
+            let title = if title.is_empty() { pane_id } else { title };
+            format!("adopted-{}: {host} {pane_id} \"{title}\"", status.as_str())
         }
         Observation::Heartbeat => "heartbeat".to_owned(),
         Observation::WatchFailed { error } => format!("watch-failed: {error}"),
@@ -297,7 +305,19 @@ mod tests {
             host: "host-a".to_owned(),
             session: "default".to_owned(),
             pane_id: pane_id.to_owned(),
+            title: "Tidy docs".to_owned(),
             status,
+        }
+    }
+
+    fn following(session: &str) -> Thresholds {
+        Thresholds {
+            follow: vec![Followed {
+                host: "host-a".to_owned(),
+                pane_id: "w1:p1".to_owned(),
+                session: session.to_owned(),
+            }],
+            ..Thresholds::default()
         }
     }
 
@@ -416,24 +436,57 @@ mod tests {
 
     #[test]
     fn classify_adopted_change_of_followed_pane_wakes() {
-        let thresholds = Thresholds {
-            follow: vec![Followed {
-                host: "host-a".to_owned(),
-                pane_id: "w1:p1".to_owned(),
-                session: "default".to_owned(),
-            }],
-            ..Thresholds::default()
-        };
+        let thresholds = following("default");
         assert_eq!(
             classify(&adopted("w1:p1", AgentStatus::Idle), &thresholds),
-            wake("adopted-idle: host-a/w1:p1")
+            wake(r#"adopted-idle: host-a w1:p1 "Tidy docs""#)
+        );
+        assert_eq!(
+            classify(&adopted("w1:p1", AgentStatus::Unknown), &thresholds),
+            wake(r#"adopted-unknown: host-a w1:p1 "Tidy docs""#)
         );
     }
 
     #[test]
-    fn classify_adopted_change_of_unfollowed_pane_absorbs() {
+    fn classify_adopted_change_of_unfollowed_pane_absorbs_all_but_blocked() {
+        for status in [
+            AgentStatus::Idle,
+            AgentStatus::Working,
+            AgentStatus::Done,
+            AgentStatus::Unknown,
+        ] {
+            assert_eq!(
+                verdict(adopted("w1:p1", status)),
+                Verdict::Absorb,
+                "{status:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_blocked_hand_session_wakes_whether_followed_or_not() {
+        let blocked = adopted("w1:p1", AgentStatus::Blocked);
+        let reason = wake(r#"adopted-blocked: host-a w1:p1 "Tidy docs""#);
+        assert_eq!(verdict(blocked.clone()), reason);
+        assert_eq!(classify(&blocked, &following("default")), reason);
+    }
+
+    #[test]
+    fn classify_names_an_untitled_hand_session_by_its_pane() {
+        let mut untitled = adopted("w1:p1", AgentStatus::Blocked);
+        if let Observation::AdoptedChanged { title, .. } = &mut untitled {
+            title.clear();
+        }
         assert_eq!(
-            verdict(adopted("w1:p1", AgentStatus::Idle)),
+            verdict(untitled),
+            wake(r#"adopted-blocked: host-a w1:p1 "w1:p1""#)
+        );
+    }
+
+    #[test]
+    fn classify_follows_a_pane_only_in_its_own_herdr_session() {
+        assert_eq!(
+            classify(&adopted("w1:p1", AgentStatus::Idle), &following("other")),
             Verdict::Absorb
         );
     }
@@ -521,11 +574,11 @@ mod tests {
     fn adopted_report_is_not_cleared_by_events() {
         let mut reported = Reported::default();
         let idle = adopted("w1:p1", AgentStatus::Idle);
-        reported.review(&idle, wake("adopted-idle: host-a/w1:p1"));
+        reported.review(&idle, wake("adopted-idle: host-a w1:p1"));
         let key = pane_key(&idle).unwrap();
         reported.events_grew(&key, 1_000);
         assert_eq!(
-            reported.review(&idle, wake("adopted-idle: host-a/w1:p1")),
+            reported.review(&idle, wake("adopted-idle: host-a w1:p1")),
             Verdict::Absorb
         );
     }

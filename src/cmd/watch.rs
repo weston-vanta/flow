@@ -1,7 +1,9 @@
 //! `flow watch [--heartbeat SECS] [--once]`: the supervisor's Stop hook. Blocks until something
 //! is actionable, then prints the reason on stdout and stderr and exits 2, which Claude Code
 //! delivers to the supervisor as hook feedback. Exits 0 silently when another watch holds the
-//! lock, under `--once` when nothing woke, and when there is nothing to watch. Once the lock is
+//! lock, under `--once` when nothing woke, when there is nothing to watch, and when only hand
+//! sessions were watched for a heartbeat interval. Each run first lists every live host's agents
+//! once, retries included, to find the hand sessions to watch. Once the lock is
 //! held, an error wakes the supervisor as `watch-failed: <error>` rather than failing the hook,
 //! which would leave no watcher and nobody told. Each distinct error wakes once: a watch that
 //! hits the error the newest wake already reported keeps the lock and retries in the
@@ -36,14 +38,16 @@ pub fn run(state: &StateDir, heartbeat: Option<u64>, once: bool) -> anyhow::Resu
     };
     let heartbeat = Duration::from_secs(heartbeat.unwrap_or(DEFAULT_HEARTBEAT_SECS));
     let watched = if once {
-        watch_holding(state, heartbeat, true, &lock)
+        watch_holding(state, heartbeat, true, true, &lock)
             .unwrap_or_else(|err| Some(watch::failure_wake(state, &err)))
     } else {
         match env_millis(RETRY_VAR, DEFAULT_RETRY) {
             Ok(first) => {
                 let retry = Retry { first, heartbeat };
+                let mut first_attempt = true;
                 watch::run_retrying(state, &lock, &retry, || {
-                    watch_holding(state, heartbeat, false, &lock)
+                    let list_agents = std::mem::take(&mut first_attempt);
+                    watch_holding(state, heartbeat, false, list_agents, &lock)
                 })
             }
             Err(err) => Some(watch::failure_wake(state, &err)),
@@ -61,6 +65,7 @@ fn watch_holding(
     state: &StateDir,
     heartbeat: Duration,
     once: bool,
+    list_agents: bool,
     lock: &lock::Guard,
 ) -> anyhow::Result<Option<String>> {
     let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
@@ -69,6 +74,7 @@ fn watch_holding(
         heartbeat,
         once,
         quiet_secs: DEFAULT_QUIET_SECS,
+        list_agents,
     };
     watch::run(state, runner, &settings, lock)
 }

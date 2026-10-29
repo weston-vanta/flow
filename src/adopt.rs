@@ -1,9 +1,9 @@
 //! Adoption of sessions the user started by hand in herdr: each herdr agent is matched to the
 //! task whose worker runs in its pane, or shown as adopted, with the Claude Code session it runs
 //! and that session's latest summary, read from Claude Code's session registry and transcripts.
-//! Reading is all flow does there; it never writes Claude Code's state. The follow list,
-//! `state/supervisor/follow.json`, names the adopted sessions whose state changes should wake
-//! the supervisor.
+//! Reading is all flow does there; it never writes Claude Code's state. Any hand-started session
+//! turning `blocked` wakes the supervisor; the follow list, `state/supervisor/follow.json`,
+//! names the ones whose other state changes should wake it too.
 //!
 //! herdr can report an agent's Claude Code session id, which names its registry session
 //! exactly. An agent it reports none for is matched by cwd, and only when no other such agent
@@ -93,8 +93,8 @@ pub enum MatchedBy {
     Cwd,
 }
 
-/// `state/supervisor/follow.json`: the adopted sessions whose state changes should wake the
-/// supervisor.
+/// `state/supervisor/follow.json`: the hand-started sessions whose every state change should
+/// wake the supervisor, not only turning `blocked`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FollowList {
     pub follow: Vec<Followed>,

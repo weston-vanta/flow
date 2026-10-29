@@ -3,7 +3,6 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::thread;
 
 use jiff::Timestamp;
 
@@ -114,7 +113,8 @@ pub fn run_unfollow(state: &StateDir, host: &str, pane_id: &str) -> anyhow::Resu
     Ok(())
 }
 
-/// Each of `hosts`' inventory with live agents, asked in parallel, in the order given.
+/// Each of `hosts`' inventory with live agents, asked in parallel, in the order given. Any
+/// herdr error is printed on stderr.
 fn live_inventories(
     state: &StateDir,
     runner: &Arc<dyn Runner>,
@@ -122,38 +122,16 @@ fn live_inventories(
     hosts: &[Host],
     now: Timestamp,
 ) -> anyhow::Result<Vec<HostInventory>> {
-    thread::scope(|scope| {
-        let handles: Vec<_> = hosts
-            .iter()
-            .map(|host| scope.spawn(move || live_inventory(state, runner, config, host, now)))
-            .collect();
-        handles
-            .into_iter()
-            .map(|handle| handle.join().expect("agent listing thread panicked"))
-            .collect()
-    })
-}
-
-/// `host`'s cached inventory with the agents and herdr error herdr reports now, saved; or, when
-/// the host does not answer, its cached inventory as is. Any herdr error is printed on stderr.
-fn live_inventory(
-    state: &StateDir,
-    runner: &Arc<dyn Runner>,
-    config: &Config,
-    host: &Host,
-    now: Timestamp,
-) -> anyhow::Result<HostInventory> {
-    let cached = inventory::load(state, &host.env_id)?;
-    let found = inventory::herdr_agents(runner, host, &config.herdr_sessions);
-    if let Some(error) = &found.error {
-        eprintln!("{error}");
-    }
-    if found.unreachable {
-        return Ok(cached.unwrap_or_else(|| inventory::unreachable(host, None, now)));
-    }
-    let updated = inventory::with_agents(host, cached, found, now);
-    inventory::save(state, &updated)?;
-    Ok(updated)
+    inventory::list_agents_on(state, runner, &config.herdr_sessions, hosts, now)
+        .into_iter()
+        .map(|listed| {
+            let listed = listed?;
+            if let Some(error) = &listed.error {
+                eprintln!("{error}");
+            }
+            Ok(listed.inventory)
+        })
+        .collect()
 }
 
 /// Reads each matched session's latest summary. A transcript that cannot be read leaves the
