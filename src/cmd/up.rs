@@ -1,10 +1,10 @@
 //! `flow up`: attaches to the live supervisor, or starts one on this host and attaches to it. A
 //! live supervisor is found in the herdr session its lock records, whatever the configured one; a
 //! new one starts in the configured session. One `flow down` stopped is not looked for: a new one
-//! starts here at once, resuming its Claude Code session. When the lock's pane holds an agent that
-//! runs in or below the supervisor's cwd, in its workspace, but cannot be confirmed as the
-//! supervisor, it refuses rather than start a second supervisor on the same session; `flow down
-//! --force` or `--forget`, as the user tells which it is, clears the way.
+//! starts here at once, resuming its Claude Code session. When the lock's pane holds an agent in
+//! the supervisor's workspace that cannot be confirmed as the supervisor, it refuses rather than
+//! start a second supervisor on the same session; `flow down --force` or `--forget`, as the user
+//! tells which it is, clears the way.
 
 use std::os::unix::process::CommandExt;
 use std::path::Path;

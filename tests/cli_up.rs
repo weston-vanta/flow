@@ -523,7 +523,9 @@ fn up_attaches_when_lock_live() {
 fn up_starts_fresh_when_the_lock_pane_runs_another_agent() {
     let fx = Fixture::new();
     fx.write_lock("env-0001", "host-a", LIVE_PANE, None);
-    let mut script = vec![ok(AGENT_LIST), workspaces(WORKSPACE_LIST)];
+    let moved = AGENT_LIST.replace(r#""workspace_id":"w1""#, r#""workspace_id":"w3""#);
+    assert_ne!(moved, AGENT_LIST);
+    let mut script = vec![ok(&moved), workspaces(WORKSPACE_LIST)];
     script.extend(fresh_start());
 
     let stdout = stdout_of(fx.flow(&script).arg("up"));
@@ -531,7 +533,7 @@ fn up_starts_fresh_when_the_lock_pane_runs_another_agent() {
     let calls = fx.calls();
     assert!(
         has_subcommand(&calls, &["workspace", "create"]),
-        "a worker reusing the lock's pane id is not the supervisor"
+        "a worker reusing the lock's pane id outside its workspace is not the supervisor"
     );
     assert!(
         !has_subcommand(&calls, &["workspace", "close"]),
@@ -571,8 +573,21 @@ fn up_refuses_beside_an_agent_it_cannot_tell_from_the_supervisor() {
             Some("s9"),
             lock_pane_agent("/workspaces/flow/docs", None),
             w1_labelled("flow-supervisor"),
-            "herdr reports no Claude Code session for it, and it runs below /workspaces/flow \
-             rather than in it",
+            "herdr reports no Claude Code session for it, and it runs in /workspaces/flow/docs, \
+             not /workspaces/flow",
+        ),
+        (
+            Some("s9"),
+            lock_pane_agent("/workspaces/acme", Some("s-hand")),
+            w1_labelled("flow-supervisor"),
+            "herdr reports Claude Code session s-hand for it, not the supervisor's s9",
+        ),
+        (
+            Some("s9"),
+            lock_pane_agent("/workspaces/flow-notes", None),
+            w1_labelled("flow-supervisor"),
+            "herdr reports no Claude Code session for it, and it runs in \
+             /workspaces/flow-notes, not /workspaces/flow",
         ),
         (
             Some("s9"),
@@ -592,11 +607,6 @@ fn up_refuses_beside_an_agent_it_cannot_tell_from_the_supervisor() {
         let fx = Fixture::new();
         fx.write_lock("env-0001", "host-a", LIVE_PANE, session);
         let before = fs::read_to_string(fx.state.join("supervisor/lock.json")).unwrap();
-        let cwd = if agents.contains("/workspaces/flow/docs") {
-            "/workspaces/flow/docs"
-        } else {
-            "/workspaces/flow"
-        };
         let mut script = vec![
             ok(&agents),
             workspaces(&listed),
@@ -615,18 +625,24 @@ fn up_refuses_beside_an_agent_it_cannot_tell_from_the_supervisor() {
         assert_eq!(
             String::from_utf8(out.stderr).unwrap(),
             format!(
-                "pane w1:p1 on host-a holds an agent flow cannot tell from the supervisor: it \
-                 runs in {cwd} in the supervisor's workspace w1, but {why}. flow up started \
-                 nothing, since a second supervisor would resume the same session. If that is \
-                 the supervisor, `flow down --force` closes that pane; if it is your own \
-                 session, `flow down --forget` leaves it alone and clears the lock; then `flow \
+                "pane w1:p1 on host-a holds an agent flow cannot tell from the supervisor: it is \
+                 in the supervisor's workspace w1, but {why}. flow up started nothing, since a \
+                 second supervisor would resume the same session. If that is the supervisor, \
+                 `flow down --force` closes that pane; if it is your own session, `flow down \
+                 --forget` marks the supervisor stopped and leaves the pane alone; then `flow \
                  up`.\n"
             ),
             "{session:?} {agents}"
         );
         assert!(out.stdout.is_empty());
         let calls = fx.calls();
-        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert!(
+            calls.iter().all(
+                |(_, argv)| argv.ends_with(&["agent".to_owned(), "list".to_owned()])
+                    || argv.ends_with(&["workspace".to_owned(), "list".to_owned()])
+            ),
+            "{calls:?}"
+        );
         assert_eq!(
             fs::read_to_string(fx.state.join("supervisor/lock.json")).unwrap(),
             before
@@ -640,14 +656,11 @@ fn up_attaches_when_the_lock_pane_reports_the_lock_session() {
     fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
 
     let stdout = stdout_of(
-        fx.flow(&[
-            ok(&lock_pane_agent("/workspaces/flow/docs", Some("s9"))),
-            workspaces(&w1_labelled("notes")),
-        ])
-        .arg("up"),
+        fx.flow(&[ok(&lock_pane_agent("/workspaces/flow/docs", Some("s9")))])
+            .arg("up"),
     );
 
-    assert_eq!(fx.calls().len(), 2);
+    assert_eq!(fx.calls().len(), 1);
     assert_eq!(
         stdout,
         format!("attach: herdr --session flow agent attach {LIVE_PANE}\n")
@@ -687,17 +700,8 @@ fn up_starts_fresh_beside_an_agent_that_is_clearly_not_the_supervisor() {
         (Some("s9"), moved_reporting, w1_labelled("flow-supervisor")),
         (
             Some("s9"),
-            lock_pane_agent("/workspaces/acme", Some("s-hand")),
-            w1_labelled("flow-supervisor"),
-        ),
-        (
-            Some("s9"),
-            lock_pane_agent("/workspaces/acme", None),
-            w1_labelled("flow-supervisor"),
-        ),
-        (
-            Some("s9"),
-            lock_pane_agent("/workspaces/flow-notes", None),
+            lock_pane_agent("/workspaces/acme", None)
+                .replace(r#""workspace_id":"w1""#, r#""workspace_id":"w2""#),
             w1_labelled("flow-supervisor"),
         ),
     ] {

@@ -511,29 +511,25 @@ fn down_closes_the_workspace_a_dead_supervisor_left_under_its_label() {
 
 #[test]
 fn down_refuses_beside_an_agent_it_cannot_tell_from_the_supervisor() {
-    let unconfirmed = |cwd: &str, why: &str| {
+    let unconfirmed = |why: &str| {
         format!(
-            "pane w1:p1 on host-a holds an agent flow cannot tell from the supervisor: it runs in \
-             {cwd} in the supervisor's workspace w1, but {why}. flow down stopped nothing and \
-             kept the lock. If that is the supervisor, `flow down --force` closes that pane; if \
-             it is your own session, `flow down --forget` leaves it alone and clears the lock; \
-             then `flow up`.\n"
+            "pane w1:p1 on host-a holds an agent flow cannot tell from the supervisor: it is in \
+             the supervisor's workspace w1, but {why}. flow down stopped nothing and kept the \
+             lock. If that is the supervisor, `flow down --force` closes that pane; if it is \
+             your own session, `flow down --forget` marks the supervisor stopped and leaves the \
+             pane alone; then `flow up`.\n"
         )
     };
     for (agents, listed, refusal) in [
         (
             in_lock_pane("/workspaces/flow", Some("s-hand")),
             supervisor_listed(),
-            unconfirmed(
-                "/workspaces/flow",
-                "herdr reports Claude Code session s-hand for it, not the supervisor's s9",
-            ),
+            unconfirmed("herdr reports Claude Code session s-hand for it, not the supervisor's s9"),
         ),
         (
             in_lock_pane("/workspaces/flow", None),
             relabelled("my notes"),
             unconfirmed(
-                "/workspaces/flow",
                 "herdr reports no Claude Code session for it, and its workspace is labelled \
                  \"my notes\", not \"flow-supervisor\"",
             ),
@@ -542,9 +538,16 @@ fn down_refuses_beside_an_agent_it_cannot_tell_from_the_supervisor() {
             in_lock_pane("/workspaces/flow/docs", None),
             supervisor_listed(),
             unconfirmed(
-                "/workspaces/flow/docs",
-                "herdr reports no Claude Code session for it, and it runs below \
-                 /workspaces/flow rather than in it",
+                "herdr reports no Claude Code session for it, and it runs in \
+                 /workspaces/flow/docs, not /workspaces/flow",
+            ),
+        ),
+        (
+            AGENT_LIST.to_owned(),
+            supervisor_listed(),
+            unconfirmed(
+                "herdr reports no Claude Code session for it, and it runs in \
+                 /workspaces/acme-worktrees/login-form, not /workspaces/flow",
             ),
         ),
     ] {
@@ -737,7 +740,7 @@ fn down_marks_the_lock_stopped_when_the_supervisors_pane_runs_someone_else() {
     fx.write_lock("env-0001", "host-a", Some("default"));
 
     let stdout = stdout_of(
-        fx.flow(&[ok(AGENT_LIST), ok(&supervisor_listed())])
+        fx.flow(&[ok(&moved_agent()), ok(&supervisor_listed())])
             .arg("down"),
     );
 
@@ -745,13 +748,25 @@ fn down_marks_the_lock_stopped_when_the_supervisors_pane_runs_someone_else() {
         stdout,
         format!(
             "the supervisor is gone from pane w1:p1 on host-a, which now runs claude in \
-             /workspaces/acme-worktrees/login-form, workspace w1, not the supervisor in \
+             /workspaces/acme-worktrees/login-form, workspace w2, not the supervisor in \
              /workspaces/flow, workspace w1 labelled \"flow-supervisor\"; flow down leaves that \
              pane to its owner\n{KEPT}{NOTE}"
         )
     );
     assert_eq!(fx.argvs().len(), 2);
     fx.assert_stopped();
+}
+
+/// `AGENT_LIST` with its agent, in the lock's pane id, moved to workspace `w2`.
+fn moved_agent() -> String {
+    let moved = AGENT_LIST.replace(r#""workspace_id":"w1""#, r#""workspace_id":"w2""#);
+    assert_ne!(moved, AGENT_LIST);
+    moved
+}
+
+/// `agent list` answering with `agents`.
+fn agents(agents: &str) -> Value {
+    json!({"argv": ["agent", "list"], "status": 0, "stdout": agents, "stderr": ""})
 }
 
 /// `pane list` answering with one pane per `(pane_id, workspace_id)`.
@@ -766,13 +781,18 @@ fn panes(listed: &[(&str, &str)]) -> Value {
 
 #[test]
 fn down_force_closes_only_the_locks_pane_and_never_a_workspace() {
-    for listed in [
-        vec![("w1:p1", "w1"), ("w1:p2", "w1"), ("w2:p1", "w2")],
-        vec![("w1:p1", "w1")],
+    for (listed, holder) in [
+        (
+            vec![("w1:p1", "w1"), ("w1:p2", "w1"), ("w2:p1", "w2")],
+            in_lock_pane("/workspaces/flow", Some("s-hand")),
+        ),
+        (vec![("w1:p1", "w1")], AGENT_LIST.to_owned()),
+        (vec![("w1:p1", "w1")], NO_AGENTS.to_owned()),
     ] {
         let fx = Fixture::new();
         fx.write_lock("env-0001", "host-a", Some("default"));
         let script = [
+            agents(&holder),
             panes(&listed),
             json!({"argv": ["pane", "close"], "status": 0, "stdout": PANE_CLOSED, "stderr": ""}),
             json!({"argv": ["workspace", "close"], "status": 0, "stdout": WORKSPACE_CLOSED, "stderr": ""}),
@@ -783,6 +803,7 @@ fn down_force_closes_only_the_locks_pane_and_never_a_workspace() {
         assert_eq!(
             fx.argvs(),
             [
+                words(&["herdr", "--session", "default", "agent", "list"]),
                 words(&["herdr", "--session", "default", "pane", "list"]),
                 words(&["herdr", "--session", "default", "pane", "close", "w1:p1"]),
             ]
@@ -802,16 +823,19 @@ fn down_force_closes_only_the_locks_pane_and_never_a_workspace() {
 fn down_force_refuses_when_the_lock_pane_is_not_listed_in_its_workspace() {
     let not_running = json!({"status": 1, "stdout": "", "stderr": SERVER_NOT_RUNNING});
     for answer in [
-        panes(&[("w1:p2", "w1"), ("w2:p1", "w2")]),
-        panes(&[("w1:p1", "w2")]),
-        not_running,
+        vec![
+            agents(NO_AGENTS),
+            panes(&[("w1:p2", "w1"), ("w2:p1", "w2")]),
+        ],
+        vec![agents(NO_AGENTS), panes(&[("w1:p1", "w2")])],
+        vec![not_running.clone(), not_running],
     ] {
         let fx = Fixture::new();
         fx.write_lock("env-0001", "host-a", Some("default"));
         let before = fs::read_to_string(fx.lock_path()).unwrap();
 
         let out = fx
-            .flow(std::slice::from_ref(&answer))
+            .flow(&answer)
             .args(["down", "--force"])
             .assert()
             .code(2)
@@ -823,12 +847,46 @@ fn down_force_refuses_when_the_lock_pane_is_not_listed_in_its_workspace() {
             "herdr lists no pane w1:p1 in workspace w1 on host-a (herdr session default), so \
              flow down --force closed nothing and kept the lock; run `flow down` without \
              --force\n",
-            "{answer}"
+            "{answer:?}"
         );
         assert!(out.stdout.is_empty());
-        assert_eq!(fx.argvs().len(), 1);
+        assert_eq!(fx.argvs().len(), 2);
         assert_eq!(fs::read_to_string(fx.lock_path()).unwrap(), before);
     }
+}
+
+#[test]
+fn down_force_refuses_beside_an_agent_that_is_clearly_not_the_supervisor() {
+    let fx = Fixture::new();
+    fx.write_lock("env-0001", "host-a", Some("default"));
+    let before = fs::read_to_string(fx.lock_path()).unwrap();
+    let script = [
+        agents(&moved_agent()),
+        panes(&[("w1:p1", "w1")]),
+        json!({"argv": ["pane", "close"], "status": 0, "stdout": PANE_CLOSED, "stderr": ""}),
+    ];
+
+    let out = fx
+        .flow(&script)
+        .args(["down", "--force"])
+        .assert()
+        .code(2)
+        .get_output()
+        .clone();
+
+    assert_eq!(
+        String::from_utf8(out.stderr).unwrap(),
+        "pane w1:p1 on host-a runs claude in /workspaces/acme-worktrees/login-form, workspace \
+         w2, not the supervisor in /workspaces/flow, workspace w1 labelled \"flow-supervisor\", \
+         so flow down --force closed nothing and kept the lock; `flow down` marks the supervisor \
+         stopped and leaves that pane to its owner\n"
+    );
+    assert!(out.stdout.is_empty());
+    assert_eq!(
+        fx.argvs(),
+        [words(&["herdr", "--session", "default", "agent", "list"])]
+    );
+    assert_eq!(fs::read_to_string(fx.lock_path()).unwrap(), before);
 }
 
 #[test]

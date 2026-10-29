@@ -1903,9 +1903,8 @@ default_branch = "main"
 
         assert!(watcher.waits.is_empty());
         let note = "pane w1:p1 on host-a holds an agent flow cannot tell from the supervisor: it \
-                    runs in /workspaces/flow in the supervisor's workspace w1, but herdr reports \
-                    Claude Code session s-hand for it, not the supervisor's s-sup; flow does not \
-                    watch it";
+                    is in the supervisor's workspace w1, but herdr reports Claude Code session \
+                    s-hand for it, not the supervisor's s-sup; flow does not watch it";
         assert_eq!(fx.log().matches(note).count(), 1, "{}", fx.log());
 
         fx.reports_session("env-0001", "w1:p1", "s-sup");
@@ -1914,9 +1913,12 @@ default_branch = "main"
     }
 
     #[test]
-    fn a_hand_session_in_the_supervisors_reused_pane_elsewhere_is_watched() {
+    fn a_hand_session_in_the_supervisors_reused_pane_in_another_workspace_is_watched() {
         let fx = Fixture::new();
         fx.agent("env-0001", "default", "w1:p1", "Tidy docs");
+        let mut inv = inventory::load(&fx.state, "env-0001").unwrap().unwrap();
+        inv.agents[0].workspace_id = "w2".to_owned();
+        inventory::save(&fx.state, &inv).unwrap();
         fx.supervisor_in("default", "w1:p1");
         supervisor::set_session(&fx.state, Some("s-sup")).unwrap();
         fx.reports_session("env-0001", "w1:p1", "s-hand");
@@ -1926,6 +1928,26 @@ default_branch = "main"
 
         let hands: Vec<&str> = watcher.hands.iter().map(|h| h.pane_id.as_str()).collect();
         assert_eq!(hands, ["w1:p1"]);
+    }
+
+    #[test]
+    fn a_hand_session_in_the_supervisors_workspace_is_left_alone_wherever_it_runs() {
+        let fx = Fixture::new();
+        fx.agent("env-0001", "default", "w1:p1", "Tidy docs");
+        fx.supervisor_in("default", "w1:p1");
+        supervisor::set_session(&fx.state, Some("s-sup")).unwrap();
+        fx.reports_session("env-0001", "w1:p1", "s-hand");
+        let runner = fake(Vec::new());
+
+        let watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+
+        assert!(watcher.hands.is_empty());
+        assert!(
+            fx.log()
+                .contains("it is in the supervisor's workspace w1, but herdr reports"),
+            "{}",
+            fx.log()
+        );
     }
 
     #[test]

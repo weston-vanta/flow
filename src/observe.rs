@@ -5,8 +5,8 @@
 //! read from Claude Code's session registry and transcripts. herdr reuses pane ids after a server
 //! restart, so a pane match holds only when the Claude Code session herdr reports for the agent
 //! does not contradict the task's or the supervisor's (see `task_runs` and `Lock::identify`). An
-//! agent in the supervisor's pane and workspace, in or below its cwd, whose identity cannot be
-//! confirmed may be the supervisor, and is neither the supervisor nor observed. Reading is all flow
+//! agent in the supervisor's pane and workspace whose identity cannot be confirmed may be the
+//! supervisor, whatever its cwd,, and is neither the supervisor nor observed. Reading is all flow
 //! does there; it never writes Claude Code's state. Any observed session turning `blocked` wakes
 //! the supervisor; the follow list, `state/supervisor/follow.json`, names the followed ones, whose
 //! other state changes should wake it too.
@@ -972,11 +972,11 @@ mod tests {
                 yes,
             ),
             (Some("s-sup"), reporting("s-hand", in_clone()), maybe),
-            (Some("s-sup"), reporting("s-hand", elsewhere()), other),
+            (Some("s-sup"), reporting("s-hand", elsewhere()), maybe),
             (Some("s-sup"), in_clone(), yes),
             (None, in_clone(), yes),
             (None, reporting("s-hand", in_clone()), yes),
-            (None, elsewhere(), other),
+            (None, elsewhere(), maybe),
             (None, agent("default", "w2:p1", "/workspaces/flow"), other),
             (Some("s-sup"), moved(), other),
             (None, moved(), other),
@@ -1009,7 +1009,7 @@ mod tests {
                     "flow-supervisor",
                     agent("default", "w1:p1", "/workspaces/flow-notes"),
                 ),
-                other,
+                maybe,
             ),
         ];
         for (recorded, agent, (supervisor, maybe_supervisor)) in cases {
