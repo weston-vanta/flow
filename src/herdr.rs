@@ -202,14 +202,12 @@ struct WorkspaceList {
     workspaces: Vec<Workspace>,
 }
 
-/// A herdr workspace: its id, its label, and how many panes its tabs hold.
+/// A herdr workspace: its id and its label.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Workspace {
     pub workspace_id: String,
     #[serde(default)]
     pub label: String,
-    #[serde(default)]
-    pub pane_count: Option<u32>,
 }
 
 impl Workspace {
@@ -457,11 +455,6 @@ impl Herdr {
         };
         let list: PaneList = parse_result(host, &argv, &output)?;
         Ok(Some(list.panes))
-    }
-
-    /// Stops this session's herdr server on `host`, returning what herdr printed.
-    pub fn stop_server(&self, host: &Host) -> anyhow::Result<Output> {
-        self.call(host, &stop_server_argv(&self.session))
     }
 
     /// Closes `workspace_id`; `false` when herdr no longer knows it, so there was nothing to
@@ -791,11 +784,6 @@ pub fn add_machine_argv(target: &str, label: &str, session: &str) -> Vec<String>
 /// The argv that removes the saved machine with profile id `id`.
 pub fn remove_machine_argv(id: &str) -> Vec<String> {
     words(&["herdr", "machine", "remove", id])
-}
-
-/// The argv that stops the herdr server of session `session`.
-pub fn stop_server_argv(session: &str) -> Vec<String> {
-    words(&["herdr", "--session", session, "server", "stop"])
 }
 
 /// The argv that attaches a terminal to the agent in `pane_id` of herdr session `session`.
@@ -1351,7 +1339,6 @@ mod tests {
         let labelled = |label: &str| Workspace {
             workspace_id: "w2".to_owned(),
             label: label.to_owned(),
-            pane_count: None,
         };
         let label = task_workspace_label("Fix the login form", "aaaaaaab");
         assert_eq!(label, "Fix the login form · aaaaaaab");
@@ -1368,7 +1355,7 @@ mod tests {
     }
 
     #[test]
-    fn workspaces_lists_ids_labels_and_pane_counts() {
+    fn workspaces_lists_ids_and_labels() {
         let (herdr, fake) = herdr(vec![ok(include_str!(
             "../tests/fixtures/herdr/workspace_list.json"
         ))]);
@@ -1378,12 +1365,10 @@ mod tests {
                 Workspace {
                     workspace_id: "w1".to_owned(),
                     label: "login-form".to_owned(),
-                    pane_count: Some(1),
                 },
                 Workspace {
                     workspace_id: "w2".to_owned(),
                     label: "cache-fix".to_owned(),
-                    pane_count: Some(1),
                 },
             ]
         );

@@ -31,9 +31,9 @@ pub const SUPERVISOR_CWD: &str = "/workspaces/flow";
 /// The supervisor's herdr workspace label and Claude Code session name.
 pub const SUPERVISOR_NAME: &str = "flow-supervisor";
 /// How the refusals beside an agent `Lock::identify` leaves unconfirmed tell the user out.
-pub const UNCONFIRMED_WAY_OUT: &str = "If that is the supervisor, `flow down --force` closes \
-     that pane; if it is your own session, `flow down --forget` marks the supervisor stopped and \
-     leaves the pane alone; then `flow up`.";
+pub const UNCONFIRMED_WAY_OUT: &str = "If it is your own session, `flow down --forget` marks \
+     the supervisor stopped and leaves the pane alone; if it is the supervisor, exit it and run \
+     `flow down`; then `flow up`.";
 const LOCK_FILE: &str = "supervisor/lock.json";
 
 /// What an agent in the lock's pane is to the supervisor, as `Lock::identify` tells.

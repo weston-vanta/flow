@@ -629,10 +629,9 @@ fn up_refuses_beside_an_agent_it_cannot_tell_from_the_supervisor() {
             format!(
                 "pane w1:p1 on host-a holds an agent flow cannot tell from the supervisor: it is \
                  in the supervisor's workspace w1, but {why}. flow up started nothing, since a \
-                 second supervisor would resume the same session. If that is the supervisor, \
-                 `flow down --force` closes that pane; if it is your own session, `flow down \
-                 --forget` marks the supervisor stopped and leaves the pane alone; then `flow \
-                 up`.\n"
+                 second supervisor would resume the same session. If it is your own session, \
+                 `flow down --forget` marks the supervisor stopped and leaves the pane alone; if \
+                 it is the supervisor, exit it and run `flow down`; then `flow up`.\n"
             ),
             "{session:?} {agents}"
         );

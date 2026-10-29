@@ -32,18 +32,6 @@ pub struct Owner {
     pub started: Timestamp,
 }
 
-impl Owner {
-    /// Whether the holder runs on this machine, where its pid means something.
-    pub fn is_on_this_host(&self) -> bool {
-        self.host == this_host()
-    }
-
-    /// Whether the holder runs on this machine and its process is still running.
-    pub fn is_running_here(&self) -> bool {
-        self.is_on_this_host() && is_running(self.pid)
-    }
-}
-
 /// The held lock; dropping it removes the lock directory while it is still this holder's.
 #[derive(Debug)]
 pub struct Guard {
@@ -97,30 +85,6 @@ pub fn acquire(state: &StateDir, pid: u32) -> anyhow::Result<Option<Guard>> {
 pub fn held_live(state: &StateDir) -> anyhow::Result<bool> {
     let dir = state.root().join(LOCK_DIR);
     Ok(!is_stale(&dir, &this_host())?)
-}
-
-/// Whether the lock exists and its holder touched it within `STALE_AFTER`, so its pid still
-/// names the holder rather than a process that took the pid over since.
-pub fn is_fresh(state: &StateDir) -> anyhow::Result<bool> {
-    let dir = state.root().join(LOCK_DIR);
-    let modified = match fs::metadata(&dir) {
-        Ok(meta) => meta.modified()?,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(err) => return Err(err).with_context(|| format!("reading {}", dir.display())),
-    };
-    let age = SystemTime::now()
-        .duration_since(modified)
-        .unwrap_or(Duration::ZERO);
-    Ok(age <= STALE_AFTER)
-}
-
-/// The age past which a lock is stale, for messages.
-pub const STALE_MINUTES: u64 = STALE_AFTER.as_secs() / 60;
-
-/// Who holds the lock, when it exists and names its holder.
-pub fn owner(state: &StateDir) -> anyhow::Result<Option<Owner>> {
-    let path = state.root().join(LOCK_DIR).join(OWNER_FILE);
-    read_owner(&path).with_context(|| format!("reading {}", path.display()))
 }
 
 fn read_owner(path: &Path) -> anyhow::Result<Option<Owner>> {
@@ -315,16 +279,6 @@ mod tests {
         drop(guard);
         assert!(state.root().join(LOCK_DIR).join(OWNER_FILE).exists());
         taken.touch().unwrap();
-    }
-
-    #[test]
-    fn owner_names_who_holds_the_lock() {
-        let (_dir, state) = state();
-        assert_eq!(owner(&state).unwrap(), None);
-        let _guard = acquire(&state, 4242).unwrap().unwrap();
-        let held = owner(&state).unwrap().unwrap();
-        assert_eq!(held.pid, 4242);
-        assert!(held.is_on_this_host());
     }
 
     #[test]
