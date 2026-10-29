@@ -27,6 +27,7 @@ use crate::paths::StateDir;
 use crate::runner::{self, Runner};
 use crate::state::Store;
 use crate::state::config::{Config, Host};
+use crate::state::task::{Status, TaskRecord};
 use crate::supervisor::{self, Identity, Lock, SUPERVISOR_NAME};
 use crate::watch::lock as watch_lock;
 
@@ -59,6 +60,7 @@ pub fn run(state: &StateDir, yes: bool, occupant: Occupant) -> anyhow::Result<Ex
     let config = Config::load(state)?;
     let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
     let herdr = Herdr::with_session(runner, &lock.herdr.session);
+    let tasks = Store::open(state).list_tasks()?;
     let host = match occupant {
         Occupant::NotSupervisor => {
             super::print(&format!(
@@ -70,14 +72,14 @@ pub fn run(state: &StateDir, yes: bool, occupant: Occupant) -> anyhow::Result<Ex
         Occupant::Supervisor => {
             let host = reachable_host(state, &lock)?;
             if let Some(host) = &host {
-                close_lock_pane(&herdr, host, &lock)?;
+                close_lock_pane(&herdr, host, &lock, &tasks)?;
             }
             host
         }
         Occupant::Unsaid => {
             let host = reachable_host(state, &lock)?;
             if let Some(host) = &host {
-                close_supervisor(&herdr, host, &lock)?;
+                close_supervisor(&herdr, host, &lock, &tasks)?;
             }
             host
         }
@@ -95,8 +97,7 @@ pub fn run(state: &StateDir, yes: bool, occupant: Occupant) -> anyhow::Result<Ex
     {
         offer_server_stop(&herdr, host, yes)?;
     }
-    let open = Store::open(state)
-        .list_tasks()?
+    let open = tasks
         .iter()
         .filter(|(_, status)| status.state.is_open())
         .count();
@@ -171,21 +172,26 @@ fn already_gone(host: &Host, lock: &Lock) -> anyhow::Result<()> {
 /// user's, and herdr closes the supervisor's own with its last pane. Refuses, closing nothing,
 /// when herdr does not list that pane there, or when the agent in it is clearly not the
 /// supervisor.
-fn close_lock_pane(herdr: &Herdr, host: &Host, lock: &Lock) -> anyhow::Result<()> {
+fn close_lock_pane(
+    herdr: &Herdr,
+    host: &Host,
+    lock: &Lock,
+    tasks: &[(TaskRecord, Status)],
+) -> anyhow::Result<()> {
     let target = &lock.herdr;
     let agents = herdr
         .agents_if_running(host)
         .map_err(unreachable(host))?
         .unwrap_or_default();
     if let Some(agent) = agents.iter().find(|agent| agent.pane_id == target.pane_id)
-        && lock.identify(agent) == Identity::Other
+        && lock.identify(&host.name, agent, tasks) == Identity::Other
     {
         return Err(Refused(format!(
             "pane {} on {} runs {}, so flow down --force closed nothing and kept the lock; `flow \
              down` marks the supervisor stopped and leaves that pane to its owner",
             target.pane_id,
             host.name,
-            supervisor::not_the_supervisor(lock, agent)
+            supervisor::not_the_supervisor(lock, &host.name, agent, tasks)
         ))
         .into());
     }
@@ -228,7 +234,12 @@ fn close_lock_pane(herdr: &Herdr, host: &Host, lock: &Lock) -> anyhow::Result<()
 /// workspace under the supervisor's label; otherwise it says the pane is already gone. An agent
 /// there that is clearly another's is left to its owner, the supervisor being gone. Refuses,
 /// closing nothing, when the agent there cannot be told from the supervisor.
-fn close_supervisor(herdr: &Herdr, host: &Host, lock: &Lock) -> anyhow::Result<()> {
+fn close_supervisor(
+    herdr: &Herdr,
+    host: &Host,
+    lock: &Lock,
+    tasks: &[(TaskRecord, Status)],
+) -> anyhow::Result<()> {
     let unreachable = unreachable(host);
     let gone = || already_gone(host, lock);
     let Some(mut agents) = herdr.agents_if_running(host).map_err(unreachable)? else {
@@ -243,7 +254,7 @@ fn close_supervisor(herdr: &Herdr, host: &Host, lock: &Lock) -> anyhow::Result<(
         .iter()
         .find(|agent| agent.pane_id == lock.herdr.pane_id);
     let workspace = match in_pane {
-        Some(agent) => match lock.identify(agent) {
+        Some(agent) => match lock.identify(&host.name, agent, tasks) {
             Identity::Supervisor => workspaces
                 .iter()
                 .find(|workspace| workspace.workspace_id == agent.workspace_id)
@@ -267,7 +278,7 @@ fn close_supervisor(herdr: &Herdr, host: &Host, lock: &Lock) -> anyhow::Result<(
                      leaves that pane to its owner\n",
                     agent.pane_id,
                     host.name,
-                    supervisor::not_the_supervisor(lock, agent)
+                    supervisor::not_the_supervisor(lock, &host.name, agent, tasks)
                 ));
             }
         },

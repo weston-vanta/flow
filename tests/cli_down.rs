@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use assert_cmd::Command;
 use flow::paths::StateDir;
 use flow::state::Store;
-use flow::state::task::{Harness, Origin, State, TaskRecord};
+use flow::state::task::{ClaudeSession, Harness, Origin, State, TaskRecord};
 use jiff::Timestamp;
 use serde_json::{Value, json};
 
@@ -882,6 +882,46 @@ fn down_force_refuses_beside_an_agent_that_is_clearly_not_the_supervisor() {
          stopped and leaves that pane to its owner\n"
     );
     assert!(out.stdout.is_empty());
+    assert_eq!(
+        fx.argvs(),
+        [words(&["herdr", "--session", "default", "agent", "list"])]
+    );
+    assert_eq!(fs::read_to_string(fx.lock_path()).unwrap(), before);
+}
+
+#[test]
+fn down_force_refuses_beside_an_open_tasks_worker_in_the_lock_pane() {
+    let fx = Fixture::new();
+    fx.write_lock("env-0001", "host-a", Some("default"));
+    fx.store()
+        .set_status("aaaaaaab", |status| {
+            status.claude_session = Some(ClaudeSession {
+                session_id: "s-worker".to_owned(),
+                transcript_path: PathBuf::from("/home/dev/.claude/projects/x/y.jsonl"),
+            });
+        })
+        .unwrap();
+    let before = fs::read_to_string(fx.lock_path()).unwrap();
+    let script = [
+        agents(&in_lock_pane("/workspaces/flow", Some("s-worker"))),
+        panes(&[("w1:p1", "w1")]),
+        json!({"argv": ["pane", "close"], "status": 0, "stdout": PANE_CLOSED, "stderr": ""}),
+    ];
+
+    let out = fx
+        .flow(&script)
+        .args(["down", "--force"])
+        .assert()
+        .code(2)
+        .get_output()
+        .clone();
+
+    assert_eq!(
+        String::from_utf8(out.stderr).unwrap(),
+        "pane w1:p1 on host-a runs the worker of task aaaaaaab, so flow down --force closed \
+         nothing and kept the lock; `flow down` marks the supervisor stopped and leaves that pane \
+         to its owner\n"
+    );
     assert_eq!(
         fx.argvs(),
         [words(&["herdr", "--session", "default", "agent", "list"])]

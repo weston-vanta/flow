@@ -19,8 +19,9 @@ use crate::host;
 use crate::inventory;
 use crate::paths::{STATE_ENV, StateDir};
 use crate::runner::{self, Runner};
+use crate::state::Store;
 use crate::state::config::{Config, Host};
-use crate::state::task::HerdrTarget;
+use crate::state::task::{HerdrTarget, Status, TaskRecord};
 use crate::supervisor::{self, Identity, Lock, SUPERVISOR_CWD, SUPERVISOR_ENV, SUPERVISOR_NAME};
 use crate::watch::lock as watch_lock;
 
@@ -36,7 +37,8 @@ pub fn run(state: &StateDir) -> anyhow::Result<()> {
     let live = inventory::live_hosts(state)?;
     if let Some(lock) = supervisor::load(state)?.filter(|lock| lock.stopped.is_none()) {
         let herdr = Herdr::with_session(runner.clone(), &lock.herdr.session);
-        if let Some(host) = live_host(&hosts, &live, &herdr, &lock)? {
+        let tasks = Store::open(state).list_tasks()?;
+        if let Some(host) = live_host(&hosts, &live, &herdr, &lock, &tasks)? {
             eprintln!(
                 "attaching to the supervisor on {} (pane {})",
                 host.name, lock.herdr.pane_id
@@ -82,6 +84,7 @@ fn live_host<'a>(
     live: &[Host],
     herdr: &Herdr,
     lock: &Lock,
+    tasks: &[(TaskRecord, Status)],
 ) -> anyhow::Result<Option<&'a Host>> {
     let Some(host) = hosts.iter().find(|host| host.env_id == lock.host_env_id) else {
         eprintln!(
@@ -116,7 +119,7 @@ fn live_host<'a>(
         .iter()
         .find(|agent| agent.pane_id == lock.herdr.pane_id);
     if let Some(agent) = in_pane {
-        match lock.identify(agent) {
+        match lock.identify(&host.name, agent, tasks) {
             Identity::Supervisor => return Ok(Some(host)),
             Identity::Unconfirmed => bail!(
                 "{}. flow up started nothing, since a second supervisor would resume the same \
@@ -127,14 +130,20 @@ fn live_host<'a>(
             Identity::Other => {}
         }
     }
-    close_left_workspace(herdr, host, lock, &agents);
+    close_left_workspace(herdr, host, lock, &agents, tasks);
     Ok(None)
 }
 
 /// Closes the workspace `lock` names on `host` when it is still there under the supervisor's
 /// label and none of `agents`, the session's, runs in it. Failures are reported and do not stop
 /// the start.
-fn close_left_workspace(herdr: &Herdr, host: &Host, lock: &Lock, agents: &[Agent]) {
+fn close_left_workspace(
+    herdr: &Herdr,
+    host: &Host,
+    lock: &Lock,
+    agents: &[Agent],
+    tasks: &[(TaskRecord, Status)],
+) {
     let workspace_id = &lock.herdr.workspace_id;
     if let Some(agent) = agents
         .iter()
@@ -144,7 +153,7 @@ fn close_left_workspace(herdr: &Herdr, host: &Host, lock: &Lock, agents: &[Agent
             "left workspace {workspace_id} on {} open: pane {} runs {}",
             host.name,
             agent.pane_id,
-            supervisor::not_the_supervisor(lock, agent)
+            supervisor::not_the_supervisor(lock, &host.name, agent, tasks)
         );
         return;
     }

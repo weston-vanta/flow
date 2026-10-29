@@ -125,7 +125,7 @@ pub fn holder<'a>(
     if let Some((record, _)) = task_in_pane(host, agent, tasks) {
         return Some(Holder::Task(record));
     }
-    match supervisor?.in_pane(host, agent)? {
+    match supervisor?.in_pane(host, agent, tasks)? {
         Identity::Supervisor => Some(Holder::Supervisor),
         Identity::Unconfirmed => Some(Holder::MaybeSupervisor),
         Identity::Other => None,
@@ -346,7 +346,7 @@ pub fn match_agents(
             let task = task_in_pane(host, agent, tasks);
             let identity = supervisor
                 .filter(|_| task.is_none())
-                .and_then(|lock| lock.in_pane(host, agent));
+                .and_then(|lock| lock.in_pane(host, agent, tasks));
             let task_session = task
                 .and_then(|(_, status)| status.claude_session.as_ref())
                 .and_then(|claude| by_id(&claude.session_id));
@@ -925,6 +925,88 @@ mod tests {
                     Holder::Supervisor | Holder::MaybeSupervisor => "supervisor",
                 }),
                 expected
+            );
+        }
+    }
+
+    #[test]
+    fn an_open_tasks_worker_in_the_supervisors_pane_is_not_the_supervisor() {
+        let lock = supervisor_lock("w1:p1", Some("s-sup"));
+        let in_clone = || agent("default", "w1:p1", "/workspaces/flow");
+        let elsewhere = in_default(task("aaaaaaab", "host-a", "w9:p1", "s-worker"));
+        let mut done = elsewhere.clone();
+        done.1.state = crate::state::task::State::Done;
+        let mut unrecorded = in_default(task("aaaaaaac", "host-a", "w1:p1", "unused"));
+        unrecorded.1.claude_session = None;
+        let conflicting = in_default(task("aaaaaaac", "host-a", "w1:p1", "s-other"));
+        let mut done_here = in_default(task("aaaaaaac", "host-a", "w1:p1", "s-worker"));
+        done_here.1.state = crate::state::task::State::Done;
+        let labelled = || Agent {
+            workspace_label: Some(crate::supervisor::SUPERVISOR_NAME.to_owned()),
+            ..in_clone()
+        };
+        let unlocked = supervisor_lock("w1:p1", None);
+        let cases = [
+            (
+                &lock,
+                &elsewhere,
+                reporting("s-worker", in_clone()),
+                Identity::Other,
+            ),
+            (
+                &unlocked,
+                &elsewhere,
+                reporting("s-worker", labelled()),
+                Identity::Other,
+            ),
+            (
+                &lock,
+                &done,
+                reporting("s-worker", in_clone()),
+                Identity::Unconfirmed,
+            ),
+            (&lock, &unrecorded, in_clone(), Identity::Other),
+            (
+                &lock,
+                &unrecorded,
+                reporting("s-hand", in_clone()),
+                Identity::Other,
+            ),
+            (&lock, &unrecorded, labelled(), Identity::Supervisor),
+            (
+                &lock,
+                &unrecorded,
+                reporting("s-new", labelled()),
+                Identity::Other,
+            ),
+            (
+                &lock,
+                &conflicting,
+                reporting("s-hand", in_clone()),
+                Identity::Unconfirmed,
+            ),
+            (
+                &lock,
+                &elsewhere,
+                reporting("s-sup", in_clone()),
+                Identity::Supervisor,
+            ),
+            (
+                &lock,
+                &done_here,
+                reporting("s-worker", in_clone()),
+                Identity::Unconfirmed,
+            ),
+        ];
+        for (lock, task, agent, expected) in cases {
+            let tasks = [task.clone()];
+            assert_eq!(
+                lock.in_pane("host-a", &agent, &tasks),
+                Some(expected),
+                "{} {:?} with {:?}",
+                task.0.id,
+                task.1.state,
+                agent.agent_session_id
             );
         }
     }

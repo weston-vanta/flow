@@ -5,7 +5,9 @@ use assert_cmd::Command;
 use flow::paths::StateDir;
 use flow::state::Store;
 use flow::state::events;
-use flow::state::task::{Harness, HerdrTarget, Hold, HoldOn, Origin, State, TaskRecord};
+use flow::state::task::{
+    ClaudeSession, Harness, HerdrTarget, Hold, HoldOn, Origin, State, TaskRecord,
+};
 use flow::supervisor::{self, Lock};
 use jiff::Timestamp;
 use serde_json::{Value, json};
@@ -725,6 +727,58 @@ fn up_starts_fresh_beside_an_agent_that_is_clearly_not_the_supervisor() {
         assert!(
             !has_subcommand(&calls, &["workspace", "close", "w2"]),
             "the agent's own workspace stays: {calls:?}"
+        );
+        assert!(
+            stdout.ends_with(&format!("agent attach {NEW_PANE}\n")),
+            "{stdout}"
+        );
+    }
+}
+
+#[test]
+fn up_starts_fresh_beside_an_open_tasks_worker_in_the_lock_pane() {
+    for (recorded, reported) in [(true, "s-worker"), (false, "s-new")] {
+        let fx = Fixture::new();
+        fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
+        create_task_with_pane(&fx)
+            .set_status(TASK, |status| match recorded {
+                true => {
+                    status.claude_session = Some(ClaudeSession {
+                        session_id: reported.to_owned(),
+                        transcript_path: PathBuf::from("/home/dev/.claude/projects/x/y.jsonl"),
+                    });
+                }
+                false => {
+                    if let Some(target) = &mut status.herdr {
+                        target.host = "host-a".to_owned();
+                        target.workspace_id = "w1".to_owned();
+                        target.pane_id = LIVE_PANE.to_owned();
+                    }
+                }
+            })
+            .unwrap();
+        let listed = w1_labelled("flow-supervisor");
+        let mut script = vec![
+            ok(&lock_pane_agent("/workspaces/flow", Some(reported))),
+            workspaces(&listed),
+            workspaces(&listed),
+        ];
+        script.extend(fresh_start());
+
+        let (stdout, stderr) = output_of(fx.flow(&script).arg("up"));
+
+        let calls = fx.calls();
+        assert!(
+            has_subcommand(&calls, &["workspace", "create"]),
+            "{reported:?}: {calls:?}"
+        );
+        assert!(
+            !has_subcommand(&calls, &["workspace", "close"]),
+            "{calls:?}"
+        );
+        assert!(
+            stderr.contains("pane w1:p1 runs the worker of task aaaaaaab"),
+            "{stderr}"
         );
         assert!(
             stdout.ends_with(&format!("agent attach {NEW_PANE}\n")),

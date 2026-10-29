@@ -158,23 +158,24 @@ designer's call.
    session herdr reports for the agent, and flow acts on a workspace only once herdr shows
    it is flow's: a task's by a label ending in the task id with the task's pane in it, the
    supervisor's by the supervisor's session in its pane, or, when herdr reports none, by its
-   cwd, workspace and `flow-supervisor` label; any other agent in that workspace may be the
-   supervisor, whatever its cwd, and flow leaves it alone until the user says which it is.
-   An observed session wakes the supervisor only when it turns `blocked`; a followed one, an
-   observed session on the follow list, also on `idle` and `done`. Steering an observed
-   session is the same herdr operation as steering a worker, used only when the user asks.
-   When the user asks for a hand session to become a worker, the supervisor adopts it with
-   `flow task adopt`: an adopted session is a task in every way flow can manage, with a
-   brief, a record whose herdr target names the pane in the user's herdr session, and the
-   same watching as a dispatched worker. It keeps running where it is, so it gets no hooks:
-   it reports through its own `flow task` calls and herdr's state. In place of the Stop
-   hook, `flow watch` logs a `turn.end` event when herdr sees it go from `working` to
-   `idle`, so the quiet check counts from its last turn's end as it does for a dispatched
-   worker. A turn seen starting in one watch run, or at adoption, is remembered in
-   `watch-state.json`, so its end is logged even when the next run reads it. Closing an
-   adopted task leaves its workspace open, since the user owns it. The ladder, then:
-   observed (seen, wakes on `blocked`), followed (also wakes on `idle` and `done`), adopted
-   (a worker).
+   cwd, workspace and `flow-supervisor` label; an open task's worker there, known by the
+   session the task recorded or by the task's herdr target, is the task's; any other agent
+   in that workspace may be the supervisor, whatever its cwd, and flow leaves it alone until
+   the user says which it is. An observed session wakes the supervisor only when it turns
+   `blocked`; a followed one, an observed session on the follow list, also on `idle` and
+   `done`. Steering an observed session is the same herdr operation as steering a worker,
+   used only when the user asks. When the user asks for a hand session to become a worker,
+   the supervisor adopts it with `flow task adopt`: an adopted session is a task in every
+   way flow can manage, with a brief, a record whose herdr target names the pane in the
+   user's herdr session, and the same watching as a dispatched worker. It keeps running
+   where it is, so it gets no hooks: it reports through its own `flow task` calls and
+   herdr's state. In place of the Stop hook, `flow watch` logs a `turn.end` event when herdr
+   sees it go from `working` to `idle`, so the quiet check counts from its last turn's end
+   as it does for a dispatched worker. A turn seen starting in one watch run, or at
+   adoption, is remembered in `watch-state.json`, so its end is logged even when the next
+   run reads it. Closing an adopted task leaves its workspace open, since the user owns it.
+   The ladder, then: observed (seen, wakes on `blocked`), followed (also wakes on `idle` and
+   `done`), adopted (a worker).
 
 ### Durability and layout
 

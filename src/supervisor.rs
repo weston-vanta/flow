@@ -11,11 +11,12 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::herdr::{self, Agent, Workspace};
+use crate::observe;
 use crate::paths::StateDir;
 use crate::runner;
 use crate::state::config::Host;
 use crate::state::fs::{with_lock, write_atomic};
-use crate::state::task::HerdrTarget;
+use crate::state::task::{HerdrTarget, Status, TaskRecord};
 
 pub const SUPERVISOR_ENV: &str = crate::vars::SUPERVISOR;
 /// Whether this process runs under the supervisor session `flow up` started, as opposed to
@@ -66,32 +67,35 @@ impl Lock {
         workspace.workspace_id == self.herdr.workspace_id && workspace.label == SUPERVISOR_NAME
     }
 
-    /// Whether `agent`, which herdr lists on `host`, is the supervisor: it sits in the lock's
-    /// pane and `identify` confirms it.
-    pub fn is_supervisor(&self, host: &str, agent: &Agent) -> bool {
-        self.in_pane(host, agent) == Some(Identity::Supervisor)
-    }
-
     /// What `agent`, which herdr lists on `host`, is to the supervisor when it sits in the
-    /// lock's pane; `None` when it sits elsewhere.
-    pub fn in_pane(&self, host: &str, agent: &Agent) -> Option<Identity> {
+    /// lock's pane, `tasks` naming the workers it may be instead; `None` when it sits elsewhere.
+    pub fn in_pane(
+        &self,
+        host: &str,
+        agent: &Agent,
+        tasks: &[(TaskRecord, Status)],
+    ) -> Option<Identity> {
         self.herdr
             .is(host, &agent.session, &agent.pane_id)
-            .then(|| self.identify(agent))
+            .then(|| self.identify(host, agent, tasks))
     }
 
-    /// What `agent`, found in the lock's pane, is to the supervisor. herdr reuses pane ids after
-    /// a server restart, so the pane alone could hold anyone's agent.
+    /// What `agent`, found in the lock's pane on `host`, is to the supervisor. herdr reuses pane
+    /// ids after a server restart, so the pane alone could hold anyone's agent.
     /// - When the lock has the supervisor's Claude Code session and herdr reports the agent's,
     ///   equal ids confirm it.
-    /// - Otherwise an agent outside the lock's workspace is another.
+    /// - Otherwise an agent outside the lock's workspace is another, and so is one whose session
+    ///   an open task of `tasks` recorded.
     /// - One inside it is confirmed when herdr reports no session, or flow has not recorded the
     ///   supervisor's, and it runs in the supervisor's cwd, in a workspace still labelled as the
     ///   supervisor's. Different ids, as after a missed SessionStart hook, another label, or
-    ///   another cwd leave it unconfirmed: its cwd cannot rule it out, since herdr may report
-    ///   the checkout's path through a symlink, and a second supervisor beside the live one
-    ///   would resume the same session.
-    pub fn identify(&self, agent: &Agent) -> Identity {
+    ///   another cwd leave it unconfirmed, unless an open task's herdr target is its pane and
+    ///   its session does not conflict, which makes it that task's worker: its cwd cannot rule
+    ///   it out, since herdr may report the checkout's path through a symlink, and a second
+    ///   supervisor beside the live one would resume the same session. The cwd and label
+    ///   outweigh such a target, which a task dispatched before a herdr restart can leave on
+    ///   the pane the supervisor holds now.
+    pub fn identify(&self, host: &str, agent: &Agent, tasks: &[(TaskRecord, Status)]) -> Identity {
         let ids = (
             self.claude_session.as_deref(),
             agent.agent_session_id.as_deref(),
@@ -101,17 +105,70 @@ impl Lock {
         {
             return Identity::Supervisor;
         }
-        if agent.workspace_id != self.herdr.workspace_id {
+        if agent.workspace_id != self.herdr.workspace_id
+            || worker_by_session(agent, tasks).is_some()
+        {
             return Identity::Other;
         }
         let at_home = agent.cwd == Path::new(SUPERVISOR_CWD)
             && agent.workspace_label.as_deref() == Some(SUPERVISOR_NAME);
         match ids {
-            (Some(_), Some(_)) => Identity::Unconfirmed,
-            _ if at_home => Identity::Supervisor,
-            _ => Identity::Unconfirmed,
+            (Some(_), Some(_)) => {}
+            _ if at_home => return Identity::Supervisor,
+            _ => {}
+        }
+        match worker_by_target(host, agent, tasks) {
+            Some(_) => Identity::Other,
+            None => Identity::Unconfirmed,
         }
     }
+}
+
+/// The open task of `tasks` whose worker `agent`, which herdr lists on `host`, is, by session
+/// (see `worker_by_session`) or else by herdr target (see `worker_by_target`).
+pub fn worker_of<'a>(
+    host: &str,
+    agent: &Agent,
+    tasks: &'a [(TaskRecord, Status)],
+) -> Option<&'a TaskRecord> {
+    worker_by_session(agent, tasks).or_else(|| worker_by_target(host, agent, tasks))
+}
+
+/// The open task of `tasks` that recorded the Claude Code session herdr reports for `agent`.
+fn worker_by_session<'a>(
+    agent: &Agent,
+    tasks: &'a [(TaskRecord, Status)],
+) -> Option<&'a TaskRecord> {
+    let reported = agent.agent_session_id.as_deref()?;
+    tasks
+        .iter()
+        .find(|(_, status)| {
+            status.state.is_open()
+                && status
+                    .claude_session
+                    .as_ref()
+                    .is_some_and(|claude| claude.session_id == reported)
+        })
+        .map(|(record, _)| record)
+}
+
+/// The open task of `tasks` whose herdr target is the pane of `agent`, which herdr lists on
+/// `host`, and whose recorded session does not conflict with the one herdr reports, as for a
+/// worker started in a reused pane before its SessionStart hook ran.
+fn worker_by_target<'a>(
+    host: &str,
+    agent: &Agent,
+    tasks: &'a [(TaskRecord, Status)],
+) -> Option<&'a TaskRecord> {
+    observe::tasks_in_pane(
+        tasks,
+        host,
+        &agent.session,
+        &agent.pane_id,
+        agent.agent_session_id.as_deref(),
+    )
+    .find(|(_, status)| status.state.is_open())
+    .map(|(record, _)| record)
 }
 
 fn in_supervisor_cwd(agent: &Agent) -> bool {
@@ -142,9 +199,18 @@ pub fn look_up_workspace_labels(
     Ok(())
 }
 
-/// What `agent`, found in `lock`'s pane, runs instead of the supervisor, for messages: its
-/// Claude Code session when the lock has one and herdr reports one, else where it runs.
-pub fn not_the_supervisor(lock: &Lock, agent: &Agent) -> String {
+/// What `agent`, found in `lock`'s pane on `host`, runs instead of the supervisor, for messages:
+/// the worker of an open task of `tasks`, its Claude Code session when the lock has one and
+/// herdr reports one, else where it runs.
+pub fn not_the_supervisor(
+    lock: &Lock,
+    host: &str,
+    agent: &Agent,
+    tasks: &[(TaskRecord, Status)],
+) -> String {
+    if let Some(task) = worker_of(host, agent, tasks) {
+        return format!("the worker of task {}", task.id);
+    }
     match (
         lock.claude_session.as_deref(),
         agent.agent_session_id.as_deref(),

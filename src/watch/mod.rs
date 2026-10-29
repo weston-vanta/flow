@@ -174,6 +174,10 @@ struct HandSession {
 /// for the supervisor.
 fn hand_sessions(state: &StateDir) -> anyhow::Result<(Vec<HandSession>, Vec<String>)> {
     let supervisor = supervisor::running(state)?;
+    let tasks = match &supervisor {
+        Some(_) => Store::open(state).list_tasks()?,
+        None => Vec::new(),
+    };
     let mut hands = Vec::new();
     let mut notes = Vec::new();
     for inv in inventory::load_all(state)?
@@ -183,7 +187,7 @@ fn hand_sessions(state: &StateDir) -> anyhow::Result<(Vec<HandSession>, Vec<Stri
         for agent in inv.agents {
             let identity = supervisor
                 .as_ref()
-                .and_then(|lock| Some((lock, lock.in_pane(&inv.name, &agent)?)));
+                .and_then(|lock| Some((lock, lock.in_pane(&inv.name, &agent, &tasks)?)));
             match identity {
                 Some((_, Identity::Supervisor)) => {}
                 Some((lock, Identity::Unconfirmed)) => notes.push(format!(
@@ -1948,6 +1952,24 @@ default_branch = "main"
             "{}",
             fx.log()
         );
+    }
+
+    #[test]
+    fn an_open_tasks_worker_in_the_supervisors_pane_is_not_taken_for_the_supervisor() {
+        let fx = Fixture::new();
+        fx.supervisor_agent("default", "w1:p1");
+        fx.supervisor_in("default", "w1:p1");
+        supervisor::set_session(&fx.state, Some("s-sup")).unwrap();
+        fx.reports_session("env-0001", "w1:p1", "s-worker");
+        fx.task(false);
+        fx.task_session("s-worker");
+        let runner = fake(Vec::new());
+
+        let watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+
+        let hands: Vec<&str> = watcher.hands.iter().map(|h| h.pane_id.as_str()).collect();
+        assert_eq!(hands, ["w1:p1"]);
+        assert!(!fx.log().contains("cannot tell"), "{}", fx.log());
     }
 
     #[test]
