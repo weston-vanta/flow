@@ -99,6 +99,24 @@ pub fn held_live(state: &StateDir) -> anyhow::Result<bool> {
     Ok(!is_stale(&dir, &this_host())?)
 }
 
+/// Whether the lock exists and its holder touched it within `STALE_AFTER`, so its pid still
+/// names the holder rather than a process that took the pid over since.
+pub fn is_fresh(state: &StateDir) -> anyhow::Result<bool> {
+    let dir = state.root().join(LOCK_DIR);
+    let modified = match fs::metadata(&dir) {
+        Ok(meta) => meta.modified()?,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => return Err(err).with_context(|| format!("reading {}", dir.display())),
+    };
+    let age = SystemTime::now()
+        .duration_since(modified)
+        .unwrap_or(Duration::ZERO);
+    Ok(age <= STALE_AFTER)
+}
+
+/// The age past which a lock is stale, for messages.
+pub const STALE_MINUTES: u64 = STALE_AFTER.as_secs() / 60;
+
 /// Who holds the lock, when it exists and names its holder.
 pub fn owner(state: &StateDir) -> anyhow::Result<Option<Owner>> {
     let path = state.root().join(LOCK_DIR).join(OWNER_FILE);

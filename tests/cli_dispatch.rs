@@ -390,7 +390,7 @@ fn dispatch_creates_task_and_starts_agent() {
             "--cwd",
             WORKTREE,
             "--label",
-            "Rebuild the search index",
+            format!("Rebuild the search index · {id}").as_str(),
             "--no-focus"
         ]
     );

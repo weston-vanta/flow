@@ -891,3 +891,63 @@ fn workers_the_supervisor_and_hand_sessions_share_herdrs_default_session() {
         json!({"follow": [{"host": "host-a", "pane_id": "w3:p1", "session": "default", "title": "Tidy docs"}]})
     );
 }
+
+/// `SHARED_SESSION_AGENTS` after herdr gave the panes of the supervisor, task `aaaaaaab` and the
+/// done task `aaaaaaac` to sessions the user started: the first two report Claude Code sessions
+/// of their own, the third none.
+const REUSED_PANE_AGENTS: &str = r#"{"id":"cli:agent:list","result":{"agents":[
+{"agent":"claude","agent_session":{"agent":"claude","kind":"id","source":"herdr:claude","value":"s-hand-1"},"agent_status":"idle","cwd":"/workspaces/flow","pane_id":"w1:p1","terminal_title_stripped":"Read the docs","workspace_id":"w1"},
+{"agent":"claude","agent_session":{"agent":"claude","kind":"id","source":"herdr:claude","value":"s-hand-2"},"agent_status":"working","cwd":"/work/repo.wt/feature","pane_id":"w2:p1","terminal_title_stripped":"Try a fix","workspace_id":"w2"},
+{"agent":"claude","agent_status":"idle","cwd":"/work/app","pane_id":"w4:p1","terminal_title_stripped":"Fix links","workspace_id":"w4"}
+],"type":"agent_list"}}"#;
+
+#[test]
+fn hand_sessions_in_reused_panes_are_observed_and_can_be_followed() {
+    let fx = Fixture::new();
+    fx.single_host();
+    fx.sharing_default();
+    let state = StateDir::resolve(fx.dir.path()).unwrap();
+    flow::supervisor::set_session(&state, Some("s-sup")).unwrap();
+    Store::open(&state)
+        .set_status("aaaaaaac", |status| status.state = State::Done)
+        .unwrap();
+    let script = [
+        on("host-a", SERVER_RUNNING),
+        on("host-a", REUSED_PANE_AGENTS),
+    ];
+
+    let json_out = stdout_of(fx.flow(&script).args(["sessions", "--json"]));
+
+    let parsed: Value = serde_json::from_str(&json_out).unwrap();
+    let rows: Vec<(String, Value, bool)> = parsed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            (
+                entry["agent"]["pane_id"].as_str().unwrap().to_owned(),
+                entry["task"].clone(),
+                entry["supervisor"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("w1:p1".to_owned(), Value::Null, false),
+            ("w2:p1".to_owned(), Value::Null, false),
+            ("w4:p1".to_owned(), Value::Null, false),
+        ]
+    );
+    for target in ["Read the docs", "Try a fix", "Fix links"] {
+        stdout_of(fx.flow(&script).args(["follow", "host-a", target]));
+    }
+    let list = fx.follow_list();
+    let followed: Vec<&str> = list["follow"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["pane_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(followed, ["w1:p1", "w2:p1", "w4:p1"]);
+}

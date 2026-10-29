@@ -15,8 +15,7 @@ use crate::paths::StateDir;
 use crate::state::Store;
 use crate::watch::{lock, queue};
 
-/// Overrides how long to wait for a watcher to take the lock, in milliseconds.
-const GRACE_VAR: &str = "FLOW_GUARD_GRACE_MS";
+const GRACE_VAR: &str = crate::vars::GUARD_GRACE_MS;
 /// The async watch hook starts alongside this one, so its lock may not exist yet.
 const DEFAULT_GRACE: Duration = Duration::from_secs(5);
 const POLL: Duration = Duration::from_millis(250);

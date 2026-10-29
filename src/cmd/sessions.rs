@@ -37,7 +37,7 @@ pub fn run(state: &StateDir, json: bool, summaries: bool) -> anyhow::Result<()> 
     let hosts = inventory::live_hosts(state)?;
     let inventories = live_inventories(state, &runner, &config, &hosts, Timestamp::now())?;
     let tasks = Store::open(state).list_tasks()?;
-    let supervisor = supervisor::running_pane(state)?;
+    let supervisor = supervisor::running(state)?;
     let claude_home = observe::claude_home()?;
     let registry = observe::registry_sessions(&claude_home)?;
     let mut matched = observe::match_agents(
@@ -71,7 +71,7 @@ pub fn count_observed(state: &StateDir, tasks: &[(TaskRecord, Status)]) -> anyho
         .into_iter()
         .filter(|inv| !inv.gone)
         .collect();
-    let supervisor = supervisor::running_pane(state)?;
+    let supervisor = supervisor::running(state)?;
     let matched = observe::match_agents(
         &agents_by_host(&inventories),
         tasks,
@@ -208,16 +208,10 @@ pub(super) fn host_agents(
         }
     };
     let tasks = Store::open(state).list_tasks()?;
-    let supervisor = supervisor::running_pane(state)?;
+    let supervisor = supervisor::running(state)?;
     let mut split = HostAgents::default();
     for agent in agents {
-        let holder = observe::holder(
-            &tasks,
-            supervisor.as_ref(),
-            &host.name,
-            &agent.session,
-            &agent.pane_id,
-        );
+        let holder = observe::holder(&tasks, supervisor.as_ref(), &host.name, &agent);
         match holder {
             None => split.observed.push(agent),
             Some(Holder::Task(record)) => {

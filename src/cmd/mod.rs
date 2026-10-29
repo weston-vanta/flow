@@ -31,8 +31,7 @@ use crate::runner;
 use crate::state::task::{Status, TaskRecord};
 
 const NO_PANE: &str = "-";
-/// Under the fake runner, makes commands treat stdin and stdout as a terminal when set.
-const FAKE_TTY_VAR: &str = "FLOW_FAKE_TTY";
+const FAKE_TTY_VAR: &str = crate::vars::FAKE_TTY;
 
 /// A request flow turns down as given, such as an unknown host or a directory another agent
 /// works in. The binary exits 2 for it, as for a usage error.

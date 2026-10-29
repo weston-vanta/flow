@@ -14,7 +14,7 @@ use serde_json::json;
 use super::Refused;
 use crate::harness::handshake::{self, AgentStart};
 use crate::harness::{ClaudeAdapter, HarnessAdapter, brief};
-use crate::herdr::{Agent, Herdr};
+use crate::herdr::{self, Agent, Herdr};
 use crate::host;
 use crate::inventory;
 use crate::paths::{STATE_ENV, StateDir};
@@ -354,7 +354,8 @@ fn start_worker(
     );
     argv.extend(launch.argv);
 
-    let (workspace_id, pane_id) = herdr.create_workspace(host, &rec.cwd, &rec.title)?;
+    let label = herdr::task_workspace_label(&rec.title, &rec.id);
+    let (workspace_id, pane_id) = herdr.create_workspace(host, &rec.cwd, &label)?;
     store.set_status(&rec.id, |status| {
         status.state = State::Working;
         status.herdr = Some(HerdrTarget {

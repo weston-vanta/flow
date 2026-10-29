@@ -11,7 +11,7 @@ use std::sync::Arc;
 use anyhow::{Context, anyhow, bail};
 
 use crate::harness::handshake::{self, AgentStart, StoppedEarly};
-use crate::herdr::{self, Herdr};
+use crate::herdr::{self, Agent, Herdr};
 use crate::host;
 use crate::inventory;
 use crate::paths::{STATE_ENV, StateDir};
@@ -105,21 +105,33 @@ fn live_host<'a>(
     let Some(agents) = agents else {
         return Ok(None);
     };
-    // herdr reuses pane ids after a server restart, so the pane alone could name a worker.
-    let live = agents
+    let in_pane = agents
         .iter()
-        .any(|agent| agent.pane_id == lock.herdr.pane_id && agent.cwd == Path::new(SUPERVISOR_CWD));
-    if live {
+        .find(|agent| agent.pane_id == lock.herdr.pane_id);
+    if in_pane.is_some_and(|agent| lock.runs(agent)) {
         return Ok(Some(host));
     }
-    close_left_workspace(herdr, host, lock);
+    close_left_workspace(herdr, host, lock, &agents);
     Ok(None)
 }
 
 /// Closes the workspace `lock` names on `host` when it is still there under the supervisor's
-/// label. Failures are reported and do not stop the start.
-fn close_left_workspace(herdr: &Herdr, host: &Host, lock: &Lock) {
+/// label and none of `agents`, the session's, runs in it. Failures are reported and do not stop
+/// the start.
+fn close_left_workspace(herdr: &Herdr, host: &Host, lock: &Lock, agents: &[Agent]) {
     let workspace_id = &lock.herdr.workspace_id;
+    if let Some(agent) = agents
+        .iter()
+        .find(|agent| agent.workspace_id == *workspace_id)
+    {
+        eprintln!(
+            "left workspace {workspace_id} on {} open: pane {} runs {}",
+            host.name,
+            agent.pane_id,
+            supervisor::not_the_supervisor(lock, agent)
+        );
+        return;
+    }
     let closed = herdr.workspaces(host).and_then(|workspaces| {
         let left = workspaces
             .iter()

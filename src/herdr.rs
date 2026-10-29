@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::runner::{Output, Runner, shell_quote};
 use crate::state::config::Host;
+use crate::vars;
 
 /// herdr's main session, the one its window shows unless told otherwise: flow's own session
 /// unless `config.toml` names another.
@@ -194,12 +195,46 @@ struct WorkspaceList {
     workspaces: Vec<Workspace>,
 }
 
-/// A herdr workspace: its id and the label it was created with.
+/// A herdr workspace: its id and its label.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Workspace {
     pub workspace_id: String,
     #[serde(default)]
     pub label: String,
+}
+
+impl Workspace {
+    /// Whether the label names task `id`: `<title> · <id>` as dispatch labels a task's
+    /// workspace, or the id alone, as it once did.
+    pub fn names_task(&self, id: &str) -> bool {
+        self.label == id
+            || self
+                .label
+                .strip_suffix(id)
+                .is_some_and(|title| title.ends_with(TASK_LABEL_SEPARATOR))
+    }
+}
+
+const TASK_LABEL_SEPARATOR: &str = " · ";
+
+/// The label of task `id`'s workspace: its title, readable in herdr's sidebar, then its id, which
+/// `flow task close` checks before closing the workspace, since herdr reuses workspace ids. herdr
+/// keeps a label across a server restart, unlike workspace metadata.
+pub fn task_workspace_label(title: &str, id: &str) -> String {
+    format!("{title}{TASK_LABEL_SEPARATOR}{id}")
+}
+
+/// `pane list` → `pane_list`.
+#[derive(Deserialize)]
+struct PaneList {
+    panes: Vec<Pane>,
+}
+
+/// A herdr pane and the workspace it sits in.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Pane {
+    pub pane_id: String,
+    pub workspace_id: String,
 }
 
 #[derive(Deserialize)]
@@ -310,16 +345,20 @@ impl Herdr {
     }
 
     /// Starts the server in its own session with every stream on /dev/null, so it outlives
-    /// this process and, over ssh, does not hold the connection open.
+    /// this process and, over ssh, does not hold the connection open. It runs without any of
+    /// flow's variables, since every pane opened there later, the user's included, inherits its
+    /// environment; flow sets what its own launches need on their command lines.
     fn start_detached_server(&self, host: &Host) -> anyhow::Result<()> {
-        let mut argv = words(&[
-            "setsid",
-            "-f",
+        let mut argv = words(&["setsid", "-f", "env"]);
+        for name in vars::ALL {
+            argv.extend(words(&["-u", name]));
+        }
+        argv.extend(words(&[
             "sh",
             "-c",
             r#"exec "$@" </dev/null >/dev/null 2>&1"#,
             "sh",
-        ]);
+        ]));
         argv.extend(self.argv(&["server"]));
         let status = self
             .runner
@@ -399,6 +438,12 @@ impl Herdr {
         };
         let list: WorkspaceList = parse_result(host, &argv, &output)?;
         Ok(Some(list.workspaces))
+    }
+
+    /// The panes in this session on `host`.
+    pub fn panes(&self, host: &Host) -> anyhow::Result<Vec<Pane>> {
+        let list: PaneList = self.call_json(host, &self.argv(&["pane", "list"]))?;
+        Ok(list.panes)
     }
 
     /// Stops this session's herdr server on `host`, returning what herdr printed.
@@ -1258,21 +1303,48 @@ mod tests {
         herdr.ensure_server(&host()).unwrap();
         let calls = argvs(&fake);
         assert_eq!(calls.len(), 3, "{calls:?}");
-        assert_eq!(
-            calls[1],
-            words(&[
-                "setsid",
-                "-f",
-                "sh",
-                "-c",
-                r#"exec "$@" </dev/null >/dev/null 2>&1"#,
-                "sh",
-                "herdr",
-                "--session",
-                "flow",
-                "server",
-            ])
-        );
+        let mut expected = words(&["setsid", "-f", "env"]);
+        for name in vars::ALL {
+            expected.extend(words(&["-u", name]));
+        }
+        expected.extend(words(&[
+            "sh",
+            "-c",
+            r#"exec "$@" </dev/null >/dev/null 2>&1"#,
+            "sh",
+            "herdr",
+            "--session",
+            "flow",
+            "server",
+        ]));
+        assert_eq!(calls[1], expected);
+        for name in [vars::SUPERVISOR, vars::STATE] {
+            assert!(
+                calls[1].windows(2).any(|pair| pair == ["-u", name]),
+                "{name} is not unset: {:?}",
+                calls[1]
+            );
+        }
+    }
+
+    #[test]
+    fn a_task_workspace_label_names_the_task_by_its_id_suffix() {
+        let labelled = |label: &str| Workspace {
+            workspace_id: "w2".to_owned(),
+            label: label.to_owned(),
+        };
+        let label = task_workspace_label("Fix the login form", "aaaaaaab");
+        assert_eq!(label, "Fix the login form · aaaaaaab");
+        assert!(labelled(&label).names_task("aaaaaaab"));
+        assert!(labelled("aaaaaaab").names_task("aaaaaaab"));
+        for other in [
+            "Fix the login form",
+            "Fix the login form · aaaaaaac",
+            "Fix the login form aaaaaaab",
+            "xaaaaaaab",
+        ] {
+            assert!(!labelled(other).names_task("aaaaaaab"), "{other}");
+        }
     }
 
     #[test]

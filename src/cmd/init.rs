@@ -16,11 +16,9 @@ use crate::paths::StateDir;
 use crate::state::fs::write_atomic;
 
 const CONFIG_FILE: &str = "config.toml";
-/// The directory searched for the repository when Ona does not name one.
-const WORKSPACES_VAR: &str = "FLOW_INIT_WORKSPACES";
+const WORKSPACES_VAR: &str = crate::vars::INIT_WORKSPACES;
 const DEFAULT_WORKSPACES: &str = "/workspaces";
-/// The search path for the worktree tool, in place of `$PATH`.
-const SEARCH_PATH_VAR: &str = "FLOW_INIT_PATH";
+const SEARCH_PATH_VAR: &str = crate::vars::INIT_PATH;
 const WORKTREE_TOOL: &str = "wt";
 const FALLBACK_BRANCH: &str = "main";
 

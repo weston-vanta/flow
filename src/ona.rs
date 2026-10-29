@@ -14,8 +14,7 @@ use crate::runner;
 const LIST_ARGV: [&str; 5] = ["gitpod", "environment", "list", "-o", "json"];
 const LIST_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
-/// Names a JSON file `list_environments` reads in place of running the Ona CLI.
-const FAKE_ONA_VAR: &str = "FLOW_FAKE_ONA";
+const FAKE_ONA_VAR: &str = crate::vars::FAKE_ONA;
 const RUNNING_PHASE: &str = "ENVIRONMENT_PHASE_RUNNING";
 /// The name of a host whose Ona name has no letters or digits.
 const FALLBACK_SLUG: &str = "host";

@@ -1,7 +1,9 @@
 //! `flow task close`: the supervisor retires a task's worker pane by closing its herdr
-//! workspace. The task record, its working directory and any branch stay as they are. An
-//! adopted task's workspace belongs to the user who started it by hand, so closing such a task
-//! only stops flow treating the pane as the task's: the workspace is left open.
+//! workspace. The task record, its working directory and any branch stay as they are. herdr
+//! reuses workspace ids, so the workspace is closed only while herdr still lists it under a
+//! label naming the task, with the task's pane in it. An adopted task's workspace belongs to the
+//! user who started it by hand, so closing such a task only stops flow treating the pane as the
+//! task's: the workspace is left open.
 
 use std::sync::Arc;
 
@@ -15,8 +17,9 @@ use crate::inventory;
 use crate::paths::StateDir;
 use crate::runner;
 use crate::state::Store;
+use crate::state::config::Host;
 use crate::state::events::Event;
-use crate::state::task::Origin;
+use crate::state::task::{HerdrTarget, Origin};
 
 const EVENT_SOURCE: &str = "supervisor";
 
@@ -25,7 +28,8 @@ const EVENT_SOURCE: &str = "supervisor";
 /// (workspace already gone)` when herdr no longer knows the workspace. An adopted task's
 /// workspace is left open, its event marked `workspace_left`, and it prints `closed <id> (pane
 /// left to its owner)`. Refuses a task still open (anything but `done` or `orphaned`) unless
-/// `force`, and one with no herdr target.
+/// `force`, one with no herdr target, and one whose workspace herdr does not show to be the
+/// task's.
 pub fn run(state: &StateDir, id: &str, force: bool) -> anyhow::Result<()> {
     let store = Store::open(state);
     let (record, status) = store.task(id)?;
@@ -60,7 +64,7 @@ pub fn run(state: &StateDir, id: &str, force: bool) -> anyhow::Result<()> {
         let hosts = inventory::hosts(state)?;
         let host = host::find(&hosts, &target.host)?;
         let herdr = Herdr::with_session(Arc::from(runner::from_env()?), &target.session);
-        let closed = herdr.close_workspace(host, &target.workspace_id)?;
+        let closed = close_task_workspace(&herdr, host, id, &target)?;
         data["already_gone"] = Value::Bool(!closed);
         if closed {
             format!(
@@ -82,4 +86,46 @@ pub fn run(state: &StateDir, id: &str, force: bool) -> anyhow::Result<()> {
         },
     )?;
     super::print(&printed)
+}
+
+/// Closes `target`'s workspace once herdr shows it is task `id`'s: listed under a label naming
+/// the task, with the task's pane in it. Returns `false` when herdr no longer lists it. Refuses,
+/// closing nothing, when herdr lists the id under another label or the pane elsewhere.
+fn close_task_workspace(
+    herdr: &Herdr,
+    host: &Host,
+    id: &str,
+    target: &HerdrTarget,
+) -> anyhow::Result<bool> {
+    let Some(workspaces) = herdr.workspaces_if_running(host)? else {
+        return Ok(false);
+    };
+    let Some(workspace) = workspaces
+        .iter()
+        .find(|workspace| workspace.workspace_id == target.workspace_id)
+    else {
+        return Ok(false);
+    };
+    if !workspace.names_task(id) {
+        return Err(Refused(format!(
+            "herdr lists workspace {} on {} as \"{}\", which does not name task {id}; herdr \
+             reuses workspace ids, so flow closed nothing",
+            target.workspace_id, host.name, workspace.label
+        ))
+        .into());
+    }
+    let panes = herdr.panes(host)?;
+    let pane = panes.iter().find(|pane| pane.pane_id == target.pane_id);
+    if pane.is_none_or(|pane| pane.workspace_id != target.workspace_id) {
+        let found = match pane {
+            Some(pane) => format!("lists it in workspace {}", pane.workspace_id),
+            None => "does not list it".to_owned(),
+        };
+        return Err(Refused(format!(
+            "task {id}'s pane {} is not in workspace {} on {}: herdr {found}; flow closed nothing",
+            target.pane_id, target.workspace_id, host.name
+        ))
+        .into());
+    }
+    herdr.close_workspace(host, &target.workspace_id)
 }

@@ -10,16 +10,14 @@ use anyhow::Context;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use crate::herdr::{self, Workspace};
+use crate::herdr::{self, Agent, Workspace};
 use crate::paths::StateDir;
 use crate::runner;
 use crate::state::config::Host;
 use crate::state::fs::{with_lock, write_atomic};
 use crate::state::task::HerdrTarget;
 
-/// Set in the supervisor's environment, so its hooks can tell it from other sessions started in
-/// the same repo.
-pub const SUPERVISOR_ENV: &str = "FLOW_SUPERVISOR";
+pub const SUPERVISOR_ENV: &str = crate::vars::SUPERVISOR;
 /// Whether this process runs under the supervisor session `flow up` started, as opposed to
 /// another Claude Code session in the same repo, whose hooks must leave supervision alone.
 pub fn is_supervisor_session() -> bool {
@@ -50,6 +48,52 @@ impl Lock {
     /// label, since herdr reuses workspace ids and an id alone could name a worker's.
     pub fn names_workspace(&self, workspace: &Workspace) -> bool {
         workspace.workspace_id == self.herdr.workspace_id && workspace.label == SUPERVISOR_NAME
+    }
+
+    /// Whether `agent`, which herdr lists on `host`, is the supervisor: it sits in the lock's
+    /// pane and `runs` the supervisor.
+    pub fn is_supervisor(&self, host: &str, agent: &Agent) -> bool {
+        self.herdr.is(host, &agent.session, &agent.pane_id) && self.runs(agent)
+    }
+
+    /// Whether `agent`, found in the lock's pane, runs the supervisor. herdr reuses pane ids
+    /// after a server restart, so the pane alone could hold anyone's agent. When the lock has
+    /// the supervisor's Claude Code session and herdr reports the agent's, they must be the
+    /// same. Otherwise the agent must run in the supervisor's cwd: before the session is
+    /// recorded, and when herdr reports none, which would otherwise leave a live supervisor
+    /// unrecognized and let `flow up` start a second one on the same session.
+    pub fn runs(&self, agent: &Agent) -> bool {
+        match (
+            self.claude_session.as_deref(),
+            agent.agent_session_id.as_deref(),
+        ) {
+            (Some(recorded), Some(reported)) => recorded == reported,
+            _ => agent.cwd == Path::new(SUPERVISOR_CWD),
+        }
+    }
+}
+
+/// What `agent`, found in `lock`'s pane, runs instead of the supervisor, for messages: its
+/// Claude Code session when the lock has one and herdr reports one, else its kind and cwd.
+pub fn not_the_supervisor(lock: &Lock, agent: &Agent) -> String {
+    match (
+        lock.claude_session.as_deref(),
+        agent.agent_session_id.as_deref(),
+    ) {
+        (Some(recorded), Some(reported)) => {
+            format!("Claude Code session {reported}, not the supervisor's {recorded}")
+        }
+        _ => {
+            let kind = if agent.agent.is_empty() {
+                "an agent"
+            } else {
+                agent.agent.as_str()
+            };
+            format!(
+                "{kind} in {}, not the supervisor in {SUPERVISOR_CWD}",
+                agent.cwd.display()
+            )
+        }
     }
 }
 
@@ -104,11 +148,9 @@ pub fn mark_stopped(state: &StateDir) -> anyhow::Result<bool> {
     .with_context(|| format!("updating {}", path.display()))
 }
 
-/// The pane of the supervisor the lock records, unless it was stopped.
-pub fn running_pane(state: &StateDir) -> anyhow::Result<Option<HerdrTarget>> {
-    Ok(load(state)?
-        .filter(|lock| lock.stopped.is_none())
-        .map(|lock| lock.herdr))
+/// The lock of the supervisor, unless it was stopped.
+pub fn running(state: &StateDir) -> anyhow::Result<Option<Lock>> {
+    Ok(load(state)?.filter(|lock| lock.stopped.is_none()))
 }
 
 /// Sets the supervisor's Claude Code session to resume, or clears it with `None`. Returns
@@ -213,20 +255,23 @@ mod tests {
     }
 
     #[test]
-    fn a_stopped_lock_keeps_its_session_and_names_no_running_pane() {
+    fn a_stopped_lock_keeps_its_session_and_names_no_running_supervisor() {
         let (_dir, state) = state();
         assert!(!mark_stopped(&state).unwrap());
-        assert_eq!(running_pane(&state).unwrap(), None);
+        assert_eq!(running(&state).unwrap(), None);
         take(&state, "env-0002", lock().herdr).unwrap();
         set_session(&state, Some("s9")).unwrap();
-        assert_eq!(running_pane(&state).unwrap(), Some(lock().herdr));
+        assert_eq!(
+            running(&state).unwrap().map(|lock| lock.herdr),
+            Some(lock().herdr)
+        );
 
         assert!(mark_stopped(&state).unwrap());
 
         let stopped = load(&state).unwrap().unwrap();
         assert!(stopped.stopped.is_some());
         assert_eq!(stopped.claude_session.as_deref(), Some("s9"));
-        assert_eq!(running_pane(&state).unwrap(), None);
+        assert_eq!(running(&state).unwrap(), None);
         let resumed = take(&state, "env-0001", lock().herdr).unwrap();
         assert_eq!(resumed.stopped, None);
         assert_eq!(resumed.claude_session.as_deref(), Some("s9"));

@@ -11,9 +11,7 @@ use crate::state::config::Host;
 
 /// How long the whole start may take, trust dialog included, counted from the first wait.
 const START_TIMEOUT_MS: u64 = 60_000;
-/// Overrides how long to wait between asks while herdr does not see the agent yet, in
-/// milliseconds.
-const POLL_VAR: &str = "FLOW_HANDSHAKE_POLL_MS";
+const POLL_VAR: &str = crate::vars::HANDSHAKE_POLL_MS;
 const DEFAULT_POLL: Duration = Duration::from_secs(1);
 /// How long herdr may see no agent before the start says what it is waiting for.
 const NOTICE_AFTER: Duration = Duration::from_secs(3);

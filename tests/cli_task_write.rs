@@ -471,6 +471,49 @@ fn write_commands_reject_unknown_task() {
 }
 
 const WORKSPACE_CLOSED: &str = r#"{"id":"cli:workspace:close","result":{"type":"ok"}}"#;
+/// The label dispatch gives the task's workspace: its title, then its id.
+const TASK_LABEL: &str = "Add retry to the example client · aaaaaaab";
+
+/// `workspace list` answering with `w1`, a hand workspace, and `w2` labelled `label`.
+fn workspaces_with_w2(label: &str) -> Value {
+    let list = json!({"id": "cli:workspace:list", "result": {"type": "workspace_list", "workspaces": [
+        {"workspace_id": "w1", "label": "notes", "number": 1, "pane_count": 1, "tab_count": 1},
+        {"workspace_id": "w2", "label": label, "number": 2, "pane_count": 1, "tab_count": 1},
+    ]}});
+    json!({"argv": ["workspace", "list"], "status": 0, "stdout": list.to_string(), "stderr": ""})
+}
+
+/// `pane list` answering with one pane per `(pane_id, workspace_id)`.
+fn panes(panes: &[(&str, &str)]) -> Value {
+    let panes: Vec<Value> = panes
+        .iter()
+        .map(|(pane_id, workspace_id)| {
+            json!({"pane_id": pane_id, "workspace_id": workspace_id, "cwd": "/tmp"})
+        })
+        .collect();
+    let list = json!({"id": "cli:pane:list", "result": {"type": "pane_list", "panes": panes}});
+    json!({"argv": ["pane", "list"], "status": 0, "stdout": list.to_string(), "stderr": ""})
+}
+
+fn closed() -> Value {
+    json!({"argv": ["workspace", "close"], "status": 0, "stdout": WORKSPACE_CLOSED, "stderr": ""})
+}
+
+/// The calls that prove `w2` is the task's and close it.
+fn task_workspace_closes() -> Vec<Value> {
+    vec![
+        workspaces_with_w2(TASK_LABEL),
+        panes(&[("w1:p1", "w1"), ("w2:p1", "w2")]),
+        closed(),
+    ]
+}
+
+fn herdr_argvs(script_path: &Path) -> Vec<Value> {
+    runner_calls(script_path)
+        .into_iter()
+        .map(|call| call["argv"].clone())
+        .collect()
+}
 
 /// `setup()` with the task `state`, its worker in workspace `w2` on `host-a`, the host's cached
 /// record, and a fake runner answering `script`; returns the runner's script path.
@@ -516,8 +559,7 @@ fn runner_calls(script_path: &Path) -> Vec<Value> {
 
 #[test]
 fn close_closes_a_done_task_workspace_and_keeps_the_record() {
-    let ok = json!({"status": 0, "stdout": WORKSPACE_CLOSED, "stderr": ""});
-    let (_repo, state, store, script) = setup_close(State::Done, &[ok]);
+    let (_repo, state, store, script) = setup_close(State::Done, &task_workspace_closes());
     let (rec_before, _) = store.task(TASK).unwrap();
 
     let out = stdout(
@@ -528,11 +570,17 @@ fn close_closes_a_done_task_workspace_and_keeps_the_record() {
 
     assert_eq!(out, format!("closed {TASK} (workspace w2 on host-a)\n"));
     let calls = runner_calls(&script);
-    assert_eq!(calls.len(), 1, "{calls:?}");
-    assert_eq!(calls[0]["host"], "host-a");
+    assert!(
+        calls.iter().all(|call| call["host"] == "host-a"),
+        "{calls:?}"
+    );
     assert_eq!(
-        calls[0]["argv"],
-        json!(["herdr", "--session", "default", "workspace", "close", "w2"])
+        herdr_argvs(&script),
+        [
+            json!(["herdr", "--session", "default", "workspace", "list"]),
+            json!(["herdr", "--session", "default", "pane", "list"]),
+            json!(["herdr", "--session", "default", "workspace", "close", "w2"]),
+        ]
     );
     let (rec, status) = store.task(TASK).unwrap();
     assert_eq!(rec, rec_before);
@@ -588,12 +636,120 @@ fn close_of_an_adopted_task_leaves_its_workspace_to_its_owner() {
 
 #[test]
 fn close_of_a_workspace_already_gone_still_retires_the_pane() {
-    let missing = json!({
+    let unlisted = json!({"id": "cli:workspace:list", "result": {"type": "workspace_list",
+        "workspaces": [{"workspace_id": "w1", "label": "notes"}]}});
+    let not_running = json!({
+        "status": 1,
+        "stdout": "",
+        "stderr": r#"{"error":{"code":"server_not_running","message":"no herdr server"},"id":"cli:workspace:list"}"#,
+    });
+    let closed_meanwhile = json!({
+        "argv": ["workspace", "close"],
         "status": 1,
         "stdout": "",
         "stderr": r#"{"error":{"code":"workspace_not_found","message":"workspace w2 not found"},"id":"cli:workspace:close"}"#,
     });
-    let (_repo, state, store, script) = setup_close(State::Done, &[missing]);
+    for (script, calls) in [
+        (
+            vec![json!({"status": 0, "stdout": unlisted.to_string(), "stderr": ""})],
+            1,
+        ),
+        (vec![not_running], 1),
+        (
+            vec![
+                workspaces_with_w2(TASK_LABEL),
+                panes(&[("w2:p1", "w2")]),
+                closed_meanwhile,
+            ],
+            3,
+        ),
+    ] {
+        let (_repo, state, store, script) = setup_close(State::Done, &script);
+
+        let out = stdout(
+            flow(&state)
+                .env("FLOW_FAKE_RUNNER", &script)
+                .args(["task", "close", TASK]),
+        );
+
+        assert_eq!(out, format!("closed {TASK} (workspace already gone)\n"));
+        assert_eq!(runner_calls(&script).len(), calls);
+        let (_, status) = store.task(TASK).unwrap();
+        assert_eq!(status.herdr, None);
+        let ev = last_event(&store, TASK);
+        assert_eq!(ev.kind, "close");
+        assert_eq!(ev.data["already_gone"], true);
+    }
+}
+
+#[test]
+fn close_refuses_a_workspace_id_listed_under_another_label() {
+    for label in [
+        "notes",
+        "Add retry to the example client",
+        "Other task · aaaaaaac",
+    ] {
+        let (_repo, state, store, script) =
+            setup_close(State::Done, &[workspaces_with_w2(label), closed()]);
+
+        let out = flow(&state)
+            .env("FLOW_FAKE_RUNNER", &script)
+            .args(["task", "close", TASK])
+            .assert()
+            .code(2)
+            .get_output()
+            .clone();
+
+        let stderr = String::from_utf8(out.stderr).unwrap();
+        assert_eq!(
+            stderr,
+            format!(
+                "herdr lists workspace w2 on host-a as \"{label}\", which does not name task \
+                 {TASK}; herdr reuses workspace ids, so flow closed nothing\n"
+            )
+        );
+        assert_eq!(herdr_argvs(&script).len(), 1, "{label}");
+        assert!(store.task(TASK).unwrap().1.herdr.is_some(), "{label}");
+    }
+}
+
+#[test]
+fn close_refuses_when_the_task_pane_is_not_in_its_workspace() {
+    for (listed, where_) in [
+        (vec![("w2:p2", "w2")], "does not list it"),
+        (vec![("w2:p1", "w5")], "lists it in workspace w5"),
+    ] {
+        let script = [workspaces_with_w2(TASK_LABEL), panes(&listed), closed()];
+        let (_repo, state, store, script) = setup_close(State::Done, &script);
+
+        let out = flow(&state)
+            .env("FLOW_FAKE_RUNNER", &script)
+            .args(["task", "close", TASK])
+            .assert()
+            .code(2)
+            .get_output()
+            .clone();
+
+        assert_eq!(
+            String::from_utf8(out.stderr).unwrap(),
+            format!(
+                "task {TASK}'s pane w2:p1 is not in workspace w2 on host-a: herdr {where_}; \
+                 flow closed nothing\n"
+            )
+        );
+        assert_eq!(herdr_argvs(&script).len(), 2);
+        assert!(store.task(TASK).unwrap().1.herdr.is_some());
+    }
+}
+
+#[test]
+fn close_accepts_a_workspace_labelled_with_the_task_id_alone() {
+    let script = [
+        workspaces_with_w2(TASK),
+        panes(&[("w2:p1", "w2")]),
+        closed(),
+    ];
+    let (_repo, state, store, script) = setup_close(State::Done, &script);
 
     let out = stdout(
         flow(&state)
@@ -601,13 +757,8 @@ fn close_of_a_workspace_already_gone_still_retires_the_pane() {
             .args(["task", "close", TASK]),
     );
 
-    assert_eq!(out, format!("closed {TASK} (workspace already gone)\n"));
-    assert_eq!(runner_calls(&script).len(), 1);
-    let (_, status) = store.task(TASK).unwrap();
-    assert_eq!(status.herdr, None);
-    let ev = last_event(&store, TASK);
-    assert_eq!(ev.kind, "close");
-    assert_eq!(ev.data["already_gone"], true);
+    assert_eq!(out, format!("closed {TASK} (workspace w2 on host-a)\n"));
+    assert_eq!(store.task(TASK).unwrap().1.herdr, None);
 }
 
 #[test]
@@ -618,8 +769,7 @@ fn close_refuses_an_open_task_unless_forced() {
         State::Blocked,
         State::NeedsDecision,
     ] {
-        let ok = json!({"status": 0, "stdout": WORKSPACE_CLOSED, "stderr": ""});
-        let (_repo, state, store, script) = setup_close(open, &[ok]);
+        let (_repo, state, store, script) = setup_close(open, &task_workspace_closes());
 
         flow(&state)
             .env("FLOW_FAKE_RUNNER", &script)
@@ -638,7 +788,7 @@ fn close_refuses_an_open_task_unless_forced() {
             .args(["task", "close", TASK, "--force"])
             .assert()
             .success();
-        assert_eq!(runner_calls(&script).len(), 1, "{open}");
+        assert_eq!(runner_calls(&script).len(), 3, "{open}");
         let (_, status) = store.task(TASK).unwrap();
         assert_eq!(status.state, open);
         assert_eq!(status.herdr, None, "{open}");
@@ -648,15 +798,14 @@ fn close_refuses_an_open_task_unless_forced() {
 
 #[test]
 fn close_of_an_orphaned_task_needs_no_force() {
-    let ok = json!({"status": 0, "stdout": WORKSPACE_CLOSED, "stderr": ""});
-    let (_repo, state, store, script) = setup_close(State::Orphaned, &[ok]);
+    let (_repo, state, store, script) = setup_close(State::Orphaned, &task_workspace_closes());
 
     flow(&state)
         .env("FLOW_FAKE_RUNNER", &script)
         .args(["task", "close", TASK])
         .assert()
         .success();
-    assert_eq!(runner_calls(&script).len(), 1);
+    assert_eq!(runner_calls(&script).len(), 3);
     assert_eq!(store.task(TASK).unwrap().1.herdr, None);
 }
 

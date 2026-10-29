@@ -524,6 +524,99 @@ fn up_starts_fresh_when_the_lock_pane_runs_another_agent() {
     );
 }
 
+/// An agent list with one agent, in `LIVE_PANE` of workspace `w1`, running in `cwd`, herdr
+/// reporting Claude Code session `session` for it.
+fn lock_pane_agent(cwd: &str, session: Option<&str>) -> String {
+    let mut agent = json!({
+        "agent": "claude", "agent_status": "idle", "cwd": cwd, "pane_id": LIVE_PANE,
+        "terminal_title_stripped": "Read the docs", "workspace_id": "w1",
+    });
+    if let Some(session) = session {
+        agent["agent_session"] =
+            json!({"agent": "claude", "kind": "id", "source": "herdr:claude", "value": session});
+    }
+    json!({"id": "cli:agent:list", "result": {"type": "agent_list", "agents": [agent]}}).to_string()
+}
+
+#[test]
+fn up_starts_fresh_when_the_lock_pane_runs_another_claude_session_in_the_flow_clone() {
+    let fx = Fixture::new();
+    fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
+    let left =
+        WORKSPACE_LIST.replacen(r#""label":"login-form""#, r#""label":"flow-supervisor""#, 1);
+    let mut script = vec![
+        ok(&lock_pane_agent("/workspaces/flow", Some("s-hand"))),
+        workspaces(&left),
+        json!({"argv": ["workspace", "close"], "status": 0, "stdout": WORKSPACE_CLOSED, "stderr": ""}),
+    ];
+    script.extend(fresh_start());
+
+    let (stdout, stderr) = output_of(fx.flow(&script).arg("up"));
+
+    let calls = fx.calls();
+    assert!(
+        has_subcommand(&calls, &["workspace", "create"]),
+        "{calls:?}"
+    );
+    assert!(
+        !has_subcommand(&calls, &["workspace", "close"]),
+        "workspace w1 holds the user's session: {calls:?}"
+    );
+    assert!(
+        stderr.contains(
+            "left workspace w1 on host-a open: pane w1:p1 runs Claude Code session s-hand, not \
+             the supervisor's s9\n"
+        ),
+        "{stderr}"
+    );
+    assert!(
+        stdout.ends_with(&format!("agent attach {NEW_PANE}\n")),
+        "{stdout}"
+    );
+    let lock = fx.lock().unwrap();
+    assert_eq!(lock.herdr.pane_id, NEW_PANE);
+    assert_eq!(lock.claude_session.as_deref(), Some("s9"));
+    assert!(
+        pane_run_line(&calls).contains("--resume s9"),
+        "{}",
+        pane_run_line(&calls)
+    );
+}
+
+#[test]
+fn up_attaches_when_the_lock_pane_reports_the_lock_session() {
+    let fx = Fixture::new();
+    fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
+
+    let stdout = stdout_of(
+        fx.flow(&[ok(&lock_pane_agent("/workspaces/flow/docs", Some("s9")))])
+            .arg("up"),
+    );
+
+    assert_eq!(fx.calls().len(), 1);
+    assert_eq!(
+        stdout,
+        format!("attach: herdr --session flow agent attach {LIVE_PANE}\n")
+    );
+}
+
+#[test]
+fn up_judges_the_lock_pane_by_cwd_while_the_lock_has_no_session() {
+    let fx = Fixture::new();
+    fx.write_lock("env-0001", "host-a", LIVE_PANE, None);
+
+    let stdout = stdout_of(
+        fx.flow(&[ok(&lock_pane_agent("/workspaces/flow", Some("s-new")))])
+            .arg("up"),
+    );
+
+    assert_eq!(fx.calls().len(), 1);
+    assert_eq!(
+        stdout,
+        format!("attach: herdr --session flow agent attach {LIVE_PANE}\n")
+    );
+}
+
 #[test]
 fn up_starts_fresh_session_when_resume_fails() {
     let fx = Fixture::new();

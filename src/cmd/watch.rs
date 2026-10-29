@@ -25,20 +25,17 @@ use anyhow::Context;
 
 use crate::paths::StateDir;
 use crate::runner::{self, Runner};
+use crate::vars;
 use crate::watch::classify::DEFAULT_QUIET_SECS;
 use crate::watch::{self, Retry, Settings, lock};
 
-/// Overrides the poll interval, in milliseconds.
-const POLL_VAR: &str = "FLOW_WATCH_POLL_MS";
+const POLL_VAR: &str = vars::WATCH_POLL_MS;
 const DEFAULT_POLL: Duration = Duration::from_secs(2);
-/// Overrides the delay before a failed watch first retries, in milliseconds.
-const RETRY_VAR: &str = "FLOW_WATCH_RETRY_MS";
+const RETRY_VAR: &str = vars::WATCH_RETRY_MS;
 const DEFAULT_RETRY: Duration = Duration::from_secs(30);
-/// Overrides how long a run watching only hand sessions nobody follows lasts, in milliseconds.
-const HAND_MAX_VAR: &str = "FLOW_WATCH_HAND_MAX_MS";
+const HAND_MAX_VAR: &str = vars::WATCH_HAND_MAX_MS;
 const DEFAULT_HAND_MAX: Duration = Duration::from_secs(24 * 60 * 60);
-/// Overrides how long listing the hosts' agents may take, in milliseconds.
-const LIST_TIMEOUT_VAR: &str = "FLOW_WATCH_LIST_TIMEOUT_MS";
+const LIST_TIMEOUT_VAR: &str = vars::WATCH_LIST_TIMEOUT_MS;
 const DEFAULT_LIST_TIMEOUT: Duration = Duration::from_secs(60);
 const DEFAULT_HEARTBEAT_SECS: u64 = 3600;
 const WAKE_EXIT: u8 = 2;

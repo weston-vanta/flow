@@ -10,5 +10,6 @@ pub mod render;
 pub mod runner;
 pub mod state;
 pub mod supervisor;
+pub mod vars;
 pub mod watch;
 pub mod worktree;

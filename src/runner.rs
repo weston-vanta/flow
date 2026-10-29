@@ -16,8 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::host;
 use crate::state::config::Host;
 
-/// Names a JSON script file; when set, `from_env` returns a `FakeRunner` reading it.
-const FAKE_RUNNER_VAR: &str = "FLOW_FAKE_RUNNER";
+const FAKE_RUNNER_VAR: &str = crate::vars::FAKE_RUNNER;
 const CALLS_LOG_SUFFIX: &str = ".calls.jsonl";
 
 /// A finished command. Output that is not UTF-8 is converted lossily.
