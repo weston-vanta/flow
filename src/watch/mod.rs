@@ -4,19 +4,20 @@
 //! it saw. Absorbed observations go to `state/supervisor/watch.log`; the first wake is queued
 //! and returned. Nothing here changes a task: the supervisor acts on what watch reports.
 //!
-//! `state/supervisor/watch-state.json` carries what one run hands the next: how far each
-//! task's files were read, so a change made between runs still wakes the next one, and what
-//! earlier wakes reported, so a condition that persists wakes once rather than on every turn
-//! end. A reported worker status is news again once its task's event log grows, since herdr
-//! reports only the current status and a worker that went blocked, working, and blocked again
-//! between runs reads the same. A hand session has no event log, so the same gap remains for
-//! it: a session that left its reported status and came back to it entirely between runs reads
-//! the same. One that is still elsewhere when a run starts is seen leaving it, since a fresh
-//! wait on a reported pane ends on any other status first; a pane that reads gone forgets its
-//! hand session's report, so its next occupant is news. A task an earlier run never read is replayed from `pending` and an empty
-//! event log, so a worker that finished or asked something before the watcher first saw its
-//! task still wakes the supervisor; only the very first run, with no `watch-state.json` yet,
-//! takes every task as it is. That run writes the file once a cycle has listed the tasks.
+//! `state/supervisor/watch-state.json` carries what one run hands the next: how far each task's
+//! files were read, so a change made between runs still wakes the next one, and what earlier
+//! wakes reported, so a condition that persists wakes once rather than on every turn end. A
+//! reported worker status is news again once its task's event log grows, since herdr reports
+//! only the current status and a worker that went blocked, working, and blocked again between
+//! runs reads the same. A hand session has no event log, so the same gap remains for it: a
+//! session that left its reported status and came back to it entirely between runs reads the
+//! same. One that is still elsewhere when a run starts is seen leaving it, since a fresh wait
+//! on a reported pane ends on any other status first; a pane that reads gone forgets its hand
+//! session's report, so its next occupant is news. A task an earlier run never read is replayed
+//! from `pending` and an empty event log, so a worker that finished or asked something before
+//! the watcher first saw its task still wakes the supervisor; only the very first run, with no
+//! `watch-state.json` yet, takes every task as it is. That run writes the file once a cycle has
+//! listed the tasks.
 //!
 //! A worker that stops, blocked or done in herdr's terms, after its task reported
 //! `needs-decision` or `blocked` is absorbed: it stopped to wait on the hold that already woke
@@ -28,6 +29,7 @@
 //! at most `Settings::list_timeout`. A host whose listing fails keeps its cached agents. The
 //! run waits on every hand session it then finds, except on hosts that ssh could not reach,
 //! that run no herdr server, or that did not answer in time: those wait for the next listing.
+//! A host whose earlier listing has still not returned is not asked again in the same run.
 //! Any hand session turning `blocked` wakes the supervisor; the ones in the follow list also
 //! wake it on `idle` and `done`. Whether a session is followed is read every cycle.
 //!
@@ -52,7 +54,7 @@ pub mod queue;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io;
 use std::path::Path;
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -134,88 +136,6 @@ pub fn run(
         }
         thread::sleep(settings.poll);
     }
-}
-
-/// Refreshes every live host's cached agents with one herdr listing each, the way
-/// `flow sessions` does but never starting a herdr server, and returns the hosts whose hand
-/// sessions are not to be watched: those that ssh could not reach, that run no herdr server, or
-/// whose listing did not end within `timeout`. Hosts are listed in parallel, each on a thread
-/// left to finish on its own once the timeout passes; `lock` is touched before and as each
-/// listing ends. A host whose listing fails keeps its cached agents; failures are logged and
-/// never end the run.
-fn list_agents(
-    state: &StateDir,
-    runner: &Arc<dyn Runner>,
-    lock: &Guard,
-    timeout: Duration,
-) -> Vec<String> {
-    let found = Config::load(state).and_then(|config| Ok((config, inventory::live_hosts(state)?)));
-    let (config, hosts) = match found {
-        Ok(found) => found,
-        Err(err) => {
-            append_log(state, &format!("listing agents: {err:#}"));
-            return Vec::new();
-        }
-    };
-    let _ = lock.touch();
-    let now = Timestamp::now();
-    let (sender, receiver) = mpsc::channel();
-    for (index, host) in hosts.iter().enumerate() {
-        let sender = sender.clone();
-        let state = state.clone();
-        let runner = runner.clone();
-        let sessions = config.herdr_sessions.clone();
-        let host = host.clone();
-        thread::spawn(move || {
-            let listed = inventory::list_agents(
-                &state,
-                &runner,
-                &sessions,
-                FlowServer::LeaveStopped,
-                &host,
-                now,
-            );
-            let _ = sender.send((index, listed));
-        });
-    }
-    drop(sender);
-    let mut results: Vec<Option<anyhow::Result<inventory::Listed>>> =
-        hosts.iter().map(|_| None).collect();
-    let deadline = Instant::now() + timeout;
-    while let Some(left) = deadline.checked_duration_since(Instant::now()) {
-        let Ok((index, listed)) = receiver.recv_timeout(left) else {
-            break;
-        };
-        let _ = lock.touch();
-        results[index] = Some(listed);
-    }
-    let mut skipped = Vec::new();
-    for (host, listed) in hosts.iter().zip(results) {
-        let not_watched = "; not watching its sessions until the next listing";
-        let problem = match listed {
-            None => {
-                skipped.push(host.name.clone());
-                Some(format!(
-                    "timed out after {}s{not_watched}",
-                    timeout.as_secs_f64()
-                ))
-            }
-            Some(Ok(listed)) if listed.no_server || listed.unreachable => {
-                skipped.push(host.name.clone());
-                let problem = listed.error.as_deref().unwrap_or("no herdr server runs");
-                Some(format!("{problem}{not_watched}"))
-            }
-            Some(Ok(listed)) => listed.error,
-            Some(Err(err)) => Some(format!("{err:#}")),
-        };
-        if let Some(problem) = problem {
-            append_log(
-                state,
-                &format!("listing agents on {}: {problem}", host.name),
-            );
-        }
-    }
-    skipped
 }
 
 /// A herdr agent outside flow's herdr session on a live host, as of the cached inventory.
@@ -446,6 +366,8 @@ struct Watcher<'a> {
     beating_since: Option<Instant>,
     /// When the hosts' agents were last listed, or the run started.
     listed_at: Instant,
+    /// The hosts whose listing thread has not returned yet.
+    listing: Arc<Mutex<HashSet<String>>>,
     /// Whether `unreachable` entries no wait targets were dropped yet this run.
     pruned: bool,
     waits: BTreeMap<String, PaneWait>,
@@ -481,6 +403,7 @@ impl<'a> Watcher<'a> {
             beating: true,
             beating_since: None,
             listed_at: Instant::now(),
+            listing: Arc::default(),
             pruned: false,
             waits: BTreeMap::new(),
             quiet_checked: HashMap::new(),
@@ -587,7 +510,7 @@ impl<'a> Watcher<'a> {
     /// Lists every live host's agents into the cached inventory and takes the hand sessions
     /// from it, leaving out the hosts `list_agents` says not to watch.
     fn refresh_hands(&mut self, lock: &Guard) {
-        let skipped = list_agents(self.state, &self.runner, lock, self.settings.list_timeout);
+        let skipped = self.list_agents(lock);
         self.listed_at = Instant::now();
         match hand_sessions(self.state) {
             Ok(hands) => {
@@ -598,6 +521,105 @@ impl<'a> Watcher<'a> {
             }
             Err(err) => self.log(&format!("{err:#}")),
         }
+    }
+
+    /// Refreshes every live host's cached agents with one herdr listing each, the way
+    /// `flow sessions` does but never starting a herdr server, and returns the hosts whose hand
+    /// sessions are not to be watched: those that ssh could not reach, that run no herdr server,
+    /// whose listing did not end within `Settings::list_timeout`, or whose listing from an
+    /// earlier call has not returned, which are not asked again. Hosts are listed in parallel,
+    /// each on a thread left to finish on its own once the timeout passes; `lock` is touched
+    /// before and as each listing ends. A host whose listing fails keeps its cached agents;
+    /// failures are logged and never end the run.
+    fn list_agents(&mut self, lock: &Guard) -> Vec<String> {
+        let state = self.state;
+        let found =
+            Config::load(state).and_then(|config| Ok((config, inventory::live_hosts(state)?)));
+        let (config, hosts) = match found {
+            Ok(found) => found,
+            Err(err) => {
+                append_log(state, &format!("listing agents: {err:#}"));
+                return Vec::new();
+            }
+        };
+        let _ = lock.touch();
+        let timeout = self.settings.list_timeout;
+        let now = Timestamp::now();
+        let (sender, receiver) = mpsc::channel();
+        let mut skipped = Vec::new();
+        let mut results: Vec<Option<anyhow::Result<inventory::Listed>>> =
+            hosts.iter().map(|_| None).collect();
+        for (index, host) in hosts.iter().enumerate() {
+            let started = self
+                .listing
+                .lock()
+                .expect("listing set lock")
+                .insert(host.name.clone());
+            if !started {
+                skipped.push(host.name.clone());
+                self.log(&format!(
+                    "listing agents on {}: an earlier listing has not returned; skipping it",
+                    host.name
+                ));
+                continue;
+            }
+            let sender = sender.clone();
+            let state = state.clone();
+            let runner = self.runner.clone();
+            let sessions = config.herdr_sessions.clone();
+            let host = host.clone();
+            let listing = self.listing.clone();
+            thread::spawn(move || {
+                let listed = inventory::list_agents(
+                    &state,
+                    &runner,
+                    &sessions,
+                    FlowServer::LeaveStopped,
+                    &host,
+                    now,
+                );
+                listing.lock().expect("listing set lock").remove(&host.name);
+                let _ = sender.send((index, listed));
+            });
+        }
+        drop(sender);
+        let deadline = Instant::now() + timeout;
+        while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+            let Ok((index, listed)) = receiver.recv_timeout(left) else {
+                break;
+            };
+            let _ = lock.touch();
+            results[index] = Some(listed);
+        }
+        for (host, listed) in hosts.iter().zip(results) {
+            if skipped.contains(&host.name) {
+                continue;
+            }
+            let not_watched = "; not watching its sessions until the next listing";
+            let problem = match listed {
+                None => {
+                    skipped.push(host.name.clone());
+                    Some(format!(
+                        "timed out after {}s{not_watched}",
+                        timeout.as_secs_f64()
+                    ))
+                }
+                Some(Ok(listed)) if listed.no_server || listed.unreachable => {
+                    skipped.push(host.name.clone());
+                    let problem = listed.error.as_deref().unwrap_or("no herdr server runs");
+                    Some(format!("{problem}{not_watched}"))
+                }
+                Some(Ok(listed)) => listed.error,
+                Some(Err(err)) => Some(format!("{err:#}")),
+            };
+            if let Some(problem) = problem {
+                append_log(
+                    state,
+                    &format!("listing agents on {}: {problem}", host.name),
+                );
+            }
+        }
+        skipped
     }
 
     /// Notes how long the task's event log was when a wake reported its worker, so new events
@@ -1154,11 +1176,28 @@ default_branch = "main"
         }
     }
 
-    /// A runner that answers like `inner` but takes `delay` to answer any `run` on `slow_host`.
+    /// A runner that answers like `inner`, except that any `run` on `slow_host` takes `delay`
+    /// and then fails as unreachable, so the listing it holds up writes nothing once it ends.
     struct SlowRunner {
         inner: Arc<FakeRunner>,
         slow_host: &'static str,
         delay: Duration,
+        slow_calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl SlowRunner {
+        fn new(inner: Arc<FakeRunner>, slow_host: &'static str, delay: Duration) -> SlowRunner {
+            SlowRunner {
+                inner,
+                slow_host,
+                delay,
+                slow_calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn slow_calls(&self) -> usize {
+            self.slow_calls.load(std::sync::atomic::Ordering::SeqCst)
+        }
     }
 
     impl Runner for SlowRunner {
@@ -1169,7 +1208,10 @@ default_branch = "main"
             stdin: Option<&[u8]>,
         ) -> anyhow::Result<crate::runner::Output> {
             if host.name == self.slow_host {
+                self.slow_calls
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 thread::sleep(self.delay);
+                anyhow::bail!("host unreachable: {} (test delay)", host.name);
             }
             self.inner.run(host, argv, stdin)
         }
@@ -1720,17 +1762,11 @@ default_branch = "main"
         )
         .unwrap();
         fx.agent("env-0002", "default", "w5:p1", "Upgrade toolchain");
-        let mut script = hand_listing(DEFAULT_AGENTS);
-        script.push(Scripted {
-            host: Some("host-b".to_owned()),
-            repeat: true,
-            ..answer(0, NO_AGENTS)
-        });
-        let runner: Arc<dyn Runner> = Arc::new(SlowRunner {
-            inner: fake(script),
-            slow_host: "host-b",
-            delay: Duration::from_secs(3),
-        });
+        let slow = Arc::new(SlowRunner::new(
+            fake(hand_listing(DEFAULT_AGENTS)),
+            "host-b",
+            Duration::from_secs(3),
+        ));
         let lock = lock::acquire(&fx.state, std::process::id())
             .unwrap()
             .unwrap();
@@ -1738,7 +1774,7 @@ default_branch = "main"
             list_timeout: Duration::from_millis(200),
             ..settings(Duration::from_secs(3600))
         };
-        let mut watcher = Watcher::new(&fx.state, runner, &bounded).unwrap();
+        let mut watcher = Watcher::new(&fx.state, slow.clone(), &bounded).unwrap();
 
         let started = Instant::now();
         watcher.refresh_hands(&lock);
@@ -1755,6 +1791,13 @@ default_branch = "main"
             "{}",
             fx.log()
         );
+
+        watcher.refresh_hands(&lock);
+        watcher.refresh_hands(&lock);
+        assert_eq!(slow.slow_calls(), 1);
+        assert_eq!(hand_keys(&watcher), ["host-a/default/w1:p1 Tidy docs"]);
+        let still = "listing agents on host-b: an earlier listing has not returned; skipping it";
+        assert_eq!(fx.log().matches(still).count(), 1, "{}", fx.log());
     }
 
     #[test]
