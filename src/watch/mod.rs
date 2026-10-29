@@ -9,9 +9,11 @@
 //! earlier wakes reported, so a condition that persists wakes once rather than on every turn
 //! end. A reported worker status is news again once its task's event log grows, since herdr
 //! reports only the current status and a worker that went blocked, working, and blocked again
-//! between runs reads the same. An adopted session has no event log, so the same gap remains
-//! for it: a repeat of its reported status between runs is absorbed until herdr reports a
-//! different one. A task an earlier run never read is replayed from `pending` and an empty
+//! between runs reads the same. A hand session has no event log, so the same gap remains for
+//! it: a session that left its reported status and came back to it entirely between runs reads
+//! the same. One that is still elsewhere when a run starts is seen leaving it, since a fresh
+//! wait on a reported pane ends on any other status first; a pane that reads gone forgets its
+//! hand session's report, so its next occupant is news. A task an earlier run never read is replayed from `pending` and an empty
 //! event log, so a worker that finished or asked something before the watcher first saw its
 //! task still wakes the supervisor; only the very first run, with no `watch-state.json` yet,
 //! takes every task as it is. That run writes the file once a cycle has listed the tasks.
@@ -22,18 +24,21 @@
 //!
 //! Hand sessions are the herdr agents outside flow's herdr session on live hosts, as of the
 //! cached inventory: sessions the user started by hand. A run first lists every live host's
-//! agents into that cache, once and without starting any herdr server. A host whose listing
-//! fails, or where no herdr server runs, keeps its cached agents; the run waits on every hand
-//! session it then finds, except on hosts where no herdr server runs. Any of them turning
-//! `blocked` wakes the supervisor; the ones in the follow list also wake it on `idle` and
-//! `done`. Whether a session is followed is read every cycle.
+//! agents into that cache, in parallel, without starting any herdr server, and giving each host
+//! at most `Settings::list_timeout`. A host whose listing fails keeps its cached agents. The
+//! run waits on every hand session it then finds, except on hosts that ssh could not reach,
+//! that run no herdr server, or that did not answer in time: those wait for the next listing.
+//! Any hand session turning `blocked` wakes the supervisor; the ones in the follow list also
+//! wake it on `idle` and `done`. Whether a session is followed is read every cycle.
 //!
 //! A run with nothing to watch, no open task, followed session or hand session, ends after its
 //! first cycle rather than waiting for the heartbeat. A cycle that could not read the tasks or
 //! the follow list counts as having something to watch. The heartbeat fires only for open
-//! tasks, followed sessions or what could not be read. A run watching hand sessions alone ends
-//! without waking after `Settings::hand_max`, a day by default, rather than waking the
-//! supervisor hourly; the Stop hook's timeout is set longer than that.
+//! tasks, followed sessions or what could not be read, timed from when the run found one. A run
+//! watching hand sessions alone lists the hosts again every heartbeat interval, so a session
+//! started after the run began is watched within the hour, and ends without waking after
+//! `Settings::hand_max`, a day by default, rather than waking the supervisor hourly; the Stop
+//! hook's timeout is set longer than that.
 //!
 //! An error after the lock is taken wakes the supervisor as `watch-failed` once per distinct
 //! error; `run_retrying` keeps retrying a repeat of it in the background, holding the lock.
@@ -47,7 +52,7 @@ pub mod queue;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -90,6 +95,8 @@ pub struct Settings {
     /// How long a run watching only hand sessions nobody follows lasts before it ends without
     /// waking, in place of the heartbeat.
     pub hand_max: Duration,
+    /// How long listing the hosts' agents may take; a host not answered by then is left out.
+    pub list_timeout: Duration,
 }
 
 /// Watches until something wakes the supervisor and returns the reason, already queued; with
@@ -100,13 +107,10 @@ pub fn run(
     settings: &Settings,
     lock: &Guard,
 ) -> anyhow::Result<Option<String>> {
-    let no_server = if settings.list_agents {
-        list_agents(state, &runner)
-    } else {
-        Vec::new()
-    };
     let mut watcher = Watcher::new(state, runner, settings)?;
-    watcher.hands.retain(|hand| !no_server.contains(&hand.host));
+    if settings.list_agents {
+        watcher.refresh_hands(lock);
+    }
     let mut cycles = 0;
     loop {
         lock.touch()?;
@@ -121,6 +125,9 @@ pub fn run(
             watcher.log("only hand sessions watched for the hand maximum; exiting");
             return Ok(None);
         }
+        if watcher.relist_due() {
+            watcher.refresh_hands(lock);
+        }
         cycles += 1;
         if settings.once && cycles >= ONCE_CYCLES {
             return Ok(None);
@@ -130,10 +137,18 @@ pub fn run(
 }
 
 /// Refreshes every live host's cached agents with one herdr listing each, the way
-/// `flow sessions` does but never starting a herdr server, and returns the hosts where no
-/// herdr server runs. Such a host, and one whose listing fails, keeps its cached agents;
-/// failures are logged and never end the run.
-fn list_agents(state: &StateDir, runner: &Arc<dyn Runner>) -> Vec<String> {
+/// `flow sessions` does but never starting a herdr server, and returns the hosts whose hand
+/// sessions are not to be watched: those that ssh could not reach, that run no herdr server, or
+/// whose listing did not end within `timeout`. Hosts are listed in parallel, each on a thread
+/// left to finish on its own once the timeout passes; `lock` is touched before and as each
+/// listing ends. A host whose listing fails keeps its cached agents; failures are logged and
+/// never end the run.
+fn list_agents(
+    state: &StateDir,
+    runner: &Arc<dyn Runner>,
+    lock: &Guard,
+    timeout: Duration,
+) -> Vec<String> {
     let found = Config::load(state).and_then(|config| Ok((config, inventory::live_hosts(state)?)));
     let (config, hosts) = match found {
         Ok(found) => found,
@@ -142,23 +157,56 @@ fn list_agents(state: &StateDir, runner: &Arc<dyn Runner>) -> Vec<String> {
             return Vec::new();
         }
     };
-    let listed = inventory::list_agents_on(
-        state,
-        runner,
-        &config.herdr_sessions,
-        FlowServer::LeaveStopped,
-        &hosts,
-        Timestamp::now(),
-    );
-    let mut no_server = Vec::new();
-    for (host, listed) in hosts.iter().zip(listed) {
+    let _ = lock.touch();
+    let now = Timestamp::now();
+    let (sender, receiver) = mpsc::channel();
+    for (index, host) in hosts.iter().enumerate() {
+        let sender = sender.clone();
+        let state = state.clone();
+        let runner = runner.clone();
+        let sessions = config.herdr_sessions.clone();
+        let host = host.clone();
+        thread::spawn(move || {
+            let listed = inventory::list_agents(
+                &state,
+                &runner,
+                &sessions,
+                FlowServer::LeaveStopped,
+                &host,
+                now,
+            );
+            let _ = sender.send((index, listed));
+        });
+    }
+    drop(sender);
+    let mut results: Vec<Option<anyhow::Result<inventory::Listed>>> =
+        hosts.iter().map(|_| None).collect();
+    let deadline = Instant::now() + timeout;
+    while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+        let Ok((index, listed)) = receiver.recv_timeout(left) else {
+            break;
+        };
+        let _ = lock.touch();
+        results[index] = Some(listed);
+    }
+    let mut skipped = Vec::new();
+    for (host, listed) in hosts.iter().zip(results) {
+        let not_watched = "; not watching its sessions until the next listing";
         let problem = match listed {
-            Ok(listed) if listed.no_server => {
-                no_server.push(host.name.clone());
-                Some("no herdr server runs; not watching its sessions".to_owned())
+            None => {
+                skipped.push(host.name.clone());
+                Some(format!(
+                    "timed out after {}s{not_watched}",
+                    timeout.as_secs_f64()
+                ))
             }
-            Ok(listed) => listed.error,
-            Err(err) => Some(format!("{err:#}")),
+            Some(Ok(listed)) if listed.no_server || listed.unreachable => {
+                skipped.push(host.name.clone());
+                let problem = listed.error.as_deref().unwrap_or("no herdr server runs");
+                Some(format!("{problem}{not_watched}"))
+            }
+            Some(Ok(listed)) => listed.error,
+            Some(Err(err)) => Some(format!("{err:#}")),
         };
         if let Some(problem) = problem {
             append_log(
@@ -167,7 +215,7 @@ fn list_agents(state: &StateDir, runner: &Arc<dyn Runner>) -> Vec<String> {
             );
         }
     }
-    no_server
+    skipped
 }
 
 /// A herdr agent outside flow's herdr session on a live host, as of the cached inventory.
@@ -394,6 +442,10 @@ struct Watcher<'a> {
     /// Whether the heartbeat fires: the last cycle found something to watch besides hand
     /// sessions.
     beating: bool,
+    /// When `beating` last turned true; the heartbeat is timed from it.
+    beating_since: Option<Instant>,
+    /// When the hosts' agents were last listed, or the run started.
+    listed_at: Instant,
     /// Whether `unreachable` entries no wait targets were dropped yet this run.
     pruned: bool,
     waits: BTreeMap<String, PaneWait>,
@@ -427,6 +479,8 @@ impl<'a> Watcher<'a> {
             state_saved: replay_unseen,
             watching: true,
             beating: true,
+            beating_since: None,
+            listed_at: Instant::now(),
             pruned: false,
             waits: BTreeMap::new(),
             quiet_checked: HashMap::new(),
@@ -458,6 +512,11 @@ impl<'a> Watcher<'a> {
         self.beating =
             unread || !follow.is_empty() || tasks.iter().any(|(_, status)| status.state.is_open());
         self.watching = self.beating || !self.hands.is_empty();
+        if !self.beating {
+            self.beating_since = None;
+        } else if self.beating_since.is_none() {
+            self.beating_since = Some(Instant::now());
+        }
         if !self.beating && self.watching {
             let n = self.hands.len();
             let plural = if n == 1 { "" } else { "s" };
@@ -473,7 +532,10 @@ impl<'a> Watcher<'a> {
         }
         observed.extend(self.poll_waits());
         observed.extend(self.quiet_tasks(&tasks));
-        if self.beating && self.started.elapsed() >= self.settings.heartbeat {
+        if self
+            .beating_since
+            .is_some_and(|since| since.elapsed() >= self.settings.heartbeat)
+        {
             observed.push((Observation::Heartbeat, Progress::Nothing));
         }
         let thresholds = Thresholds {
@@ -514,6 +576,28 @@ impl<'a> Watcher<'a> {
         }
         self.save(tasks_listed)?;
         Ok(None)
+    }
+
+    /// Whether a run watching only hand sessions is due to list the hosts again: a heartbeat
+    /// interval has passed since the last listing.
+    fn relist_due(&self) -> bool {
+        self.watching && !self.beating && self.listed_at.elapsed() >= self.settings.heartbeat
+    }
+
+    /// Lists every live host's agents into the cached inventory and takes the hand sessions
+    /// from it, leaving out the hosts `list_agents` says not to watch.
+    fn refresh_hands(&mut self, lock: &Guard) {
+        let skipped = list_agents(self.state, &self.runner, lock, self.settings.list_timeout);
+        self.listed_at = Instant::now();
+        match hand_sessions(self.state) {
+            Ok(hands) => {
+                self.hands = hands
+                    .into_iter()
+                    .filter(|hand| !skipped.contains(&hand.host))
+                    .collect();
+            }
+            Err(err) => self.log(&format!("{err:#}")),
+        }
     }
 
     /// Notes how long the task's event log was when a wake reported its worker, so new events
@@ -685,8 +769,9 @@ impl<'a> Watcher<'a> {
                 continue;
             };
             let herdr = Herdr::with_session(self.runner.clone(), &spec.session);
-            self.waits
-                .insert(key, PaneWait::new(spec, host.clone(), herdr));
+            let reported = self.memory.reported.status(&key);
+            let wait = PaneWait::new(spec, host.clone(), herdr, reported);
+            self.waits.insert(key, wait);
         }
     }
 
@@ -716,6 +801,9 @@ impl<'a> Watcher<'a> {
                 }
                 Polled::Gone => {
                     reported.reachable(&wait.host.name);
+                    if matches!(wait.spec.target, WaitTarget::Adopted { .. }) {
+                        reported.agent_seen(&wait.spec.key(), herdr::AgentStatus::Unknown);
+                    }
                     wait.spec.gone()
                 }
                 Polled::Unreachable if wait.spec.unfollowed_hand() => {
@@ -1062,7 +1150,50 @@ default_branch = "main"
             quiet_secs: DEFAULT_QUIET_SECS,
             list_agents: false,
             hand_max: Duration::from_secs(86_400),
+            list_timeout: Duration::from_secs(60),
         }
+    }
+
+    /// A runner that answers like `inner` but takes `delay` to answer any `run` on `slow_host`.
+    struct SlowRunner {
+        inner: Arc<FakeRunner>,
+        slow_host: &'static str,
+        delay: Duration,
+    }
+
+    impl Runner for SlowRunner {
+        fn run(
+            &self,
+            host: &Host,
+            argv: &[String],
+            stdin: Option<&[u8]>,
+        ) -> anyhow::Result<crate::runner::Output> {
+            if host.name == self.slow_host {
+                thread::sleep(self.delay);
+            }
+            self.inner.run(host, argv, stdin)
+        }
+
+        fn spawn(&self, host: &Host, argv: &[String]) -> anyhow::Result<std::process::Child> {
+            self.inner.spawn(host, argv)
+        }
+    }
+
+    fn hand_listing(default_agents: &str) -> Vec<Scripted> {
+        vec![
+            Scripted {
+                repeat: true,
+                ..on("host-a", &["--session", "flow", "agent", "list"], NO_AGENTS)
+            },
+            Scripted {
+                repeat: true,
+                ..on(
+                    "host-a",
+                    &["--session", "default", "agent", "list"],
+                    default_agents,
+                )
+            },
+        ]
     }
 
     fn no_server(host: &str, session: &str) -> Scripted {
@@ -1196,7 +1327,7 @@ default_branch = "main"
             wait_untils(&runner),
             [
                 vec!["idle", "blocked", "done"],
-                vec!["idle", "blocked", "done"],
+                vec!["working", "blocked", "done"],
                 vec!["working", "blocked", "done"],
             ]
         );
@@ -1225,7 +1356,7 @@ default_branch = "main"
             wait_untils(&runner),
             [
                 vec!["blocked"],
-                vec!["blocked"],
+                vec!["idle", "working", "done"],
                 vec!["idle", "working", "done"],
                 vec!["idle", "blocked", "done"],
             ]
@@ -1285,10 +1416,12 @@ default_branch = "main"
     fn heartbeat_is_off_while_only_hand_sessions_are_watched() {
         let fx = Fixture::new();
         fx.hand();
-        let runner = fake(vec![Scripted {
+        let mut script = hand_listing(DEFAULT_AGENTS);
+        script.push(Scripted {
             repeat: true,
             ..answer(0, WORKING)
-        }]);
+        });
+        let runner = fake(script);
         let mut watcher =
             Watcher::new(&fx.state, runner.clone(), &settings(Duration::ZERO)).unwrap();
         assert_eq!(watcher.cycle().unwrap(), None);
@@ -1443,13 +1576,184 @@ default_branch = "main"
             .filter(|call| call.argv.windows(2).any(|w| w == ["agent", "list"]))
             .count();
         assert_eq!(listings, 2);
-        let watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+        let host_b_calls = runner
+            .calls()
+            .iter()
+            .filter(|call| call.host == "host-b")
+            .count();
+        assert_eq!(host_b_calls, 1, "{:?}", runner.calls());
+    }
+
+    #[test]
+    fn hand_session_that_left_blocked_between_runs_wakes_when_blocked_again() {
+        for between in [IDLE, WORKING] {
+            let fx = Fixture::new();
+            fx.hand();
+            let runner = fake(vec![
+                answer(0, BLOCKED),
+                answer(0, between),
+                answer(0, BLOCKED),
+            ]);
+            let mut first = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+            assert_eq!(two_cycles(&mut first).as_deref(), Some(TIDY_DOCS_BLOCKED));
+            drop(first);
+
+            let mut second = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+            assert_eq!(cycles(&mut second, 4).as_deref(), Some(TIDY_DOCS_BLOCKED));
+            assert_eq!(wait_untils(&runner)[1], ["idle", "working", "done"]);
+        }
+    }
+
+    #[test]
+    fn hand_session_gone_while_blocked_lets_the_panes_next_occupant_wake() {
+        let fx = Fixture::new();
+        fx.hand();
+        let runner = fake(vec![
+            answer(0, BLOCKED),
+            answer(1, NOT_FOUND),
+            answer(0, BLOCKED),
+        ]);
+        let mut first = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+        assert_eq!(two_cycles(&mut first).as_deref(), Some(TIDY_DOCS_BLOCKED));
+        drop(first);
+        let mut second = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+        assert_eq!(two_cycles(&mut second), None);
+        assert!(second.memory.reported.agents_reported.is_empty());
+        drop(second);
+
+        let mut third = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+        assert_eq!(two_cycles(&mut third).as_deref(), Some(TIDY_DOCS_BLOCKED));
+        assert_eq!(
+            wait_untils(&runner),
+            [
+                vec!["blocked"],
+                vec!["idle", "working", "done"],
+                vec!["blocked"],
+            ]
+        );
+    }
+
+    #[test]
+    fn following_an_idle_hand_session_mid_run_restarts_its_wait_and_wakes_once() {
+        let fx = Fixture::new();
+        fx.hand();
+        let runner = fake(vec![answer(0, WORKING), answer(0, IDLE), answer(0, IDLE)]);
+        let mut watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+        assert_eq!(watcher.cycle().unwrap(), None);
+        fx.follow();
+        assert_eq!(
+            cycles(&mut watcher, 2).as_deref(),
+            Some(r#"adopted-idle: host-a w1:p1 "Tidy docs""#)
+        );
+        assert_eq!(cycles(&mut watcher, 2), None);
+        assert_eq!(
+            wait_untils(&runner),
+            [
+                vec!["blocked"],
+                vec!["idle", "blocked", "done"],
+                vec!["working", "blocked", "done"],
+            ]
+        );
+    }
+
+    #[test]
+    fn heartbeat_is_timed_from_when_the_run_started_beating() {
+        let fx = Fixture::new();
+        fx.hand();
+        let runner = fake(vec![Scripted {
+            repeat: true,
+            ..answer(0, WORKING)
+        }]);
+        let heartbeat = Duration::from_millis(300);
+        let mut watcher = Watcher::new(&fx.state, runner.clone(), &settings(heartbeat)).unwrap();
+        assert_eq!(watcher.cycle().unwrap(), None);
+        thread::sleep(heartbeat + Duration::from_millis(50));
+        assert_eq!(watcher.cycle().unwrap(), None);
+
+        fx.task(true);
+        assert_eq!(watcher.cycle().unwrap(), None);
+        assert!(watcher.beating);
+        thread::sleep(heartbeat + Duration::from_millis(50));
+        assert_eq!(watcher.cycle().unwrap().as_deref(), Some("heartbeat"));
+    }
+
+    #[test]
+    fn hand_only_run_lists_hosts_again_each_heartbeat_interval() {
+        let fx = Fixture::new();
+        fx.hand();
+        let both = r#"{"id":"cli:agent:list","result":{"agents":[{"agent":"claude","agent_status":"idle","cwd":"/work/repo","pane_id":"w1:p1","terminal_title_stripped":"Tidy docs","workspace_id":"w1"},{"agent":"claude","agent_status":"working","cwd":"/work/app","pane_id":"w1:p2","terminal_title_stripped":"Fix links","workspace_id":"w1"}],"type":"agent_list"}}"#;
+        let mut script = hand_listing(both);
+        script.push(Scripted {
+            repeat: true,
+            ..answer(0, WORKING)
+        });
+        let runner = fake(script);
+        let lock = lock::acquire(&fx.state, std::process::id())
+            .unwrap()
+            .unwrap();
+        let mut watcher =
+            Watcher::new(&fx.state, runner.clone(), &settings(Duration::ZERO)).unwrap();
+        assert_eq!(watcher.cycle().unwrap(), None);
+        assert!(watcher.relist_due());
+        watcher.refresh_hands(&lock);
         assert_eq!(
             hand_keys(&watcher),
             [
                 "host-a/default/w1:p1 Tidy docs",
-                "host-b/default/w5:p1 Upgrade toolchain",
+                "host-a/default/w1:p2 Fix links"
             ]
+        );
+        assert_eq!(watcher.cycle().unwrap(), None);
+        assert!(watcher.waits.contains_key("host-a/default/w1:p2"));
+
+        fx.task(true);
+        assert_eq!(watcher.cycle().unwrap().as_deref(), Some("heartbeat"));
+        assert!(!watcher.relist_due());
+    }
+
+    #[test]
+    fn a_hung_host_cannot_hold_up_the_listing_past_its_timeout() {
+        let fx = Fixture::new();
+        inventory::save(
+            &fx.state,
+            &HostInventory::new(&fx.host_b(), Timestamp::now()),
+        )
+        .unwrap();
+        fx.agent("env-0002", "default", "w5:p1", "Upgrade toolchain");
+        let mut script = hand_listing(DEFAULT_AGENTS);
+        script.push(Scripted {
+            host: Some("host-b".to_owned()),
+            repeat: true,
+            ..answer(0, NO_AGENTS)
+        });
+        let runner: Arc<dyn Runner> = Arc::new(SlowRunner {
+            inner: fake(script),
+            slow_host: "host-b",
+            delay: Duration::from_secs(3),
+        });
+        let lock = lock::acquire(&fx.state, std::process::id())
+            .unwrap()
+            .unwrap();
+        let bounded = Settings {
+            list_timeout: Duration::from_millis(200),
+            ..settings(Duration::from_secs(3600))
+        };
+        let mut watcher = Watcher::new(&fx.state, runner, &bounded).unwrap();
+
+        let started = Instant::now();
+        watcher.refresh_hands(&lock);
+
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(hand_keys(&watcher), ["host-a/default/w1:p1 Tidy docs"]);
+        assert!(
+            fx.log()
+                .contains("listing agents on host-b: timed out after 0.2s"),
+            "{}",
+            fx.log()
         );
     }
 

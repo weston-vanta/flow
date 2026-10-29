@@ -219,10 +219,13 @@ designer's call.
 ### Wake-up and supervision
 
 19. **Firstmate's Stop-hook watcher pattern.** The supervisor's project-level Claude Code
-    settings register a Stop hook with `asyncRewake: true` and a multi-hour timeout that
-    runs `flow watch`. `flow watch` blocks on the fleet: herdr `agent wait` per worker
-    (remote through ssh, one long-lived connection per CDE), file events on `state/`, and
-    a heartbeat. It absorbs benign events in-process and exits 2 with a one-line reason
+    settings register a Stop hook with `asyncRewake: true` and a 25-hour timeout that
+    runs `flow watch`. `flow watch` first lists every live CDE's herdr agents, without
+    starting a herdr server and with a time limit per CDE, to find the sessions the user
+    started by hand. It then blocks on the fleet: herdr `agent wait` per worker and per hand
+    session (remote through ssh, one long-lived connection per CDE), file events on
+    `state/`, and a heartbeat while tasks are open or sessions are followed. A run watching
+    only hand sessions lists the CDEs again hourly and ends quietly after a day. It absorbs benign events in-process and exits 2 with a one-line reason
     when something is actionable. The harness delivers that as hook feedback and the
     supervisor takes a turn. A blocking Stop hook, `flow guard`, refuses to let the session
     end while work is under way and no watcher is live. `flow watch` is single-flight

@@ -1,7 +1,8 @@
 //! What `flow watch` makes of what it sees: each observation either wakes the supervisor with a
 //! one-line reason or is absorbed. A hand session, an agent outside flow's herdr session, wakes
-//! it when it turns `blocked`, and on every other change only when followed. `Reported` remembers what earlier wakes already said, so a
-//! condition that persists wakes the supervisor once rather than on every turn end.
+//! it when it turns `blocked`, and on every other change only when followed. `Reported`
+//! remembers what earlier wakes already said, so a condition that persists wakes the supervisor
+//! once rather than on every turn end.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -194,6 +195,20 @@ impl Reported {
             _ => {}
         }
         verdict
+    }
+
+    /// The agent status last reported for the pane `key` names; `None` when none was, or when
+    /// the report was that the pane is gone.
+    pub fn status(&self, key: &str) -> Option<AgentStatus> {
+        let seen = &self.agents_reported.get(key)?.seen;
+        [
+            AgentStatus::Idle,
+            AgentStatus::Working,
+            AgentStatus::Blocked,
+            AgentStatus::Done,
+        ]
+        .into_iter()
+        .find(|status| status.as_str() == seen)
     }
 
     /// Forgets that `host` was reported unreachable, once it answers again.
@@ -608,6 +623,43 @@ mod tests {
             Some("host-a/default/w1:p1")
         );
         assert_eq!(pane_key(&Observation::Heartbeat), None);
+    }
+
+    #[test]
+    fn adopted_change_queued_before_titles_parses_untitled() {
+        let queued = serde_json::json!({
+            "type": "adopted-changed", "host": "host-a", "session": "default",
+            "pane_id": "w1:p1", "status": "blocked",
+        });
+        let mut untitled = adopted("w1:p1", AgentStatus::Blocked);
+        if let Observation::AdoptedChanged { title, .. } = &mut untitled {
+            title.clear();
+        }
+        assert_eq!(
+            serde_json::from_value::<Observation>(queued).unwrap(),
+            untitled
+        );
+    }
+
+    #[test]
+    fn reported_status_reads_back_only_agent_statuses() {
+        let mut reported = Reported::default();
+        reported.review(
+            &adopted("w1:p1", AgentStatus::Blocked),
+            wake("adopted-blocked"),
+        );
+        reported.review(
+            &Observation::AgentGone {
+                task: TASK.to_owned(),
+            },
+            wake("agent-gone"),
+        );
+        assert_eq!(
+            reported.status("host-a/default/w1:p1"),
+            Some(AgentStatus::Blocked)
+        );
+        assert_eq!(reported.status(TASK), None);
+        assert_eq!(reported.status("host-a/default/w9:p9"), None);
     }
 
     #[test]

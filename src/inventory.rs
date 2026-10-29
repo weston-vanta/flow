@@ -388,6 +388,8 @@ pub struct Listed {
     /// herdr runs no server for any of the sessions asked on the host, so `inventory` is the
     /// cached one as is.
     pub no_server: bool,
+    /// ssh could not reach the host, so `inventory` is the cached one as is.
+    pub unreachable: bool,
 }
 
 /// `host`'s cached inventory with the agents and herdr error herdr reports now in `sessions`,
@@ -404,22 +406,22 @@ pub fn list_agents(
     let cached = load(state, &host.env_id)?;
     let found = herdr_agents(runner, host, sessions, flow_server);
     let error = found.error.clone();
-    let no_server = !found.unreachable && !found.answered && error.is_none();
-    if found.unreachable || no_server {
-        let inventory = cached.unwrap_or_else(|| unreachable(host, None, now));
-        return Ok(Listed {
-            inventory,
-            error,
-            no_server,
-        });
+    let host_unreachable = found.unreachable;
+    let no_server = !host_unreachable && !found.answered && error.is_none();
+    let listed = |inventory| Listed {
+        inventory,
+        error: error.clone(),
+        no_server,
+        unreachable: host_unreachable,
+    };
+    if host_unreachable || no_server {
+        return Ok(listed(
+            cached.unwrap_or_else(|| unreachable(host, None, now)),
+        ));
     }
     let inventory = with_agents(host, cached, found, now);
     save(state, &inventory)?;
-    Ok(Listed {
-        inventory,
-        error,
-        no_server,
-    })
+    Ok(listed(inventory))
 }
 
 /// `list_agents` for each of `hosts`, asked in parallel, in the order given.

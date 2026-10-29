@@ -3,7 +3,9 @@
 //! for, which for a hand session the user does not follow is `blocked` alone; once one of those
 //! was read, the next wait ends on any other status instead, so a status already observed does
 //! not answer again at once. After `working` the next wait also ends on any other status, so a
-//! worker known to be working is known to stop, idle included.
+//! worker known to be working is known to stop, idle included. A wait started on a pane whose
+//! status an earlier wake reported starts as if it had just read that status: it ends on any
+//! other one first, so a change made while no wait ran still reaches the watcher.
 
 use std::io::Read;
 use std::process::Child;
@@ -133,13 +135,19 @@ pub(super) enum Polled {
 }
 
 impl PaneWait {
-    pub(super) fn new(spec: WaitSpec, host: Host, herdr: Herdr) -> PaneWait {
+    /// A wait on `spec`'s pane, `reported` being the status an earlier wake reported for it.
+    pub(super) fn new(
+        spec: WaitSpec,
+        host: Host,
+        herdr: Herdr,
+        reported: Option<AgentStatus>,
+    ) -> PaneWait {
         PaneWait {
             spec,
             host,
             herdr,
             child: None,
-            settled: None,
+            settled: reported,
             known: None,
             retry_at: None,
             gone: false,
@@ -287,7 +295,7 @@ mod tests {
             ssh_alias: "host-a.example".to_owned(),
             local_marker_env: None,
         };
-        let wait = PaneWait::new(spec, host, Herdr::new(fake.clone()));
+        let wait = PaneWait::new(spec, host, Herdr::new(fake.clone()), None);
         (wait, fake)
     }
 
@@ -342,6 +350,28 @@ mod tests {
         );
         wait.settled = Some(AgentStatus::Idle);
         assert_eq!(wait.until(), [AgentStatus::Blocked]);
+    }
+
+    #[test]
+    fn a_wait_seeded_with_a_reported_status_waits_for_a_change_from_it() {
+        let (wait, _) = wait_on(
+            WaitTarget::Adopted {
+                followed: false,
+                title: String::new(),
+            },
+            Vec::new(),
+        );
+        let seeded = PaneWait::new(
+            wait.spec.clone(),
+            wait.host.clone(),
+            Herdr::new(Arc::new(FakeRunner::new(Vec::new()))),
+            Some(AgentStatus::Blocked),
+        );
+        assert_eq!(
+            seeded.until(),
+            [AgentStatus::Idle, AgentStatus::Working, AgentStatus::Done]
+        );
+        assert!(!seeded.working());
     }
 
     #[test]

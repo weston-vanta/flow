@@ -658,6 +658,33 @@ fn follow_uses_the_cache_when_the_host_cannot_be_listed() {
 }
 
 #[test]
+fn follow_says_which_sessions_failed_when_the_rest_answered() {
+    let fx = Fixture::new();
+    fx.write_cache("env-0002", &host_b_cache());
+    let mut script = host_b_agents(&[("w5:p2", "Fix links")]);
+    script[1] = json!({"host": "host-b", "status": 1, "stdout": "", "stderr": "internal error\n"});
+
+    let out = fx
+        .flow(&script)
+        .args(["follow", "host-b", "Fix links"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.starts_with("could not list every herdr session on host-b: "),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("cached"), "{stderr}");
+    assert_eq!(
+        fx.follow_list(),
+        json!({"follow": [followed("w5:p2", "Fix links")]})
+    );
+}
+
+#[test]
 fn unfollow_removes_a_followed_session_by_title() {
     let fx = Fixture::new();
     fx.write_cache("env-0002", &host_b_cache());

@@ -10,7 +10,7 @@ pub enum PathError {
     Missing(PathBuf),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StateDir {
     root: PathBuf,
 }

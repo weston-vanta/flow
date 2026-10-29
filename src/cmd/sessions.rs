@@ -139,7 +139,7 @@ fn hand_sessions(state: &StateDir, host: &str) -> anyhow::Result<Vec<Agent>> {
         &host,
         Timestamp::now(),
     );
-    let failed = |problem: &str| {
+    let cached = |problem: &str| {
         eprintln!(
             "could not list agents on {}, using the cached ones: {problem}",
             host.name
@@ -147,13 +147,18 @@ fn hand_sessions(state: &StateDir, host: &str) -> anyhow::Result<Vec<Agent>> {
     };
     let agents = match listed {
         Ok(listed) => {
-            if let Some(error) = &listed.error {
-                failed(error);
+            match &listed.error {
+                Some(error) if listed.unreachable => cached(error),
+                Some(error) => eprintln!(
+                    "could not list every herdr session on {}: {error}",
+                    host.name
+                ),
+                None => {}
             }
             listed.inventory.agents
         }
         Err(err) => {
-            failed(&format!("{err:#}"));
+            cached(&format!("{err:#}"));
             inventory::load(state, &host.env_id)?
                 .map(|cached| cached.agents)
                 .unwrap_or_default()

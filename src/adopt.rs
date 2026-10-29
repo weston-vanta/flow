@@ -392,6 +392,28 @@ mod tests {
     const FIXTURE_SESSION_ID: &str = "00000000-0000-4000-8000-000000000001";
 
     #[test]
+    fn follow_list_written_before_titles_parses_untitled() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("state");
+        fs::create_dir_all(root.join("supervisor")).unwrap();
+        fs::write(
+            root.join(FOLLOW_FILE),
+            r#"{"follow": [{"host": "host-b", "pane_id": "w5:p1", "session": "default"}]}"#,
+        )
+        .unwrap();
+        let state = StateDir::resolve(dir.path()).unwrap();
+        assert_eq!(
+            FollowList::load(&state).unwrap().follow,
+            [Followed {
+                host: "host-b".to_owned(),
+                pane_id: "w5:p1".to_owned(),
+                session: "default".to_owned(),
+                title: None,
+            }]
+        );
+    }
+
+    #[test]
     fn registry_parses_fixture() {
         let home = tempfile::tempdir().unwrap();
         let sessions = home.path().join("sessions");
