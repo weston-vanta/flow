@@ -116,14 +116,13 @@ fn live_host<'a>(
 }
 
 /// Closes the workspace `lock` names on `host` when it is still there under the supervisor's
-/// label; herdr reuses workspace ids too, so an id alone could name a worker's. Failures are
-/// reported and do not stop the start.
+/// label. Failures are reported and do not stop the start.
 fn close_left_workspace(herdr: &Herdr, host: &Host, lock: &Lock) {
     let workspace_id = &lock.herdr.workspace_id;
     let closed = herdr.workspaces(host).and_then(|workspaces| {
-        let left = workspaces.iter().any(|workspace| {
-            workspace.workspace_id == *workspace_id && workspace.label == SUPERVISOR_NAME
-        });
+        let left = workspaces
+            .iter()
+            .any(|workspace| lock.names_workspace(workspace));
         if left {
             herdr.close_workspace(host, workspace_id)
         } else {

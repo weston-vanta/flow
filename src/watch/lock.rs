@@ -2,7 +2,9 @@
 //! with mkdir, holding `owner.json`. The holder touches the directory every poll cycle, so a
 //! lock whose holder vanished on another host goes stale by age. `flow up` clears it outright
 //! when it starts a supervisor because none was live, since only a live supervisor's watch
-//! holds it legitimately.
+//! holds it legitimately, and `flow down` clears it with the supervisor it stops. A holder
+//! whose lock was removed or taken over learns so at its next touch, and leaves the lock alone
+//! when it ends.
 
 use std::fs::{self, File};
 use std::io;
@@ -30,11 +32,29 @@ pub struct Owner {
     pub started: Timestamp,
 }
 
-/// The held lock; dropping it removes the lock directory.
+impl Owner {
+    /// Whether the holder runs on this machine, where its pid means something.
+    pub fn is_on_this_host(&self) -> bool {
+        self.host == this_host()
+    }
+
+    /// Whether the holder runs on this machine and its process is still running.
+    pub fn is_running_here(&self) -> bool {
+        self.is_on_this_host() && is_running(self.pid)
+    }
+}
+
+/// The held lock; dropping it removes the lock directory while it is still this holder's.
 #[derive(Debug)]
 pub struct Guard {
     dir: PathBuf,
+    owner: Owner,
 }
+
+/// The lock a `Guard` held was removed or taken over by another holder.
+#[derive(Debug, thiserror::Error)]
+#[error("{} was removed or taken over", .0.display())]
+pub struct Lost(PathBuf);
 
 /// Takes the lock for process `pid` on this host, or returns `None` when a live holder has it.
 /// A stale lock, whose holder on this host is dead or which nobody touched for
@@ -47,16 +67,15 @@ pub fn acquire(state: &StateDir, pid: u32) -> anyhow::Result<Option<Guard>> {
     for _ in 0..2 {
         match fs::create_dir(&dir) {
             Ok(()) => {
-                let guard = Guard { dir };
                 let owner = Owner {
                     pid,
                     host,
                     started: Timestamp::now(),
                 };
-                let path = guard.dir.join(OWNER_FILE);
+                let path = dir.join(OWNER_FILE);
                 write_atomic(&path, &serde_json::to_vec(&owner)?)
                     .with_context(|| format!("writing {}", path.display()))?;
-                return Ok(Some(guard));
+                return Ok(Some(Guard { dir, owner }));
             }
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
             Err(err) => return Err(err).with_context(|| format!("creating {}", dir.display())),
@@ -80,9 +99,24 @@ pub fn held_live(state: &StateDir) -> anyhow::Result<bool> {
     Ok(!is_stale(&dir, &this_host())?)
 }
 
-/// Removes the lock whoever holds it and returns whether there was one. For `flow up` only,
-/// when no supervisor is live: waiting for a vanished holder's lock to go stale would leave the
-/// new supervisor unwatched for up to `STALE_AFTER`.
+/// Who holds the lock, when it exists and names its holder.
+pub fn owner(state: &StateDir) -> anyhow::Result<Option<Owner>> {
+    let path = state.root().join(LOCK_DIR).join(OWNER_FILE);
+    read_owner(&path).with_context(|| format!("reading {}", path.display()))
+}
+
+fn read_owner(path: &Path) -> anyhow::Result<Option<Owner>> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(serde_json::from_slice(&bytes).ok()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err.into()),
+    }
+}
+
+/// Removes the lock whoever holds it and returns whether there was one. For `flow up`, when no
+/// supervisor is live: waiting for a vanished holder's lock to go stale would leave the new
+/// supervisor unwatched for up to `STALE_AFTER`; and for `flow down`, which stops the supervisor
+/// the holder watches for.
 pub fn clear(state: &StateDir) -> anyhow::Result<bool> {
     let dir = state.root().join(LOCK_DIR);
     match fs::remove_dir_all(&dir) {
@@ -93,17 +127,29 @@ pub fn clear(state: &StateDir) -> anyhow::Result<bool> {
 }
 
 impl Guard {
-    /// Marks the lock as still held, so it does not go stale by age.
+    /// Marks the lock as still held, so it does not go stale by age. Fails with `Lost` when the
+    /// lock is gone or another holder took it.
     pub fn touch(&self) -> anyhow::Result<()> {
+        if !self.still_held()? {
+            return Err(Lost(self.dir.clone()).into());
+        }
         File::open(&self.dir)
             .and_then(|dir| dir.set_modified(SystemTime::now()))
             .with_context(|| format!("touching {}", self.dir.display()))
+    }
+
+    fn still_held(&self) -> anyhow::Result<bool> {
+        let path = self.dir.join(OWNER_FILE);
+        let owner = read_owner(&path).with_context(|| format!("reading {}", path.display()))?;
+        Ok(owner.as_ref() == Some(&self.owner))
     }
 }
 
 impl Drop for Guard {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.dir);
+        if self.still_held().unwrap_or(false) {
+            let _ = fs::remove_dir_all(&self.dir);
+        }
     }
 }
 
@@ -236,6 +282,31 @@ mod tests {
         assert!(clear(&state).unwrap());
         assert!(!dir.exists());
         assert!(acquire(&state, std::process::id()).unwrap().is_some());
+    }
+
+    #[test]
+    fn touch_reports_a_lock_removed_or_taken_over_and_drop_leaves_the_new_one() {
+        let (_dir, state) = state();
+        let guard = acquire(&state, std::process::id()).unwrap().unwrap();
+        assert!(clear(&state).unwrap());
+        let err = guard.touch().unwrap_err();
+        assert!(err.is::<Lost>(), "{err:#}");
+
+        let taken = acquire(&state, dead_pid()).unwrap().unwrap();
+        assert!(guard.touch().unwrap_err().is::<Lost>());
+        drop(guard);
+        assert!(state.root().join(LOCK_DIR).join(OWNER_FILE).exists());
+        taken.touch().unwrap();
+    }
+
+    #[test]
+    fn owner_names_who_holds_the_lock() {
+        let (_dir, state) = state();
+        assert_eq!(owner(&state).unwrap(), None);
+        let _guard = acquire(&state, 4242).unwrap().unwrap();
+        let held = owner(&state).unwrap().unwrap();
+        assert_eq!(held.pid, 4242);
+        assert!(held.is_on_this_host());
     }
 
     #[test]

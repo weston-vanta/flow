@@ -8,7 +8,7 @@ use anyhow::Context;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use crate::herdr;
+use crate::herdr::{self, Workspace};
 use crate::paths::StateDir;
 use crate::runner;
 use crate::state::config::Host;
@@ -38,6 +38,14 @@ pub struct Lock {
     pub herdr: HerdrTarget,
     pub claude_session: Option<String>,
     pub since: Timestamp,
+}
+
+impl Lock {
+    /// Whether `workspace` is the supervisor's: the lock's workspace under the supervisor's
+    /// label, since herdr reuses workspace ids and an id alone could name a worker's.
+    pub fn names_workspace(&self, workspace: &Workspace) -> bool {
+        workspace.workspace_id == self.herdr.workspace_id && workspace.label == SUPERVISOR_NAME
+    }
 }
 
 pub fn lock_path(state: &StateDir) -> PathBuf {
@@ -70,6 +78,16 @@ pub fn take(state: &StateDir, host_env_id: &str, herdr: HerdrTarget) -> anyhow::
         Ok(lock)
     })
     .with_context(|| format!("writing {}", path.display()))
+}
+
+/// Removes the lock, returning whether there was one.
+pub fn remove(state: &StateDir) -> anyhow::Result<bool> {
+    let path = lock_path(state);
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(true),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(err).with_context(|| format!("removing {}", path.display())),
+    }
 }
 
 /// Sets the supervisor's Claude Code session to resume, or clears it with `None`. Returns

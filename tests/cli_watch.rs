@@ -508,3 +508,51 @@ fn changed_watch_failure_wakes_again() {
     assert_eq!(queue.len(), 2, "{queue:?}");
     assert_eq!(queue[1]["reason"], second);
 }
+
+/// Waits until a watch holds the lock, failing the test after `WATCH_BUDGET`.
+fn await_lock(fx: &Fixture) {
+    let deadline = Instant::now() + WATCH_BUDGET;
+    while !fx.supervisor("watch.lock").join("owner.json").exists() {
+        assert!(Instant::now() < deadline, "the watch never took the lock");
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn a_watch_whose_lock_is_removed_exits_quietly() {
+    let fx = Fixture::new();
+    fx.task(TASK, "host-a", None);
+    let watch = fx.spawn_watch(&[]);
+    await_lock(&fx);
+
+    fs::remove_dir_all(fx.supervisor("watch.lock")).unwrap();
+
+    let output = finish(watch);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(stdout(&output), "");
+    assert!(fx.queue_lines().is_empty());
+    let log = fs::read_to_string(fx.supervisor("watch.log")).unwrap();
+    assert!(
+        log.contains("watch.lock was removed or taken over; exiting"),
+        "{log}"
+    );
+}
+
+#[test]
+fn a_retrying_watch_whose_lock_is_removed_exits_quietly() {
+    let (fx, _) = failed_watch();
+    let watch = fx.spawn_watch(&[]);
+    retries();
+
+    fs::remove_dir_all(fx.supervisor("watch.lock")).unwrap();
+
+    let output = finish(watch);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(fx.queue_lines().len(), 1, "{:?}", fx.queue_lines());
+    assert!(!fx.supervisor("watch.lock").exists());
+    let log = fs::read_to_string(fx.supervisor("watch.log")).unwrap();
+    assert!(
+        log.contains("watch.lock was removed or taken over; exiting"),
+        "{log}"
+    );
+}

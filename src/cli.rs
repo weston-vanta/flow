@@ -129,6 +129,13 @@ pub enum Command {
     },
     /// Attach to the live supervisor session, or start one on this host and attach
     Up,
+    /// Stop the supervisor, leaving workers and tasks running; `flow up` starts a new one
+    Down {
+        /// Stop the supervisor's herdr session's server, when it is not flow's own and has no
+        /// agents left, without asking
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 impl Command {
@@ -454,6 +461,7 @@ pub fn run(cli: Cli, state: &StateDir, repo_root: &Path) -> anyhow::Result<ExitC
         Command::Guard => return cmd::guard::run(state),
         Command::Steer { id, text } => cmd::steer::run(state, &id, &text),
         Command::Up => cmd::up::run(state),
+        Command::Down { yes } => return cmd::down::run(state, yes),
     };
     done.map(|()| ExitCode::SUCCESS)
 }

@@ -86,7 +86,8 @@ Moving from the `flow` session: earlier versions ran the supervisor and workers 
 session named `flow`. A supervisor running there is still found and attached to, and open
 tasks stay in the session they started in, where flow still watches and steers them; add
 `"flow"` to `herdr_sessions` to keep them in `flow sessions` until they close. To move the
-supervisor, exit it, then run `flow up`, which starts a new one in the configured session.
+supervisor, exit it, then run `flow down` and `flow up`, which starts a new one in the
+configured session.
 
 ## CLI
 
@@ -98,6 +99,7 @@ Operator:
 
 - `flow init [--force]`: write `state/config.toml` from what this machine can tell, then refresh the inventory; `--force` replaces an existing file.
 - `flow up`: attach to the live supervisor session, or start one on this host and attach. When stdout is not a terminal, it prints the command to attach with instead of attaching.
+- `flow down [--yes]`: stop the supervisor, leaving every worker and task running. It closes the supervisor's herdr workspace where its lock says it runs, or notes that its pane is already gone, removes the lock, and clears the watch lock, stopping a watcher still running on this machine; a watcher on another host ends at its next cycle. When the supervisor ran in a herdr session other than the configured one and that session has no agents left, it offers to stop that session's server; `--yes` stops it without asking, and with no terminal it is left running with the command to stop it. The configured session's server is never stopped. It ends by saying how many open tasks keep running. The next `flow up` starts a new supervisor, without the old one's conversation. When the supervisor's host cannot be reached it fails and changes nothing.
 - `flow status [--all] [--json]`: open tasks, their holds, pending dispatch requests from workers (`req-id  from-task  host  title`), and observed sessions; `--all` includes done and orphaned tasks.
 - `flow inventory [--refresh] [--json]`: worktrees, agents, and PRs per host; `--refresh` first discovers hosts from Ona (or the static list), probes each running one, and lists open PRs. `--json` gives each host its ssh alias, whether it is the host flow runs on (`local`), its Ona phase, when it was last seen, and whether it is reachable or gone.
 - `flow inventory --sync [--yes] [--refresh] [--json]`: bring herdr's saved SSH machines on this machine in step with the hosts, in place of showing them. Every other host that is not gone gets a machine labelled with its name, for its ssh alias and the herdr session flow runs in; a gone host's machine is removed when it still has that alias, and a host's machine for another alias or session is replaced. Machines whose label is not a host's name are never touched. A host that did not answer the last refresh is not added, since herdr must reach it to add it, and its machine stays as it is. It prints the plan and asks before applying it; `--yes` applies it without asking, and with no terminal and no `--yes` it exits 1 having changed nothing. `--refresh` refreshes first, and `--json` prints the plan as JSON, applied only with `--yes`. A failing step stops the rest and says how many were applied.

@@ -391,6 +391,21 @@ impl Herdr {
         Ok(list.workspaces)
     }
 
+    /// The workspaces in this session on `host`, or `None` when no server runs for the session.
+    pub fn workspaces_if_running(&self, host: &Host) -> anyhow::Result<Option<Vec<Workspace>>> {
+        let argv = self.argv(&["workspace", "list"]);
+        let Some(output) = self.call_unless(host, &argv, SERVER_NOT_RUNNING_CODE)? else {
+            return Ok(None);
+        };
+        let list: WorkspaceList = parse_result(host, &argv, &output)?;
+        Ok(Some(list.workspaces))
+    }
+
+    /// Stops this session's herdr server on `host`, returning what herdr printed.
+    pub fn stop_server(&self, host: &Host) -> anyhow::Result<Output> {
+        self.call(host, &stop_server_argv(&self.session))
+    }
+
     /// Closes `workspace_id`; `false` when herdr no longer knows it, so there was nothing to
     /// close.
     pub fn close_workspace(&self, host: &Host, workspace_id: &str) -> anyhow::Result<bool> {
@@ -707,6 +722,11 @@ pub fn add_machine_argv(target: &str, label: &str, session: &str) -> Vec<String>
 /// The argv that removes the saved machine with profile id `id`.
 pub fn remove_machine_argv(id: &str) -> Vec<String> {
     words(&["herdr", "machine", "remove", id])
+}
+
+/// The argv that stops the herdr server of session `session`.
+pub fn stop_server_argv(session: &str) -> Vec<String> {
+    words(&["herdr", "--session", session, "server", "stop"])
 }
 
 /// The argv that attaches a terminal to the agent in `pane_id` of herdr session `session`.

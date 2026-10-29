@@ -121,12 +121,12 @@ designer's call.
    worker's terminal by the user is authoritative and the supervisor reconciles it.
 2. **The supervisor runs detached and persistent.** It lives in a herdr pane on some CDE,
    so it keeps running and keeps answering workers while the user is disconnected. It and
-   its workers run in one herdr session per CDE, herdr's `default` unless `config.toml` sets
-   `herdr_session`, beside the sessions the user starts by hand, so one herdr window shows
-   them all. The user attaches to it (`flow up`, from any CDE over ssh) rather
-   than owning the process in a terminal. The supervisor's lock names the host and herdr
-   target; `flow up` on another CDE finds the existing supervisor and attaches instead of
-   starting a second one, unless the user explicitly takes over.
+   its workers run in one herdr session per CDE, herdr's `default` unless `config.toml`
+   sets `herdr_session`, beside the sessions the user starts by hand, so one herdr window
+   shows them all. The user attaches to it (`flow up`, from any CDE over ssh) rather than
+   owning the process in a terminal. The supervisor's lock names the host and herdr target;
+   `flow up` on another CDE finds the existing supervisor and attaches instead of starting
+   a second one, unless the user explicitly takes over.
 3. **Session is the unit; tasks are its durable shadow.** A task record on EFS mirrors one
    worker session: brief, target CDE, worktree, harness, status events, decisions, report,
    and a `parent` pointer. Tasks are hierarchical through `parent`; a worker's in-session
@@ -321,10 +321,13 @@ Task ids are short, time-ordered, and never reused.
 **Start or attach.** `flow up` on any CDE reads `state/supervisor/`. If a live supervisor
 exists, it attaches through ssh and herdr. If not, it removes any watch lock the previous
 supervisor's watcher left, opens a herdr workspace on this CDE, in the configured herdr
-session, running the harness from
-`/workspaces/flow` with `--resume` of the recorded supervisor session when one exists and a
-first prompt to run the session start procedure (whose turn end arms `flow watch`), takes
-the lock, and attaches.
+session, running the harness from `/workspaces/flow` with `--resume` of the recorded
+supervisor session when one exists and a first prompt to run the session start procedure
+(whose turn end arms `flow watch`), takes the lock, and attaches.
+
+**Stop.** `flow down` closes the supervisor's workspace, removes its lock and the watch
+lock, and leaves every worker running; a watcher on another CDE ends at its next cycle once
+its lock is gone. The next `flow up` starts a new supervisor.
 
 **Dispatch.** User asks for work. Supervisor picks a CDE from inventory (or asks), writes
 the task directory and brief with completion criteria, ensures a worktree, ensures a herdr
@@ -364,6 +367,7 @@ Operator:
 
 - `flow init [--force]`: write `state/config.toml` from what this machine can tell, then refresh the inventory; `--force` replaces an existing file.
 - `flow up`: attach to the live supervisor session, or start one on this host and attach. When stdout is not a terminal, it prints the command to attach with instead of attaching.
+- `flow down [--yes]`: stop the supervisor, leaving every worker and task running. It closes the supervisor's herdr workspace where its lock says it runs, or notes that its pane is already gone, removes the lock, and clears the watch lock, stopping a watcher still running on this machine; a watcher on another host ends at its next cycle. When the supervisor ran in a herdr session other than the configured one and that session has no agents left, it offers to stop that session's server; `--yes` stops it without asking, and with no terminal it is left running with the command to stop it. The configured session's server is never stopped. It ends by saying how many open tasks keep running. The next `flow up` starts a new supervisor, without the old one's conversation. When the supervisor's host cannot be reached it fails and changes nothing.
 - `flow status [--all] [--json]`: open tasks, their holds, pending dispatch requests from workers (`req-id  from-task  host  title`), and observed sessions; `--all` includes done and orphaned tasks.
 - `flow inventory [--refresh] [--json]`: worktrees, agents, and PRs per host; `--refresh` first discovers hosts from Ona (or the static list), probes each running one, and lists open PRs. `--json` gives each host its ssh alias, whether it is the host flow runs on (`local`), its Ona phase, when it was last seen, and whether it is reachable or gone.
 - `flow inventory --sync [--yes] [--refresh] [--json]`: bring herdr's saved SSH machines on this machine in step with the hosts, in place of showing them. Every other host that is not gone gets a machine labelled with its name, for its ssh alias and the herdr session flow runs in; a gone host's machine is removed when it still has that alias, and a host's machine for another alias or session is replaced. Machines whose label is not a host's name are never touched. A host that did not answer the last refresh is not added, since herdr must reach it to add it, and its machine stays as it is. It prints the plan and asks before applying it; `--yes` applies it without asking, and with no terminal and no `--yes` it exits 1 having changed nothing. `--refresh` refreshes first, and `--json` prints the plan as JSON, applied only with `--yes`. A failing step stops the rest and says how many were applied.

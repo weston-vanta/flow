@@ -49,7 +49,9 @@
 //! hook's timeout is set longer than that.
 //!
 //! An error after the lock is taken wakes the supervisor as `watch-failed` once per distinct
-//! error; `run_retrying` keeps retrying a repeat of it in the background, holding the lock.
+//! error; `run_retrying` keeps retrying a repeat of it in the background, holding the lock. A run
+//! whose lock is removed or taken over, as `flow down` does, ends quietly at its next touch,
+//! retrying or not, so a watcher on another host ends on its own.
 
 pub mod classify;
 mod files;
@@ -126,7 +128,13 @@ pub fn run(
     }
     let mut cycles = 0;
     loop {
-        lock.touch()?;
+        if let Err(err) = lock.touch() {
+            if is_lost(&err) {
+                watcher.log(&format!("{err:#}; exiting"));
+                return Ok(None);
+            }
+            return Err(err);
+        }
         if let Some(reason) = watcher.cycle()? {
             return Ok(Some(reason));
         }
@@ -210,6 +218,10 @@ pub fn run_retrying(
             Ok(watched) => return watched,
             Err(err) => err,
         };
+        if is_lost(&err) {
+            append_log(state, &format!("{err:#}; exiting"));
+            return None;
+        }
         let error = one_line(&err);
         // An unreadable queue counts as no earlier wake: waking too often beats never waking.
         let latest = queue::latest(state).ok().flatten();
@@ -223,7 +235,10 @@ pub fn run_retrying(
                 delay.as_secs_f64()
             ),
         );
-        sleep_holding(lock, delay);
+        if let Err(lost) = sleep_holding(lock, delay) {
+            append_log(state, &format!("{lost:#}; exiting"));
+            return None;
+        }
         delay = (delay * 2).min(retry.heartbeat);
     }
 }
@@ -246,19 +261,30 @@ fn failure_is_news(
     reported != error || age_ms >= i64::try_from(heartbeat.as_millis()).unwrap_or(i64::MAX)
 }
 
-/// Sleeps for `delay`, touching `lock` at least once a minute so it does not go stale. A
-/// failed touch is left for the next attempt's own touch to report.
-fn sleep_holding(lock: &Guard, delay: Duration) {
+/// Sleeps for `delay`, touching `lock` at least once a minute so it does not go stale, and
+/// fails with why as soon as the lock was removed or taken over. Any other failed touch is left
+/// for the next attempt's own touch to report.
+fn sleep_holding(lock: &Guard, delay: Duration) -> anyhow::Result<()> {
     const TOUCH_EVERY: Duration = Duration::from_secs(60);
     let end = Instant::now() + delay;
     loop {
-        let _ = lock.touch();
+        if let Err(err) = lock.touch()
+            && is_lost(&err)
+        {
+            return Err(err);
+        }
         let left = end.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            return;
+            return Ok(());
         }
         thread::sleep(left.min(TOUCH_EVERY));
     }
+}
+
+/// Whether `err` says the run's lock was removed or taken over, as `flow down` and `flow up`
+/// do, so the run is to end without a word to the supervisor.
+fn is_lost(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| cause.is::<lock::Lost>())
 }
 
 fn one_line(err: &anyhow::Error) -> String {
