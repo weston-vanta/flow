@@ -484,13 +484,18 @@ fn workspaces_with_w2(label: &str) -> Value {
 }
 
 /// `agent list` answering with one agent per `(pane_id, Claude Code session)`.
+/// herdr's agent list with an agent per `(pane, session id)`; an empty id reports none.
 fn agents(agents: &[(&str, &str)]) -> Value {
     let agents: Vec<Value> = agents
         .iter()
         .map(|(pane_id, session)| {
-            json!({"pane_id": pane_id, "workspace_id": pane_id.split(':').next().unwrap(),
-                "agent": "claude", "agent_status": "idle",
-                "agent_session": {"kind": "id", "value": session}})
+            let mut agent = json!({"pane_id": pane_id,
+                "workspace_id": pane_id.split(':').next().unwrap(),
+                "agent": "claude", "agent_status": "idle"});
+            if !session.is_empty() {
+                agent["agent_session"] = json!({"kind": "id", "value": session});
+            }
+            agent
         })
         .collect();
     let list = json!({"id": "cli:agent:list", "result": {"type": "agent_list", "agents": agents}});
@@ -746,6 +751,25 @@ fn close_refuses_when_another_agent_runs_in_the_task_pane() {
     );
     assert_eq!(herdr_argvs(&script).len(), 2);
     assert!(store.task(TASK).unwrap().1.herdr.is_some());
+}
+
+#[test]
+fn close_closes_a_done_tasks_workspace_whose_worker_reports_no_session() {
+    let script = [
+        workspaces_with_w2(TASK_LABEL),
+        agents(&[("w2:p1", "")]),
+        closed(),
+    ];
+    let (_repo, state, store, script) = setup_close(State::Done, &script);
+
+    let out = stdout(
+        flow(&state)
+            .env("FLOW_FAKE_RUNNER", &script)
+            .args(["task", "close", TASK]),
+    );
+
+    assert_eq!(out, format!("closed {TASK} (workspace w2 on host-a)\n"));
+    assert_eq!(store.task(TASK).unwrap().1.herdr, None);
 }
 
 #[test]

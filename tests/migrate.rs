@@ -57,8 +57,19 @@ fn migrate(state: &Path, args: &[&str]) -> String {
     stdout
 }
 
+fn has_jq() -> bool {
+    Command::new("jq")
+        .arg("--version")
+        .output()
+        .is_ok_and(|out| out.status.success())
+}
+
 #[test]
 fn migrates_old_state_so_flow_reads_it_and_a_second_run_changes_nothing() {
+    if !has_jq() {
+        eprintln!("skipping: the migration script needs jq, which is not on PATH");
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("state");
     copy_dir(

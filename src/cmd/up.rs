@@ -1,9 +1,6 @@
-//! `flow up`: attaches to the live supervisor, or starts one on this host and attaches to it. The
-//! live supervisor is the agent on the lock's host, in the herdr session the lock records, that
-//! herdr reports the lock's Claude Code session for. A new one starts in the configured session,
-//! resuming that Claude Code session, and is not started beside an agent in the lock's pane that
-//! herdr reports no session for, since a second supervisor would resume the same session. With
-//! no `watch-state.json` yet, it first writes one marking every existing task read.
+//! `flow up`: attaches to the agent herdr reports the lock's Claude Code session for on the lock's
+//! host, or starts a supervisor here resuming that session, after seeding `watch-state.json`. It
+//! starts none beside an agent in the lock's pane herdr reports no session for.
 
 use std::os::unix::process::CommandExt;
 use std::path::Path;
@@ -14,16 +11,15 @@ use std::time::Instant;
 use anyhow::{Context, anyhow, bail};
 
 use crate::harness::handshake::{self, AgentStart, StoppedEarly};
-use crate::herdr::{self, Agent, Herdr};
+use crate::herdr::{self, Herdr};
 use crate::host;
 use crate::inventory;
-use crate::owner::{self, Owner};
 use crate::paths::{STATE_ENV, StateDir};
 use crate::runner::{self, Runner};
 use crate::state::Store;
 use crate::state::config::{Config, Host};
 use crate::state::task::{HerdrTarget, Status, TaskRecord};
-use crate::supervisor::{self, Lock, SUPERVISOR_CWD, SUPERVISOR_ENV, SUPERVISOR_NAME};
+use crate::supervisor::{self, Found, Lock, SUPERVISOR_CWD, SUPERVISOR_ENV, SUPERVISOR_NAME};
 use crate::watch::{self, lock as watch_lock};
 
 const AGENT_KIND: &str = "claude";
@@ -37,9 +33,10 @@ pub fn run(state: &StateDir) -> anyhow::Result<()> {
     let hosts = inventory::hosts(state)?;
     let live = inventory::live_hosts(state)?;
     if let Some(lock) = supervisor::running(state)? {
-        let herdr = Herdr::with_session(runner.clone(), &lock.herdr.session);
         let tasks = Store::open(state).list_tasks()?;
-        if let Some((host, lock)) = live_supervisor(state, &hosts, &live, &herdr, lock, &tasks)? {
+        let sessions = &config.herdr_sessions;
+        let live_one = live_supervisor(state, &hosts, &live, &runner, sessions, lock, &tasks)?;
+        if let Some((host, lock)) = live_one {
             eprintln!(
                 "attaching to the supervisor on {} (pane {})",
                 host.name, lock.herdr.pane_id
@@ -74,16 +71,15 @@ pub fn run(state: &StateDir) -> anyhow::Result<()> {
     attach(&lock, here)
 }
 
-/// The host the supervisor `lock` names and the lock, its pane moved to where herdr shows the
-/// supervisor now, when the supervisor runs there. Fails, starting nothing, beside an
-/// unconfirmed agent in the lock's pane, and when that host cannot be reached, since the
-/// supervisor may well be alive there; a gone host is not asked, since the supervisor went with
-/// it.
+/// The lock's host and the lock, moved to where herdr shows the supervisor in any of `sessions`,
+/// when it runs there. Fails, starting nothing, beside an unconfirmed agent in the lock's pane or
+/// when the host cannot be reached; a gone host is not asked.
 fn live_supervisor<'a>(
     state: &StateDir,
     hosts: &'a [Host],
     live: &[Host],
-    herdr: &Herdr,
+    runner: &Arc<dyn Runner>,
+    sessions: &[String],
     lock: Lock,
     tasks: &[(TaskRecord, Status)],
 ) -> anyhow::Result<Option<(&'a Host, Lock)>> {
@@ -101,8 +97,16 @@ fn live_supervisor<'a>(
         );
         return Ok(None);
     }
-    let agents = match herdr.agents_if_running(host) {
-        Ok(agents) => agents.unwrap_or_default(),
+    let found = supervisor::find(runner, host, &lock, sessions, tasks);
+    let agent = match found {
+        Ok(Found::Supervisor(agent)) => agent,
+        Ok(Found::Unconfirmed) => bail!(
+            "{}. flow up started nothing, since a second supervisor would resume the same \
+             session. {}",
+            supervisor::unconfirmed(&lock),
+            supervisor::UNCONFIRMED_WAY_OUT
+        ),
+        Ok(Found::Nowhere) => return Ok(None),
         Err(err) if herdr::is_unreachable(&err) => bail!(
             "supervisor host {} unreachable: {err:#}\nrunning or attaching to the supervisor \
              from this machine needs the operator's Ona login (`gitpod login`) and `gitpod \
@@ -111,37 +115,23 @@ fn live_supervisor<'a>(
         ),
         Err(err) => return Err(err),
     };
-    let owners: Vec<(&Agent, Owner)> = agents
-        .iter()
-        .map(|agent| (agent, owner::owner(&host.name, agent, Some(&lock), tasks)))
-        .collect();
-    if let Some((agent, _)) = owners.iter().find(|(_, owner)| *owner == Owner::Supervisor) {
-        if agent.pane_id == lock.herdr.pane_id {
-            return Ok(Some((host, lock)));
-        }
-        let moved = HerdrTarget {
-            workspace_id: agent.workspace_id.clone(),
-            pane_id: agent.pane_id.clone(),
-            ..lock.herdr.clone()
-        };
-        supervisor::set_target(state, moved.clone())?;
-        return Ok(Some((
-            host,
-            Lock {
-                herdr: moved,
-                ..lock
-            },
-        )));
+    if lock.herdr.is(&host.name, &agent.session, &agent.pane_id) {
+        return Ok(Some((host, lock)));
     }
-    if owners.iter().any(|(_, owner)| *owner == Owner::Unconfirmed) {
-        bail!(
-            "{}. flow up started nothing, since a second supervisor would resume the same \
-             session. {}",
-            supervisor::unconfirmed(&lock),
-            supervisor::UNCONFIRMED_WAY_OUT
-        );
-    }
-    Ok(None)
+    let moved = HerdrTarget {
+        workspace_id: agent.workspace_id.clone(),
+        pane_id: agent.pane_id.clone(),
+        session: agent.session.clone(),
+        ..lock.herdr.clone()
+    };
+    supervisor::set_target(state, moved.clone())?;
+    Ok(Some((
+        host,
+        Lock {
+            herdr: moved,
+            ..lock
+        },
+    )))
 }
 
 /// The host in `live` this process runs on.
@@ -159,11 +149,9 @@ fn local_host(live: &[Host]) -> anyhow::Result<&Host> {
         })
 }
 
-/// Starts the supervisor on `here`, resuming the recorded session when there is one. When a
-/// resume does not come up because Claude Code cannot find the session, the session is dropped
-/// from the lock and the start retried once without it, since it would otherwise fail every
-/// later `flow up` the same way. Any other failed resume keeps the session and leaves its
-/// workspace open for inspection.
+/// Starts the supervisor on `here`, resuming the recorded session. When Claude Code cannot find
+/// that session, it is dropped and the start retried once without it; any other failed resume
+/// keeps it and leaves the workspace open for inspection.
 fn start(state: &StateDir, herdr: &Herdr, here: &Host, state_root: &Path) -> anyhow::Result<Lock> {
     herdr.ensure_server(here)?;
     let (lock, started) = launch(state, herdr, here, state_root)?;

@@ -267,8 +267,8 @@ fn sessions_lists_observed_with_summary() {
 
     let json_out = stdout_of(fx.flow(&host_a_agents()).args(["sessions", "--json"]));
     let parsed: Value = serde_json::from_str(&json_out).unwrap();
-    assert_eq!(parsed[0]["task"], TASK_ID);
-    assert_eq!(parsed[1]["task"], Value::Null);
+    assert_eq!(parsed[0]["owner"], json!({"task": TASK_ID}));
+    assert_eq!(parsed[1]["owner"], "observed");
     assert_eq!(parsed[0]["matched_by"], Value::Null);
     assert_eq!(parsed[1]["matched_by"], "cwd");
     assert_eq!(parsed[1]["session"]["session_id"], HAND_SESSION_ID);
@@ -856,13 +856,21 @@ fn workers_the_supervisor_and_hand_sessions_share_herdrs_default_session() {
     );
     let json_out = stdout_of(fx.flow(&script).args(["sessions", "--json"]));
     let parsed: Value = serde_json::from_str(&json_out).unwrap();
-    let supervisor: Vec<bool> = parsed
+    let owners: Vec<&Value> = parsed
         .as_array()
         .unwrap()
         .iter()
-        .map(|entry| entry["supervisor"].as_bool().unwrap())
+        .map(|entry| &entry["owner"])
         .collect();
-    assert_eq!(supervisor, [true, false, false, false]);
+    assert_eq!(
+        owners,
+        [
+            &json!("supervisor"),
+            &json!({"task": TASK_ID}),
+            &json!("observed"),
+            &json!({"task": "aaaaaaac"}),
+        ]
+    );
 
     let status = stdout_of(fx.flow(&[]).arg("status"));
     assert_eq!(
@@ -892,12 +900,12 @@ fn workers_the_supervisor_and_hand_sessions_share_herdrs_default_session() {
 }
 
 /// `SHARED_SESSION_AGENTS` after herdr gave the panes of the supervisor, task `aaaaaaab` and the
-/// done task `aaaaaaac` to sessions the user started: the first two report Claude Code sessions
-/// of their own, the third none.
+/// done task `aaaaaaac` to sessions the user started, each reporting a Claude Code session of its
+/// own.
 const REUSED_PANE_AGENTS: &str = r#"{"id":"cli:agent:list","result":{"agents":[
 {"agent":"claude","agent_session":{"agent":"claude","kind":"id","source":"herdr:claude","value":"s-hand-1"},"agent_status":"idle","cwd":"/workspaces/flow","pane_id":"w1:p1","terminal_title_stripped":"Read the docs","workspace_id":"w1"},
 {"agent":"claude","agent_session":{"agent":"claude","kind":"id","source":"herdr:claude","value":"s-hand-2"},"agent_status":"working","cwd":"/work/repo.wt/feature","pane_id":"w2:p1","terminal_title_stripped":"Try a fix","workspace_id":"w2"},
-{"agent":"claude","agent_status":"idle","cwd":"/work/app","pane_id":"w4:p1","terminal_title_stripped":"Fix links","workspace_id":"w4"}
+{"agent":"claude","agent_session":{"agent":"claude","kind":"id","source":"herdr:claude","value":"s-hand-3"},"agent_status":"idle","cwd":"/work/app","pane_id":"w4:p1","terminal_title_stripped":"Fix links","workspace_id":"w4"}
 ],"type":"agent_list"}}"#;
 
 #[test]
@@ -917,24 +925,18 @@ fn hand_sessions_in_reused_panes_are_observed() {
     let json_out = stdout_of(fx.flow(&script).args(["sessions", "--json"]));
 
     let parsed: Value = serde_json::from_str(&json_out).unwrap();
-    let rows: Vec<(String, Value, bool)> = parsed
+    let rows: Vec<(&str, &Value)> = parsed
         .as_array()
         .unwrap()
         .iter()
-        .map(|entry| {
-            (
-                entry["agent"]["pane_id"].as_str().unwrap().to_owned(),
-                entry["task"].clone(),
-                entry["supervisor"].as_bool().unwrap(),
-            )
-        })
+        .map(|entry| (entry["agent"]["pane_id"].as_str().unwrap(), &entry["owner"]))
         .collect();
     assert_eq!(
         rows,
         [
-            ("w1:p1".to_owned(), Value::Null, false),
-            ("w2:p1".to_owned(), Value::Null, false),
-            ("w4:p1".to_owned(), Value::Null, false),
+            ("w1:p1", &json!("observed")),
+            ("w2:p1", &json!("observed")),
+            ("w4:p1", &json!("observed")),
         ]
     );
     for target in ["Read the docs", "Try a fix", "Fix links"] {
@@ -951,7 +953,7 @@ fn hand_sessions_in_reused_panes_are_observed() {
 }
 
 #[test]
-fn an_agent_with_no_session_in_the_supervisors_pane_shows_as_observed() {
+fn an_agent_with_no_session_in_the_supervisors_pane_is_unconfirmed_and_not_followed() {
     let fx = Fixture::new();
     fx.single_host();
     fx.sharing_default();
@@ -963,7 +965,16 @@ fn an_agent_with_no_session_in_the_supervisors_pane_shows_as_observed() {
     let text = stdout_of(fx.flow(&script).arg("sessions"));
 
     assert!(
-        text.contains("host-a  idle     observed  flow-supervisor\n"),
+        text.contains("host-a  idle     unconfirmed  flow-supervisor\n"),
         "{text}"
     );
+    fx.flow(&script)
+        .args(["follow", "host-a", "flow-supervisor"])
+        .assert()
+        .code(2)
+        .stderr(
+            "pane w1:p1 on host-a is the supervisor's, and herdr reports no Claude Code session \
+             for the agent there, so flow cannot tell it from the supervisor\n",
+        );
+    assert!(!fx.state.join("supervisor/follow.json").exists());
 }

@@ -12,6 +12,7 @@ use crate::state::config::Host;
 /// How long the whole start may take, trust dialog included, counted from the first wait.
 const START_TIMEOUT_MS: u64 = 60_000;
 const POLL_VAR: &str = crate::vars::HANDSHAKE_POLL_MS;
+const TIMEOUT_VAR: &str = crate::vars::HANDSHAKE_TIMEOUT_MS;
 const DEFAULT_POLL: Duration = Duration::from_secs(1);
 /// How long herdr may see no agent before the start says what it is waiting for.
 const NOTICE_AFTER: Duration = Duration::from_secs(3);
@@ -78,16 +79,16 @@ struct Timing {
 
 impl Timing {
     fn from_env() -> anyhow::Result<Timing> {
-        let poll = match std::env::var(POLL_VAR) {
-            Ok(ms) => Duration::from_millis(
-                ms.parse()
-                    .with_context(|| format!("parsing ${POLL_VAR} {ms:?} as milliseconds"))?,
-            ),
-            Err(_) => DEFAULT_POLL,
+        let millis = |var: &str, default: Duration| match std::env::var(var) {
+            Ok(ms) => ms
+                .parse()
+                .map(Duration::from_millis)
+                .with_context(|| format!("parsing ${var} {ms:?} as milliseconds")),
+            Err(_) => Ok(default),
         };
         Ok(Timing {
-            timeout: Duration::from_millis(START_TIMEOUT_MS),
-            poll,
+            timeout: millis(TIMEOUT_VAR, Duration::from_millis(START_TIMEOUT_MS))?,
+            poll: millis(POLL_VAR, DEFAULT_POLL)?,
         })
     }
 }
@@ -144,7 +145,8 @@ fn await_start_with(
 }
 
 /// The Claude Code session herdr reports for the agent in `pane_id`, asked every poll until the
-/// start timeout, counted from `since`, has passed; `None` when herdr reports none by then.
+/// start timeout, counted from `since`, has passed; `None` when herdr reports none by then. A
+/// listing that fails counts as no session yet.
 pub fn await_session(
     herdr: &Herdr,
     host: &Host,
@@ -163,7 +165,8 @@ fn await_session_with(
 ) -> anyhow::Result<Option<String>> {
     loop {
         let session = herdr
-            .agents(host)?
+            .agents(host)
+            .unwrap_or_default()
             .into_iter()
             .find(|agent| agent.pane_id == pane_id)
             .and_then(|agent| agent.agent_session_id);
@@ -554,10 +557,15 @@ mod tests {
     }
 
     #[test]
-    fn await_session_asks_until_herdr_reports_one_or_the_start_times_out() {
+    fn await_session_asks_through_listing_errors_until_herdr_reports_one_or_the_start_times_out() {
+        let failed = Scripted {
+            status: 255,
+            stderr: "ssh: connect to host host-a port 22: Connection timed out\n".to_owned(),
+            ..Scripted::default()
+        };
         let fake = Arc::new(FakeRunner::new(vec![
             listing(None),
-            listing(None),
+            failed,
             listing(Some("s1")),
         ]));
         let herdr = Herdr::with_session(fake.clone(), "default");

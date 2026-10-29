@@ -461,7 +461,7 @@ pub fn run(cli: Cli, state: &StateDir, repo_root: &Path) -> anyhow::Result<ExitC
         Command::Guard => return cmd::guard::run(state),
         Command::Steer { id, text } => cmd::steer::run(state, &id, &text),
         Command::Up => cmd::up::run(state),
-        Command::Down { forget } => return cmd::down::run(state, forget),
+        Command::Down { forget } => cmd::down::run(state, forget),
     };
     done.map(|()| ExitCode::SUCCESS)
 }

@@ -19,8 +19,9 @@ const NO_AGENTS: &str = r#"{"id":"cli:agent:list","result":{"agents":[],"type":"
 const SERVER_NOT_RUNNING: &str = include_str!("fixtures/herdr/agent_list_server_not_running.json");
 const UNREACHABLE: &str = "ssh: connect to host host-b.example port 22: Connection timed out";
 const PANE_CLOSED: &str = r#"{"id":"cli:pane:close","result":{"type":"ok"}}"#;
-const NOWHERE_ON_B: &str =
-    "the supervisor runs in no pane on host-b (herdr session default); closed nothing\n";
+const NO_PANES: &str = r#"{"id":"cli:pane:list","result":{"panes":[],"type":"pane_list"}}"#;
+const NOWHERE_ON_A: &str = "the supervisor runs in no pane on host-a; closed nothing\n";
+const NOWHERE_ON_B: &str = "the supervisor runs in no pane on host-b; closed nothing\n";
 const NOTE: &str = "1 open tasks keep running; flow up resumes the supervisor\n";
 const KEPT: &str =
     "marked the supervisor stopped in state/supervisor/lock.json, keeping session s9 to resume\n";
@@ -176,6 +177,12 @@ fn in_lock_pane(cwd: &str, session: Option<&str>) -> String {
     json!({"id": "cli:agent:list", "result": {"type": "agent_list", "agents": [agent]}}).to_string()
 }
 
+/// herdr's pane list with the lock's pane `w1:p1` in workspace `workspace_id`.
+fn lock_pane_in(workspace_id: &str) -> String {
+    let pane = json!({"pane_id": "w1:p1", "workspace_id": workspace_id});
+    json!({"id": "cli:pane:list", "result": {"type": "pane_list", "panes": [pane]}}).to_string()
+}
+
 /// The supervisor's agent list: it runs in its pane with the lock's session.
 fn supervisor_agent() -> String {
     in_lock_pane("/workspaces/flow", Some("s9"))
@@ -209,7 +216,7 @@ fn down_without_a_lock_has_nothing_to_stop() {
 fn down_of_a_stopped_supervisor_has_nothing_to_stop() {
     let fx = Fixture::new();
     fx.write_lock("env-0001", "host-a", "default");
-    stdout_of(fx.flow(&[ok(NO_AGENTS)]).arg("down"));
+    stdout_of(fx.flow(&[ok(NO_AGENTS), ok(NO_PANES)]).arg("down"));
     let before = fs::read_to_string(fx.lock_path()).unwrap();
 
     let stdout = stdout_of(fx.flow(&[]).arg("down"));
@@ -255,16 +262,16 @@ fn down_notes_a_supervisor_already_gone() {
     let fx = Fixture::new();
     fx.write_lock("env-0002", "host-b", "default");
 
-    let stdout = stdout_of(fx.flow(&[ok(NO_AGENTS)]).arg("down"));
+    let stdout = stdout_of(fx.flow(&[ok(NO_AGENTS), ok(NO_PANES)]).arg("down"));
 
     assert_eq!(stdout, format!("{NOWHERE_ON_B}{KEPT}{NOTE}"));
-    assert_eq!(fx.argvs().len(), 1);
+    assert_eq!(fx.argvs().len(), 2);
     fx.assert_stopped();
 
     fx.write_lock("env-0002", "host-b", "default");
-    let script = [json!({"status": 1, "stdout": "", "stderr": SERVER_NOT_RUNNING})];
-    let stdout = stdout_of(fx.flow(&script).arg("down"));
-    assert_eq!(fx.argvs().len(), 1);
+    let not_running = json!({"status": 1, "stdout": "", "stderr": SERVER_NOT_RUNNING});
+    let stdout = stdout_of(fx.flow(&[not_running.clone(), not_running]).arg("down"));
+    assert_eq!(fx.argvs().len(), 2);
     assert!(stdout.starts_with(NOWHERE_ON_B), "{stdout}");
 
     fx.write_lock("env-0002", "host-b", "default");
@@ -285,13 +292,12 @@ fn down_removes_the_watch_lock_whoever_holds_it() {
         fx.write_lock("env-0001", "host-a", "default");
         fx.write_watch_lock(env_id, std::process::id());
 
-        let stdout = stdout_of(fx.flow(&[ok(NO_AGENTS)]).arg("down"));
+        let stdout = stdout_of(fx.flow(&[ok(NO_AGENTS), ok(NO_PANES)]).arg("down"));
 
         assert_eq!(
             stdout,
             format!(
-                "the supervisor runs in no pane on host-a (herdr session default); closed \
-                 nothing\n{KEPT}\
+                "{NOWHERE_ON_A}{KEPT}\
                  removed state/supervisor/watch.lock; the watcher ends at its next cycle\n{NOTE}"
             )
         );
@@ -371,20 +377,87 @@ fn down_leaves_another_session_in_the_supervisors_pane_alone() {
     let fx = Fixture::new();
     fx.write_lock("env-0001", "host-a", "default");
 
+    let hand = ok(&in_lock_pane("/workspaces/flow", Some("s-hand")));
+
     let stdout = stdout_of(
-        fx.flow(&[ok(&in_lock_pane("/workspaces/flow", Some("s-hand")))])
+        fx.flow(&[hand.clone(), ok(&lock_pane_in("w1")), hand])
             .arg("down"),
     );
+
+    assert_eq!(stdout, format!("{NOWHERE_ON_A}{KEPT}{NOTE}"));
+    assert_eq!(fx.argvs().len(), 3);
+    fx.assert_stopped();
+}
+
+#[test]
+fn down_closes_the_lock_pane_left_without_an_agent() {
+    let fx = Fixture::new();
+    fx.write_lock("env-0001", "host-a", "default");
+    let script = [
+        ok(NO_AGENTS),
+        ok(&lock_pane_in("w1")),
+        ok(NO_AGENTS),
+        ok(PANE_CLOSED),
+    ];
+
+    let stdout = stdout_of(fx.flow(&script).arg("down"));
 
     assert_eq!(
         stdout,
         format!(
-            "the supervisor runs in no pane on host-a (herdr session default); closed \
-             nothing\n{KEPT}{NOTE}"
+            "closed the supervisor's empty pane w1:p1 on host-a (herdr session default)\n\
+             {KEPT}{NOTE}"
         )
     );
-    assert_eq!(fx.argvs().len(), 1);
+    assert_eq!(
+        fx.argvs()[3],
+        words(&["herdr", "--session", "default", "pane", "close", "w1:p1"])
+    );
     fx.assert_stopped();
+}
+
+#[test]
+fn down_leaves_the_lock_pane_id_alone_in_another_workspace() {
+    let fx = Fixture::new();
+    fx.write_lock("env-0001", "host-a", "default");
+
+    let stdout = stdout_of(
+        fx.flow(&[ok(NO_AGENTS), ok(&lock_pane_in("w9"))])
+            .arg("down"),
+    );
+
+    assert_eq!(stdout, format!("{NOWHERE_ON_A}{KEPT}{NOTE}"));
+    assert_eq!(fx.argvs().len(), 2);
+}
+
+#[test]
+fn down_finds_the_supervisor_in_another_listed_herdr_session() {
+    let fx = Fixture::new();
+    fs::write(
+        fx.state.join("config.toml"),
+        format!("herdr_sessions = [\"other\"]\n{CONFIG}"),
+    )
+    .unwrap();
+    fx.write_lock("env-0001", "host-a", "default");
+    let elsewhere = supervisor_agent().replace("w1:p1", "w2:p3");
+
+    let stdout = stdout_of(
+        fx.flow(&[ok(NO_AGENTS), ok(&elsewhere), ok(PANE_CLOSED)])
+            .arg("down"),
+    );
+
+    assert!(
+        stdout.starts_with("closed the supervisor's pane w2:p3 on host-a (herdr session other)\n"),
+        "{stdout}"
+    );
+    assert_eq!(
+        fx.argvs(),
+        [
+            words(&["herdr", "--session", "default", "agent", "list"]),
+            words(&["herdr", "--session", "other", "agent", "list"]),
+            words(&["herdr", "--session", "other", "pane", "close", "w2:p3"]),
+        ]
+    );
 }
 
 #[test]

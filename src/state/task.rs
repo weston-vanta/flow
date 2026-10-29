@@ -8,14 +8,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskRecord {
     pub id: String,
-    #[serde(default)]
     pub parent: Option<String>,
     pub title: String,
     pub host: String,
     /// The absolute directory on `host` the worker runs in.
     pub cwd: PathBuf,
     /// The configured repo `cwd` is a worktree of, when it was created from `--branch`.
-    #[serde(default)]
     pub repo: Option<String>,
     pub harness: Harness,
     pub created: Timestamp,
@@ -61,11 +59,8 @@ impl fmt::Display for Harness {
 pub struct Status {
     pub state: State,
     pub last_event: Timestamp,
-    #[serde(default)]
     pub hold: Option<Hold>,
-    #[serde(default)]
     pub herdr: Option<HerdrTarget>,
-    #[serde(default)]
     pub claude_session: Option<ClaudeSession>,
 }
 

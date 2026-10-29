@@ -26,6 +26,7 @@ use crate::supervisor;
 const OBSERVED: &str = "observed";
 const FOLLOWED: &str = "followed";
 const SUPERVISOR: &str = "supervisor";
+const UNCONFIRMED: &str = "unconfirmed";
 const HEADER: [&str; 4] = ["HOST", "STATUS", "TASK", "TITLE"];
 const SUMMARY_WIDTH: usize = 100;
 
@@ -79,7 +80,10 @@ pub fn count_observed(state: &StateDir, tasks: &[(TaskRecord, Status)]) -> anyho
         supervisor.as_ref(),
         &[],
     );
-    Ok(matched.iter().filter(|entry| entry.is_observed()).count())
+    Ok(matched
+        .iter()
+        .filter(|entry| entry.owner == Owner::Observed)
+        .count())
 }
 
 fn agents_by_host(inventories: &[HostInventory]) -> Vec<(&str, &[Agent])> {
@@ -93,7 +97,7 @@ fn agents_by_host(inventories: &[HostInventory]) -> Vec<(&str, &[Agent])> {
 pub fn run_follow(state: &StateDir, host: &str, target: &str) -> anyhow::Result<()> {
     let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
     let listed = host_agents(state, &runner, host)?;
-    let (agent, _) = resolve(&listed, host, target)?;
+    let agent = resolve(&listed, host, target)?;
     let followed = Followed {
         host: host.to_owned(),
         pane_id: agent.pane_id.clone(),
@@ -119,7 +123,7 @@ pub fn run_unfollow(state: &StateDir, host: &str, target: &str) -> anyhow::Resul
     let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
     let listed = host_agents(state, &runner, host)?;
     let (session, pane_id) = match resolve(&listed, host, target) {
-        Ok((agent, _)) => (agent.session.clone(), agent.pane_id.clone()),
+        Ok(agent) => (agent.session.clone(), agent.pane_id.clone()),
         Err(refused) => {
             let follow = FollowList::load(state)?.follow;
             match stale_entries(&follow, host, target).as_slice() {
@@ -151,13 +155,12 @@ pub fn run_unfollow(state: &StateDir, host: &str, target: &str) -> anyhow::Resul
     Ok(())
 }
 
-/// A host's herdr agents in every listed herdr session, split into the observed sessions, with
-/// their owners, and the agents a task or the supervisor holds.
+/// A host's herdr agents in every listed herdr session, split into the observed sessions and
+/// the rest.
 #[derive(Debug, Default)]
 pub(super) struct HostAgents {
-    pub observed: Vec<(Agent, Owner)>,
-    /// Each agent whose pane a task or the supervisor holds, with what holds it, as `is <...>`
-    /// reads.
+    pub observed: Vec<Agent>,
+    /// Each other agent, with what holds its pane, as `is <...>` reads.
     pub held: Vec<(Agent, String)>,
 }
 
@@ -212,11 +215,18 @@ pub(super) fn host_agents(
     let supervisor = supervisor::running(state)?;
     let mut split = HostAgents::default();
     for agent in agents {
-        match owner::owner(&host.name, &agent, supervisor.as_ref(), &tasks) {
-            Owner::Task(id) => split.held.push((agent, format!("already task {id}"))),
-            Owner::Supervisor => split.held.push((agent, "the supervisor's".to_owned())),
-            owner => split.observed.push((agent, owner)),
-        }
+        let holder = match owner::owner(&host.name, &agent, supervisor.as_ref(), &tasks) {
+            Owner::Observed => {
+                split.observed.push(agent);
+                continue;
+            }
+            Owner::Task(id) => format!("already task {id}"),
+            Owner::Supervisor => "the supervisor's".to_owned(),
+            Owner::Unconfirmed => "the supervisor's, and herdr reports no Claude Code session for \
+                                   the agent there, so flow cannot tell it from the supervisor"
+                .to_owned(),
+        };
+        split.held.push((agent, holder));
     }
     Ok(split)
 }
@@ -229,19 +239,16 @@ pub(super) fn resolve<'a>(
     listed: &'a HostAgents,
     host: &str,
     target: &str,
-) -> Result<&'a (Agent, Owner), Refused> {
+) -> Result<&'a Agent, Refused> {
     let hands = &listed.observed;
-    let titled: Vec<&(Agent, Owner)> = hands
-        .iter()
-        .filter(|(agent, _)| agent.title == target)
-        .collect();
+    let titled: Vec<&Agent> = hands.iter().filter(|agent| agent.title == target).collect();
     match titled.as_slice() {
         [hand] => return Ok(hand),
         [] => {}
         several => {
             let candidates: Vec<String> = several
                 .iter()
-                .map(|(agent, _)| format!("{}  {}", agent.pane_id, agent.title))
+                .map(|agent| format!("{}  {}", agent.pane_id, agent.title))
                 .collect();
             return Err(Refused(format!(
                 "several hand sessions on {host} are titled \"{target}\"; pass the pane id:\n{}",
@@ -250,9 +257,9 @@ pub(super) fn resolve<'a>(
         }
     }
     let (session, pane_id) = pane_ref(target);
-    let in_pane: Vec<&(Agent, Owner)> = hands
+    let in_pane: Vec<&Agent> = hands
         .iter()
-        .filter(|(agent, _)| {
+        .filter(|agent| {
             agent.pane_id == pane_id && session.is_none_or(|session| agent.session == session)
         })
         .collect();
@@ -274,7 +281,7 @@ pub(super) fn resolve<'a>(
             pane_id,
             several
                 .iter()
-                .map(|(agent, _)| (agent.session.as_str(), agent.title.as_str())),
+                .map(|agent| (agent.session.as_str(), agent.title.as_str())),
         )),
     }
 }
@@ -320,7 +327,7 @@ fn several_in_pane<'a>(
 fn mark_followed(matched: &mut [MatchedAgent], follow: &[Followed]) {
     for entry in matched {
         let agent = &entry.agent;
-        entry.followed = entry.is_observed()
+        entry.followed = entry.owner == Owner::Observed
             && follow
                 .iter()
                 .any(|followed| followed.is(&entry.host, &agent.session, &agent.pane_id));
@@ -387,16 +394,13 @@ fn render_text(
             vec![
                 entry.host.clone(),
                 entry.agent.status.as_str().to_owned(),
-                entry.task.clone().unwrap_or_else(|| {
-                    let mark = if entry.supervisor {
-                        SUPERVISOR
-                    } else if entry.followed {
-                        FOLLOWED
-                    } else {
-                        OBSERVED
-                    };
-                    mark.to_owned()
-                }),
+                match &entry.owner {
+                    Owner::Task(id) => id.clone(),
+                    Owner::Supervisor => SUPERVISOR.to_owned(),
+                    Owner::Unconfirmed => UNCONFIRMED.to_owned(),
+                    Owner::Observed if entry.followed => FOLLOWED.to_owned(),
+                    Owner::Observed => OBSERVED.to_owned(),
+                },
                 (*title).to_owned(),
             ]
         }))
@@ -454,12 +458,13 @@ fn sort_key<'a>(
 
 /// The title of `entry`'s task when it has one, else herdr's title, else its pane id.
 fn title<'a>(entry: &'a MatchedAgent, tasks: &'a [(TaskRecord, Status)]) -> &'a str {
-    let task_title = entry.task.as_deref().and_then(|id| {
-        tasks
+    let task_title = match &entry.owner {
+        Owner::Task(id) => tasks
             .iter()
-            .find(|(record, _)| record.id == id)
-            .map(|(record, _)| record.title.as_str())
-    });
+            .find(|(record, _)| record.id == *id)
+            .map(|(record, _)| record.title.as_str()),
+        _ => None,
+    };
     match task_title {
         Some(title) => title,
         None if entry.agent.title.is_empty() => &entry.agent.pane_id,
@@ -487,8 +492,7 @@ mod tests {
                 session: "default".to_owned(),
                 agent_session_id: None,
             },
-            task: task.map(str::to_owned),
-            supervisor: false,
+            owner: task.map_or(Owner::Observed, |id| Owner::Task(id.to_owned())),
             followed: false,
             session: None,
             matched_by: None,
@@ -530,10 +534,7 @@ mod tests {
 
     fn observed(hands: &[Agent]) -> HostAgents {
         HostAgents {
-            observed: hands
-                .iter()
-                .map(|hand| (hand.clone(), Owner::Observed))
-                .collect(),
+            observed: hands.to_vec(),
             held: Vec::new(),
         }
     }
@@ -555,13 +556,10 @@ mod tests {
              other/w1:p1  Fix links"
         );
         assert_eq!(
-            resolve(&hands, "host-b", "other/w1:p1").unwrap().0.title,
+            resolve(&hands, "host-b", "other/w1:p1").unwrap().title,
             "Fix links"
         );
-        assert_eq!(
-            resolve(&hands, "host-b", "w1:p2").unwrap().0.session,
-            "other"
-        );
+        assert_eq!(resolve(&hands, "host-b", "w1:p2").unwrap().session, "other");
         assert!(resolve(&hands, "host-b", "default/w1:p2").is_err());
     }
 
@@ -590,7 +588,7 @@ mod tests {
             "pane w1:p1 on host-b is the supervisor's"
         );
         assert_eq!(
-            resolve(&listed, "host-b", "w3:p1").unwrap().0.title,
+            resolve(&listed, "host-b", "w3:p1").unwrap().title,
             "Tidy docs"
         );
     }
@@ -598,7 +596,7 @@ mod tests {
     #[test]
     fn render_marks_the_supervisor() {
         let matched = [MatchedAgent {
-            supervisor: true,
+            owner: Owner::Supervisor,
             ..entry("host-a", AgentStatus::Idle, "flow-supervisor", None)
         }];
 

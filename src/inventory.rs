@@ -51,11 +51,9 @@ pub struct HostInventory {
     /// The ssh alias the host is reached by.
     pub ssh_alias: String,
     /// The environment's free-text name in Ona, for a discovered host.
-    #[serde(default)]
     pub ona_name: Option<String>,
     /// The environment's Ona phase at the last listing, for a discovered host. Only running
     /// hosts are probed.
-    #[serde(default)]
     pub ona_phase: Option<String>,
     /// The host has left the host set: Ona no longer lists it, or the static list dropped it.
     /// Its record is kept for the tasks that ran there.
@@ -71,16 +69,12 @@ pub struct HostInventory {
     /// Open PRs whose head branch is checked out in one of `worktrees` of the same repo.
     pub prs: Vec<Pr>,
     /// Why the last probe could not reach the host; cleared once a probe or herdr reaches it.
-    #[serde(default)]
     pub probe_error: Option<String>,
     /// Why the worktree tool's list failed; `busy` and `dirty_files` are then unknown.
-    #[serde(default)]
     pub tool_error: Option<String>,
     /// Why herdr could not be asked for some session's agents; `agents` then lacks them.
-    #[serde(default)]
     pub herdr_error: Option<String>,
     /// Why open PRs could not be listed; `prs` then holds the previously cached PRs.
-    #[serde(default)]
     pub pr_error: Option<String>,
     /// Configured repos with no checkout on this host; `worktrees` has none of theirs.
     #[serde(default)]

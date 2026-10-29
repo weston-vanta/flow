@@ -5,17 +5,19 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::Context;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use crate::herdr;
+use crate::herdr::{self, Agent, Herdr};
+use crate::owner::{self, Owner};
 use crate::paths::StateDir;
-use crate::runner;
+use crate::runner::{self, Runner};
 use crate::state::config::Host;
 use crate::state::fs::{with_lock, write_atomic};
-use crate::state::task::HerdrTarget;
+use crate::state::task::{HerdrTarget, Status, TaskRecord};
 
 pub const SUPERVISOR_ENV: &str = crate::vars::SUPERVISOR;
 /// Whether this process runs under the supervisor session `flow up` started, as opposed to
@@ -55,6 +57,45 @@ pub fn unconfirmed(lock: &Lock) -> String {
          tell it from the supervisor",
         lock.herdr.pane_id, lock.herdr.host
     )
+}
+
+/// Where herdr shows the supervisor `lock` records on its host.
+#[derive(Debug)]
+pub enum Found {
+    Supervisor(Agent),
+    /// The lock's pane holds an `Owner::Unconfirmed` agent.
+    Unconfirmed,
+    Nowhere,
+}
+
+/// Looks for `lock`'s supervisor on `host` in the lock's herdr session, then in the rest of
+/// `sessions`. An unconfirmed agent in the lock's pane ends the search.
+pub fn find(
+    runner: &Arc<dyn Runner>,
+    host: &Host,
+    lock: &Lock,
+    sessions: &[String],
+    tasks: &[(TaskRecord, Status)],
+) -> anyhow::Result<Found> {
+    let others = sessions
+        .iter()
+        .filter(|session| **session != lock.herdr.session);
+    for session in std::iter::once(&lock.herdr.session).chain(others) {
+        let herdr = Herdr::with_session(runner.clone(), session);
+        let agents = herdr.agents_if_running(host)?.unwrap_or_default();
+        let mut unconfirmed = false;
+        for agent in agents {
+            match owner::owner(&host.name, &agent, Some(lock), tasks) {
+                Owner::Supervisor => return Ok(Found::Supervisor(agent)),
+                Owner::Unconfirmed => unconfirmed = true,
+                _ => {}
+            }
+        }
+        if unconfirmed {
+            return Ok(Found::Unconfirmed);
+        }
+    }
+    Ok(Found::Nowhere)
 }
 
 pub fn lock_path(state: &StateDir) -> PathBuf {

@@ -89,7 +89,6 @@ pub struct Agent {
     pub session: String,
     /// The id of the agent's own session, such as Claude Code's session id, as herdr reports
     /// it; `None` when herdr has not reported one.
-    #[serde(default)]
     pub agent_session_id: Option<String>,
 }
 
@@ -101,6 +100,19 @@ pub struct Agent {
 #[derive(Deserialize)]
 struct Response<T> {
     result: T,
+}
+
+/// `pane list` → `pane_list`.
+#[derive(Deserialize)]
+struct PaneList {
+    panes: Vec<Pane>,
+}
+
+/// A herdr pane and the workspace it sits in.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Pane {
+    pub pane_id: String,
+    pub workspace_id: String,
 }
 
 /// `agent list` → `agent_list`; `agents` is required and holds `AgentInfo` objects.
@@ -127,7 +139,6 @@ struct AgentInfo {
     cwd: Option<PathBuf>,
     terminal_title: Option<String>,
     terminal_title_stripped: Option<String>,
-    #[serde(default)]
     agent_session: Option<AgentSessionInfo>,
 }
 
@@ -348,6 +359,16 @@ impl Herdr {
     pub fn agents(&self, host: &Host) -> anyhow::Result<Vec<Agent>> {
         let list: AgentList = self.call_json(host, &self.argv(&["agent", "list"]))?;
         Ok(self.agents_from(list))
+    }
+
+    /// This session's panes on `host`, or `None` when no server runs for the session.
+    pub fn panes_if_running(&self, host: &Host) -> anyhow::Result<Option<Vec<Pane>>> {
+        let argv = self.argv(&["pane", "list"]);
+        let Some(output) = self.call_unless(host, &argv, SERVER_NOT_RUNNING_CODE)? else {
+            return Ok(None);
+        };
+        let list: PaneList = parse_result(host, &argv, &output)?;
+        Ok(Some(list.panes))
     }
 
     /// This session's agents on `host`, or `None` when no server runs for the session. Unlike

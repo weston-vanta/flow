@@ -224,6 +224,34 @@ fn has_subcommand(calls: &[(String, Vec<String>)], words: &[&str]) -> bool {
 }
 
 #[test]
+fn up_warns_when_herdr_reports_no_session_for_the_new_supervisor() {
+    let fx = Fixture::new();
+    let mut script = fresh_start();
+    let unreported = lock_pane_agent("/workspaces/flow", None)
+        .replace(LIVE_PANE, NEW_PANE)
+        .replace(r#""workspace_id":"w1""#, r#""workspace_id":"w3""#);
+    *script.last_mut().unwrap() = json!({"status": 0, "stdout": unreported, "stderr": "",
+        "repeat": true});
+
+    let (_, stderr) = output_of(
+        fx.flow(&script)
+            .env("FLOW_HANDSHAKE_POLL_MS", "10")
+            .env("FLOW_HANDSHAKE_TIMEOUT_MS", "300")
+            .arg("up"),
+    );
+
+    assert!(
+        stderr.contains(
+            "herdr reports no Claude Code session for the supervisor in pane w3:p1 on host-a; \
+             without one flow cannot tell it from another agent, so check its Claude Code \
+             integration (`herdr integration install claude`)\n"
+        ),
+        "{stderr}"
+    );
+    assert_eq!(fx.lock().unwrap().claude_session, None);
+}
+
+#[test]
 fn up_creates_supervisor_when_no_lock() {
     let fx = Fixture::new();
 
@@ -307,7 +335,7 @@ fn up_launch_line_names_the_state_dir_behind_a_symlink() {
 fn up_resumes_known_session() {
     let fx = Fixture::new();
     fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
-    let mut script = vec![ok(NO_AGENTS)];
+    let mut script = vec![ok(NO_AGENTS), ok(NO_AGENTS)];
     script.extend(fresh_start_as("s9"));
 
     let (stdout, stderr) = output_of(fx.flow(&script).arg("up"));
@@ -420,6 +448,31 @@ fn up_attaches_to_the_supervisor_where_herdr_moved_it() {
     assert_eq!(lock.herdr.workspace_id, "w4");
     assert_eq!(lock.claude_session.as_deref(), Some("s9"));
 }
+
+#[test]
+fn up_attaches_to_the_supervisor_in_another_listed_herdr_session() {
+    let fx = Fixture::new();
+    fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
+    let script = [
+        ok(NO_AGENTS),
+        ok(&lock_pane_agent("/workspaces/flow", Some("s9"))),
+    ];
+
+    let stdout = stdout_of(fx.flow(&script).arg("up"));
+
+    let sessions: Vec<String> = fx
+        .calls()
+        .into_iter()
+        .map(|(_, argv)| argv[2].clone())
+        .collect();
+    assert_eq!(sessions, ["flow", "default"]);
+    assert_eq!(
+        stdout,
+        "attach: herdr --session default agent attach w1:p1\n"
+    );
+    assert_eq!(fx.lock().unwrap().herdr.session, "default");
+}
+
 #[test]
 fn up_attaches_to_a_live_supervisor_in_the_session_its_lock_records() {
     let fx = Fixture::new();
@@ -486,7 +539,7 @@ fn up_starts_fresh_beside_another_agent_and_touches_nothing_of_it() {
     ] {
         let fx = Fixture::new();
         fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
-        let mut script = vec![ok(&agents)];
+        let mut script = vec![ok(&agents), ok(NO_AGENTS)];
         script.extend(fresh_start_as("s9"));
 
         let stdout = stdout_of(fx.flow(&script).arg("up"));
@@ -571,7 +624,10 @@ fn up_starts_fresh_beside_an_open_tasks_worker_in_the_lock_pane() {
                 }
             })
             .unwrap();
-        let mut script = vec![ok(&lock_pane_agent("/workspaces/flow", reported))];
+        let mut script = vec![
+            ok(&lock_pane_agent("/workspaces/flow", reported)),
+            ok(NO_AGENTS),
+        ];
         script.extend(fresh_start_as("s9"));
 
         let stdout = stdout_of(fx.flow(&script).arg("up"));
@@ -589,7 +645,7 @@ fn up_starts_fresh_beside_an_open_tasks_worker_in_the_lock_pane() {
         let watch_state = fx.state.join("supervisor/watch-state.json");
         let seeded: Value =
             serde_json::from_str(&fs::read_to_string(watch_state).unwrap()).unwrap();
-        assert_eq!(seeded["seen"][TASK]["state"], "pending", "{seeded}");
+        assert_eq!(seeded["seen"], json!({}), "an open task is left to replay");
     }
 }
 #[test]
@@ -597,6 +653,7 @@ fn up_starts_fresh_session_when_resume_fails() {
     let fx = Fixture::new();
     fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
     let mut script = vec![
+        ok(NO_AGENTS),
         ok(NO_AGENTS),
         ok(SERVER_RUNNING),
         ok(WORKSPACE_CREATE),
@@ -664,6 +721,7 @@ fn up_starts_fresh_within_one_poll_when_claude_cannot_find_the_session() {
     let not_found = r#"{"error":{"code":"agent_not_found","message":"agent target w3:p1 not found"},"id":"cli:agent:wait"}"#;
     let mut script = vec![
         ok(NO_AGENTS),
+        ok(NO_AGENTS),
         ok(SERVER_RUNNING),
         ok(WORKSPACE_CREATE),
         ok(PANE_RUN_OK),
@@ -710,6 +768,7 @@ fn up_keeps_the_session_when_a_resume_fails_for_another_reason() {
     let fx = Fixture::new();
     fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
     let script = vec![
+        ok(NO_AGENTS),
         ok(NO_AGENTS),
         ok(SERVER_RUNNING),
         ok(WORKSPACE_CREATE),
@@ -927,20 +986,30 @@ fn create_task_with_pane(fx: &Fixture) -> Store {
     store
 }
 
+/// herdr's agent list with one agent in the task's pane `w2:p1`, reporting `session` when given.
+fn task_pane_agent(session: Option<&str>) -> Value {
+    ok(
+        &lock_pane_agent("/workspaces/example-repo.wt/retry", session)
+            .replace(LIVE_PANE, "w2:p1")
+            .replace(r#""workspace_id":"w1""#, r#""workspace_id":"w2""#),
+    )
+}
+
 #[test]
 fn steer_prompts_pane_and_logs_event() {
     let fx = Fixture::new();
     let store = create_task_with_pane(&fx);
     let prompted = AGENT_GET.replace("agent_info", "agent_prompted");
 
-    fx.flow(&[ok(&prompted)])
+    fx.flow(&[task_pane_agent(None), ok(&prompted)])
         .args(["steer", TASK, "Use the existing retry helper."])
         .assert()
         .success();
 
     let calls = fx.calls();
-    assert_eq!(calls.len(), 1, "{calls:?}");
-    let (host, argv) = &calls[0];
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert_eq!(calls[0].1, ["herdr", "--session", "flow", "agent", "list"]);
+    let (host, argv) = &calls[1];
     assert_eq!(host, "host-b");
     assert_eq!(
         argv[..6],
@@ -973,16 +1042,46 @@ fn steer_prompts_an_adopted_task_in_its_own_herdr_session() {
         .unwrap();
     let prompted = AGENT_GET.replace("agent_info", "agent_prompted");
 
-    fx.flow(&[ok(&prompted)])
+    fx.flow(&[task_pane_agent(None), ok(&prompted)])
         .args(["steer", TASK, "Use the existing retry helper."])
         .assert()
         .success();
 
     let calls = fx.calls();
-    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert_eq!(calls.len(), 2, "{calls:?}");
     assert_eq!(
-        calls[0].1[..6],
+        calls[1].1[..6],
         ["herdr", "--session", "default", "agent", "prompt", "w2:p1"]
+    );
+}
+
+#[test]
+fn steer_refuses_a_pane_another_agent_runs_in() {
+    let fx = Fixture::new();
+    let store = create_task_with_pane(&fx);
+    store
+        .set_status(TASK, |status| {
+            status.claude_session = Some(ClaudeSession {
+                session_id: "s-worker".to_owned(),
+                transcript_path: PathBuf::from("/home/dev/.claude/projects/x/y.jsonl"),
+            });
+        })
+        .unwrap();
+    let events_before = events::read_all(&store.task_dir(TASK).unwrap()).unwrap();
+
+    fx.flow(&[task_pane_agent(Some("s-other"))])
+        .args(["steer", TASK, "hello"])
+        .assert()
+        .code(2)
+        .stderr(format!(
+            "task {TASK}'s pane w2:p1 on host-b holds another agent than the task's worker, \
+             since herdr reuses pane ids; flow sent nothing\n"
+        ));
+
+    assert_eq!(fx.calls().len(), 1);
+    assert_eq!(
+        events::read_all(&store.task_dir(TASK).unwrap()).unwrap(),
+        events_before
     );
 }
 
@@ -1025,7 +1124,7 @@ fn steer_hands_an_escalated_task_back_to_its_worker() {
             })
             .unwrap();
 
-        fx.flow(&[ok(&prompted)])
+        fx.flow(&[task_pane_agent(None), ok(&prompted)])
             .args(["steer", TASK, "Give up after five tries."])
             .assert()
             .success();

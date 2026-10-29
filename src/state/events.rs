@@ -15,7 +15,6 @@ pub struct Event {
     pub ts: Timestamp,
     pub source: String,
     pub kind: String,
-    #[serde(default)]
     pub data: serde_json::Value,
 }
 

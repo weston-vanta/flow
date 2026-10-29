@@ -1,10 +1,6 @@
-//! `flow task close`: the supervisor retires a task's worker pane by closing its herdr
-//! workspace. The task record, its working directory and any branch stay as they are. herdr
-//! reuses workspace ids, so the workspace is closed only while herdr still lists it under a
-//! label naming the task, and the task's pane holds its worker or nothing. An adopted task's
-//! workspace belongs to the
-//! user who started it by hand, so closing such a task only stops flow treating the pane as the
-//! task's: the workspace is left open.
+//! `flow task close`: the supervisor retires a task's worker pane by closing its herdr workspace,
+//! only while herdr lists it under a label naming the task and its pane holds the task's worker
+//! or nothing. An adopted task's workspace is the user's, so it is left open.
 
 use std::sync::Arc;
 

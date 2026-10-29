@@ -16,6 +16,8 @@ pub const FAKE_TTY: &str = "FLOW_FAKE_TTY";
 /// Overrides how long a start handshake waits between asks while herdr does not see the agent
 /// yet, in milliseconds.
 pub const HANDSHAKE_POLL_MS: &str = "FLOW_HANDSHAKE_POLL_MS";
+/// Overrides how long a start handshake waits in all, in milliseconds.
+pub const HANDSHAKE_TIMEOUT_MS: &str = "FLOW_HANDSHAKE_TIMEOUT_MS";
 /// Overrides how long `flow guard` waits for a watcher to take the lock, in milliseconds.
 pub const GUARD_GRACE_MS: &str = "FLOW_GUARD_GRACE_MS";
 /// The directory `flow init` searches for the repository when Ona does not name one.
@@ -32,13 +34,14 @@ pub const WATCH_HAND_MAX_MS: &str = "FLOW_WATCH_HAND_MAX_MS";
 /// Overrides how long listing the hosts' agents may take in a watch run, in milliseconds.
 pub const WATCH_LIST_TIMEOUT_MS: &str = "FLOW_WATCH_LIST_TIMEOUT_MS";
 
-pub const ALL: [&str; 13] = [
+pub const ALL: [&str; 14] = [
     STATE,
     SUPERVISOR,
     FAKE_RUNNER,
     FAKE_ONA,
     FAKE_TTY,
     HANDSHAKE_POLL_MS,
+    HANDSHAKE_TIMEOUT_MS,
     GUARD_GRACE_MS,
     INIT_WORKSPACES,
     INIT_PATH,

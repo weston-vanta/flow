@@ -82,7 +82,6 @@ pub struct Host {
     pub env_id: String,
     pub ssh_alias: String,
     /// `(VAR, VALUE)`: this host is the local one when `$VAR` equals `VALUE`.
-    #[serde(default)]
     pub local_marker_env: Option<(String, String)>,
 }
 
@@ -95,10 +94,8 @@ pub struct Repo {
     /// fallback creates them there, and `flow inventory` shows a path only for worktrees
     /// elsewhere. When unset, dispatch uses the sibling `<path>-worktrees`, and the inventory
     /// view infers it from the existing worktrees, falling back to that sibling.
-    #[serde(default)]
     pub worktrees_dir: Option<PathBuf>,
     /// Creates and lists the repo's worktrees; plain `git worktree` when unset.
-    #[serde(default)]
     pub worktree_tool: Option<WorktreeTool>,
 }
 

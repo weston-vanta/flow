@@ -52,7 +52,6 @@ pub struct RegistrySession {
 struct RegistryEntry {
     session_id: String,
     cwd: PathBuf,
-    #[serde(default)]
     name: Option<String>,
     #[serde(default)]
     status: String,
@@ -65,9 +64,7 @@ struct RegistryEntry {
 /// One transcript line, as far as `latest_summary` reads it.
 #[derive(Deserialize)]
 struct TranscriptLine {
-    #[serde(default)]
     subtype: Option<String>,
-    #[serde(default)]
     content: Option<String>,
 }
 
@@ -76,23 +73,13 @@ struct TranscriptLine {
 pub struct MatchedAgent {
     pub host: String,
     pub agent: Agent,
-    /// The task whose worker the agent is; `None` for a hand-started session.
-    pub task: Option<String>,
-    /// Whether the agent is the supervisor.
-    pub supervisor: bool,
-    /// Whether the agent is a hand-started session in the follow list.
+    pub owner: Owner,
+    /// Whether the agent is an observed session in the follow list.
     pub followed: bool,
     pub session: Option<RegistrySession>,
     /// How `session` was found; `None` when there is no session.
     pub matched_by: Option<MatchedBy>,
     pub summary: Option<String>,
-}
-
-impl MatchedAgent {
-    /// Whether the agent is an observed session: neither a task's worker nor the supervisor.
-    pub fn is_observed(&self) -> bool {
-        self.task.is_none() && !self.supervisor
-    }
 }
 
 /// How an agent's registry session was found.
@@ -356,11 +343,7 @@ pub fn match_agents(
             MatchedAgent {
                 host: f.host.to_owned(),
                 agent: f.agent.clone(),
-                task: match &f.owner {
-                    Owner::Task(id) => Some(id.clone()),
-                    _ => None,
-                },
-                supervisor: f.owner == Owner::Supervisor,
+                owner: f.owner.clone(),
                 followed: false,
                 session: session.cloned(),
                 matched_by: session.map(|_| matched_by),
@@ -604,21 +587,16 @@ mod tests {
 
         let matched = match_agents(&[("host-a", &agents)], &tasks, None, &registry);
 
-        let summary: Vec<(Option<&str>, Option<&str>)> = matched
+        let summary: Vec<(&Owner, Option<&str>)> = matched
             .iter()
-            .map(|a| {
-                (
-                    a.task.as_deref(),
-                    a.session.as_ref().map(|s| s.session_id.as_str()),
-                )
-            })
+            .map(|a| (&a.owner, a.session.as_ref().map(|s| s.session_id.as_str())))
             .collect();
         assert_eq!(
             summary,
             [
-                (Some("aaaaaaab"), Some("s-task")),
-                (None, Some("s-hand")),
-                (None, None),
+                (&Owner::Task("aaaaaaab".to_owned()), Some("s-task")),
+                (&Owner::Observed, Some("s-hand")),
+                (&Owner::Observed, None),
             ]
         );
         assert_eq!(
@@ -640,8 +618,11 @@ mod tests {
 
         let matched = match_agents(&[("host-a", &agents)], &[adopted], None, &[]);
 
-        let tasks: Vec<Option<&str>> = matched.iter().map(|m| m.task.as_deref()).collect();
-        assert_eq!(tasks, [None, Some("aaaaaaab")]);
+        let owners: Vec<&Owner> = matched.iter().map(|m| &m.owner).collect();
+        assert_eq!(
+            owners,
+            [&Owner::Observed, &Owner::Task("aaaaaaab".to_owned())]
+        );
     }
 
     #[test]
@@ -752,17 +733,14 @@ mod tests {
             &[],
         );
 
-        let seen: Vec<(Option<&str>, bool, bool)> = matched
-            .iter()
-            .map(|m| (m.task.as_deref(), m.supervisor, m.is_observed()))
-            .collect();
+        let owners: Vec<&Owner> = matched.iter().map(|m| &m.owner).collect();
         assert_eq!(
-            seen,
+            owners,
             [
-                (None, true, false),
-                (Some("aaaaaaab"), false, false),
-                (None, false, true),
-                (Some("aaaaaaac"), false, false),
+                &Owner::Supervisor,
+                &Owner::Task("aaaaaaab".to_owned()),
+                &Owner::Observed,
+                &Owner::Task("aaaaaaac".to_owned()),
             ]
         );
     }

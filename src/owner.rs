@@ -1,33 +1,28 @@
 //! Who a herdr agent belongs to: the supervisor, a task's worker, or nobody flow manages. herdr
 //! reuses pane ids after a server restart, so the Claude Code session id herdr reports decides;
-//! a pane decides only for an agent herdr reports no session for.
+//! a pane decides only for an agent herdr reports no id for.
+
+use serde::Serialize;
 
 use crate::herdr::Agent;
 use crate::state::task::{HerdrTarget, Status, TaskRecord};
 use crate::supervisor::Lock;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Owner {
     Supervisor,
     /// The worker of this task.
     Task(String),
-    /// No session reported, in the running supervisor's pane: it may be the supervisor.
+    /// No session reported, in the running supervisor's pane: it may be the supervisor, so flow
+    /// neither watches it nor lets it be followed or adopted.
     Unconfirmed,
     Observed,
 }
 
-impl Owner {
-    /// Whether the agent counts as an observed session. An unconfirmed agent does, except that
-    /// `flow task adopt` refuses it.
-    pub fn is_observed(&self) -> bool {
-        matches!(self, Owner::Observed | Owner::Unconfirmed)
-    }
-}
-
-/// Who owns `agent`, listed on `host`, given the running supervisor's `lock` and `tasks`. A
-/// session id equal to the lock's or to a task's not yet closed decides. With no id, the agent
-/// is an open task's when its pane is the task's target and the task has recorded no session,
-/// else unconfirmed in the lock's pane.
+/// Who owns `agent` on `host`, given the running supervisor's `lock` and `tasks`. A reported
+/// session id decides; with none, the newest task whose recorded target is the agent's pane
+/// owns it, else it is unconfirmed in the lock's pane.
 pub fn owner(
     host: &str,
     agent: &Agent,
@@ -53,11 +48,7 @@ pub fn owner(
     let in_pane = |target: &HerdrTarget| target.is(host, &agent.session, &agent.pane_id);
     let task = tasks
         .iter()
-        .filter(|(_, status)| {
-            status.state.is_open()
-                && status.claude_session.is_none()
-                && status.herdr.as_ref().is_some_and(in_pane)
-        })
+        .filter(|(_, status)| status.herdr.as_ref().is_some_and(in_pane))
         .max_by_key(|(record, _)| record.created);
     if let Some((record, _)) = task {
         return Owner::Task(record.id.clone());
@@ -211,13 +202,20 @@ mod tests {
                 agent("w1:p2", None),
                 None,
                 vec![working(Some("w1:p2"), Some("s-w"))],
-                Owner::Observed,
+                is_task("aaaaaaab"),
             ),
             (
-                "no id in a done task's pane",
+                "no id in a done task's pane before it is closed",
                 agent("w1:p2", None),
                 None,
-                vec![done(Some("w1:p2"), None)],
+                vec![done(Some("w1:p2"), Some("s-w"))],
+                is_task("aaaaaaab"),
+            ),
+            (
+                "no id in a closed task's pane",
+                agent("w1:p2", None),
+                None,
+                vec![done(None, Some("s-w"))],
                 Owner::Observed,
             ),
             (

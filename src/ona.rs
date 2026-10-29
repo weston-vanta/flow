@@ -74,7 +74,6 @@ struct ListedStatus {
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Content {
-    #[serde(default)]
     content_location_in_machine: Option<PathBuf>,
 }
 
