@@ -1,15 +1,18 @@
 //! `flow down`: stops the supervisor and leaves every worker and task as it is. It finds the
 //! supervisor in the pane its lock records, telling it as `flow up` does, since herdr reuses pane
 //! ids, and closes that pane, or the workspace it sits in when it is that workspace's only pane.
-//! When another session runs in that pane, or one it cannot tell from the supervisor, it refuses,
-//! changing nothing; `--force` closes the lock's pane or workspace without checking what runs
-//! there. When the pane holds no agent, the supervisor's workspace is closed only while herdr lists
-//! it under the supervisor's label. It then marks the lock stopped, keeping the Claude Code session
-//! to resume, and clears the watch lock, stopping a watcher still running on this machine; a
-//! watcher on another host ends on its own at its next cycle once its lock is gone. The next `flow
-//! up` starts the supervisor again on the host it runs on, resuming that session. When the
-//! supervisor ran in a herdr session that is neither the configured one nor herdr's `default`, and
-//! that session has no agents and no workspaces left, it offers to stop that session's server.
+//! When the pane holds no agent, the supervisor's workspace is closed only while herdr lists it
+//! under the supervisor's label. When another session runs there, the supervisor is gone and the
+//! pane is left to its owner. When flow cannot tell the agent there from the supervisor, it
+//! refuses, changing nothing, and only the user can say which it is: `--force` takes it to be the
+//! supervisor and closes that pane alone, once herdr lists it in the lock's workspace; `--forget`
+//! takes it to be someone else's and closes nothing. Either way it then marks the lock stopped,
+//! keeping the Claude Code session to resume, and clears the watch lock, stopping a watcher still
+//! running on this machine; a watcher on another host ends on its own at its next cycle once its
+//! lock is gone. The next `flow up` starts the supervisor again on the host it runs on, resuming
+//! that session. When the supervisor ran in a herdr session that is neither the configured one
+//! nor herdr's `default`, and that session has no agents and no workspaces left, it offers to
+//! stop that session's server.
 
 use std::path::Path;
 use std::process::{Command, ExitCode};
@@ -27,13 +30,24 @@ use crate::state::config::{Config, Host};
 use crate::supervisor::{self, Identity, Lock, SUPERVISOR_NAME};
 use crate::watch::lock as watch_lock;
 
+/// What the user says the agent in the lock's pane is, for an agent flow cannot tell from the
+/// supervisor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Occupant {
+    /// Nothing said: flow tells it as `flow up` does, and refuses when it cannot.
+    Unsaid,
+    /// `--force`: the supervisor, so its pane is closed.
+    Supervisor,
+    /// `--forget`: someone else's, so nothing is closed.
+    NotSupervisor,
+}
+
 /// Stops the supervisor `state/supervisor/lock.json` records, printing a line per step and how
 /// many open tasks keep running. With `yes`, stops an emptied herdr session's server without
-/// asking; with `force`, closes the lock's pane or workspace without checking what runs there.
-/// Fails, changing nothing, when the supervisor's host cannot be reached, since the supervisor
-/// may be alive there, and refuses when another session runs in its pane or one flow cannot
-/// tell from the supervisor.
-pub fn run(state: &StateDir, yes: bool, force: bool) -> anyhow::Result<ExitCode> {
+/// asking. Fails, changing nothing, when the supervisor's host cannot be reached, since the
+/// supervisor may be alive there, and refuses when flow cannot tell the agent in its pane from
+/// the supervisor and `occupant` does not say.
+pub fn run(state: &StateDir, yes: bool, occupant: Occupant) -> anyhow::Result<ExitCode> {
     let Some(lock) = supervisor::load(state)? else {
         super::print("no supervisor recorded; nothing to stop\n")?;
         return Ok(ExitCode::SUCCESS);
@@ -45,10 +59,29 @@ pub fn run(state: &StateDir, yes: bool, force: bool) -> anyhow::Result<ExitCode>
     let config = Config::load(state)?;
     let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
     let herdr = Herdr::with_session(runner, &lock.herdr.session);
-    let host = reachable_host(state, &lock)?;
-    if let Some(host) = &host {
-        close_supervisor(&herdr, host, &lock, force)?;
-    }
+    let host = match occupant {
+        Occupant::NotSupervisor => {
+            super::print(&format!(
+                "left pane {} on {} as it is (--forget)\n",
+                lock.herdr.pane_id, lock.herdr.host
+            ))?;
+            None
+        }
+        Occupant::Supervisor => {
+            let host = reachable_host(state, &lock)?;
+            if let Some(host) = &host {
+                close_lock_pane(&herdr, host, &lock)?;
+            }
+            host
+        }
+        Occupant::Unsaid => {
+            let host = reachable_host(state, &lock)?;
+            if let Some(host) = &host {
+                close_supervisor(&herdr, host, &lock)?;
+            }
+            host
+        }
+    };
     let marked = supervisor::mark_stopped(state)?;
     super::print(&format!(
         "{}\n",
@@ -117,47 +150,70 @@ fn reachable_host(state: &StateDir, lock: &Lock) -> anyhow::Result<Option<Host>>
     Ok(Some(record.host()))
 }
 
+fn unreachable(host: &Host) -> impl Fn(anyhow::Error) -> anyhow::Error + Copy + use<'_> {
+    move |err| {
+        err.context(format!(
+            "closing the supervisor's pane on {}; nothing stopped, and the lock is kept",
+            host.name
+        ))
+    }
+}
+
+fn already_gone(host: &Host, lock: &Lock) -> anyhow::Result<()> {
+    super::print(&format!(
+        "the supervisor's pane {} on {} is already gone\n",
+        lock.herdr.pane_id, host.name
+    ))
+}
+
+/// Closes the lock's pane on `host`, which the user says holds the supervisor, once herdr lists
+/// it in the lock's workspace; never a workspace by id, which herdr may have given to one of the
+/// user's, and herdr closes the supervisor's own with its last pane. Refuses, closing nothing,
+/// when herdr does not list that pane there.
+fn close_lock_pane(herdr: &Herdr, host: &Host, lock: &Lock) -> anyhow::Result<()> {
+    let target = &lock.herdr;
+    let listed = herdr
+        .panes_if_running(host)
+        .map_err(unreachable(host))?
+        .unwrap_or_default()
+        .iter()
+        .any(|pane| pane.pane_id == target.pane_id && pane.workspace_id == target.workspace_id);
+    if !listed {
+        return Err(Refused(format!(
+            "herdr lists no pane {} in workspace {} on {} (herdr session {}), so flow down \
+             --force closed nothing and kept the lock; run `flow down` without --force",
+            target.pane_id,
+            target.workspace_id,
+            host.name,
+            herdr.session()
+        ))
+        .into());
+    }
+    if !herdr
+        .close_pane(host, &target.pane_id)
+        .map_err(unreachable(host))?
+    {
+        return already_gone(host, lock);
+    }
+    super::print(&format!(
+        "closed pane {} in workspace {} on {} (herdr session {}), taking it to be the supervisor \
+         (--force)\n",
+        target.pane_id,
+        target.workspace_id,
+        host.name,
+        herdr.session()
+    ))
+}
+
 /// Closes the supervisor on `host`: its pane, or its whole workspace when the pane is the
 /// workspace's only one. The pane is the lock's when the agent there is confirmed to be the
 /// supervisor (see `Lock::identify`), or, with no agent there, while herdr lists the lock's
-/// workspace under the supervisor's label; otherwise it says the pane is already gone. Refuses,
-/// closing nothing, when the agent there is another or cannot be told from the supervisor.
-/// With `force`, closes the lock's pane or workspace without asking what runs there.
-fn close_supervisor(herdr: &Herdr, host: &Host, lock: &Lock, force: bool) -> anyhow::Result<()> {
-    let unreachable = |err: anyhow::Error| {
-        err.context(format!(
-            "closing the supervisor's workspace on {}; nothing stopped, and the lock is kept",
-            host.name
-        ))
-    };
-    let gone = || {
-        super::print(&format!(
-            "the supervisor's pane {} on {} is already gone\n",
-            lock.herdr.pane_id, host.name
-        ))
-    };
-    if force {
-        let workspaces = herdr.workspaces_if_running(host).map_err(unreachable)?;
-        let Some(workspace) = workspaces
-            .unwrap_or_default()
-            .into_iter()
-            .find(|workspace| workspace.workspace_id == lock.herdr.workspace_id)
-        else {
-            return gone();
-        };
-        let Some(closed) = close_pane_or_workspace(herdr, host, &workspace, &lock.herdr.pane_id)
-            .map_err(unreachable)?
-        else {
-            return gone();
-        };
-        return super::print(&format!(
-            "closed the lock's {} on {} (herdr session {}) without checking what runs there \
-             (--force)\n",
-            closed.what(&workspace, &lock.herdr.pane_id),
-            host.name,
-            herdr.session()
-        ));
-    }
+/// workspace under the supervisor's label; otherwise it says the pane is already gone. An agent
+/// there that is clearly another's is left to its owner, the supervisor being gone. Refuses,
+/// closing nothing, when the agent there cannot be told from the supervisor.
+fn close_supervisor(herdr: &Herdr, host: &Host, lock: &Lock) -> anyhow::Result<()> {
+    let unreachable = unreachable(host);
+    let gone = || already_gone(host, lock);
     let Some(mut agents) = herdr.agents_if_running(host).map_err(unreachable)? else {
         return gone();
     };
@@ -182,20 +238,20 @@ fn close_supervisor(herdr: &Herdr, host: &Host, lock: &Lock, force: bool) -> any
                 }),
             Identity::Unconfirmed => {
                 return Err(Refused(format!(
-                    "{}. flow down stopped nothing and kept the lock; if it is not the \
-                     supervisor, `flow down --force` stops it",
-                    supervisor::unconfirmed(lock, &host.name, agent)
+                    "{}. flow down stopped nothing and kept the lock. {}",
+                    supervisor::unconfirmed(lock, &host.name, agent),
+                    supervisor::UNCONFIRMED_WAY_OUT
                 ))
                 .into());
             }
             Identity::Other => {
-                return Err(Refused(format!(
-                    "pane {} on {} runs {}; flow down stopped nothing and kept the lock",
+                return super::print(&format!(
+                    "the supervisor is gone from pane {} on {}, which now runs {}; flow down \
+                     leaves that pane to its owner\n",
                     agent.pane_id,
                     host.name,
                     supervisor::not_the_supervisor(lock, agent)
-                ))
-                .into());
+                ));
             }
         },
         None => match workspaces
@@ -245,15 +301,6 @@ fn close_supervisor(herdr: &Herdr, host: &Host, lock: &Lock, force: bool) -> any
 enum Closed {
     Pane,
     Workspace,
-}
-
-impl Closed {
-    fn what(&self, workspace: &Workspace, pane_id: &str) -> String {
-        match self {
-            Closed::Pane => format!("pane {pane_id}"),
-            Closed::Workspace => format!("workspace {}", workspace.workspace_id),
-        }
-    }
 }
 
 /// "other N panes" or "other pane" of `workspace` beside the closed one, or "other panes" when

@@ -29,17 +29,21 @@ pub fn is_supervisor_session() -> bool {
 pub const SUPERVISOR_CWD: &str = "/workspaces/flow";
 /// The supervisor's herdr workspace label and Claude Code session name.
 pub const SUPERVISOR_NAME: &str = "flow-supervisor";
+/// How the refusals beside an agent `Lock::identify` leaves unconfirmed tell the user out.
+pub const UNCONFIRMED_WAY_OUT: &str = "If that is the supervisor, `flow down --force` closes \
+     that pane; if it is your own session, `flow down --forget` leaves it alone and clears the \
+     lock; then `flow up`.";
 const LOCK_FILE: &str = "supervisor/lock.json";
 
 /// What an agent in the lock's pane is to the supervisor, as `Lock::identify` tells.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Identity {
     Supervisor,
-    /// Not the supervisor: it runs elsewhere, or herdr reports another session while it runs
-    /// outside the supervisor's cwd or workspace.
+    /// Not the supervisor: herdr reports another session, or none, while it runs outside the
+    /// supervisor's cwd and everything below it, or outside the lock's workspace.
     Other,
-    /// Possibly the supervisor: it runs in the supervisor's cwd and workspace, but herdr's view
-    /// does not confirm it.
+    /// Possibly the supervisor: it runs in or below the supervisor's cwd, in the lock's
+    /// workspace, but herdr's view does not confirm it.
     Unconfirmed,
 }
 
@@ -80,12 +84,14 @@ impl Lock {
     /// a server restart, so the pane alone could hold anyone's agent.
     /// - When the lock has the supervisor's Claude Code session and herdr reports the agent's,
     ///   equal ids confirm it.
-    /// - Otherwise an agent outside the supervisor's cwd or the lock's workspace is another.
+    /// - Otherwise an agent outside the supervisor's cwd and everything below it, or outside
+    ///   the lock's workspace, is another.
     /// - One inside both is confirmed when herdr reports no session, or flow has not recorded
-    ///   the supervisor's, and its workspace is still labelled as the supervisor's. Different
-    ///   ids, as after a missed SessionStart hook, or another label leave it unconfirmed: the
-    ///   user starts sessions in the same checkout, but a second supervisor beside the live
-    ///   one would resume the same session.
+    ///   the supervisor's, and it runs in the supervisor's cwd itself, in a workspace still
+    ///   labelled as the supervisor's. Different ids, as after a missed SessionStart hook,
+    ///   another label, or a cwd below the supervisor's leave it unconfirmed: the user starts
+    ///   sessions in the same checkout, but a second supervisor beside the live one would
+    ///   resume the same session.
     pub fn identify(&self, agent: &Agent) -> Identity {
         let ids = (
             self.claude_session.as_deref(),
@@ -96,27 +102,28 @@ impl Lock {
         {
             return Identity::Supervisor;
         }
-        let at_home =
-            agent.cwd == Path::new(SUPERVISOR_CWD) && agent.workspace_id == self.herdr.workspace_id;
-        if !at_home {
+        if !in_checkout(&agent.cwd) || agent.workspace_id != self.herdr.workspace_id {
             return Identity::Other;
         }
-        let labelled = agent.workspace_label.as_deref() == Some(SUPERVISOR_NAME);
+        let at_home = agent.cwd == Path::new(SUPERVISOR_CWD)
+            && agent.workspace_label.as_deref() == Some(SUPERVISOR_NAME);
         match ids {
             (Some(_), Some(_)) => Identity::Unconfirmed,
-            _ if labelled => Identity::Supervisor,
+            _ if at_home => Identity::Supervisor,
             _ => Identity::Unconfirmed,
         }
     }
 }
 
-/// Gives each of `agents` in the supervisor's cwd the label `workspaces` lists for its
+/// Whether `cwd` is the supervisor's cwd or below it.
+pub fn in_checkout(cwd: &Path) -> bool {
+    cwd.starts_with(SUPERVISOR_CWD)
+}
+
+/// Gives each of `agents` in or below the supervisor's cwd the label `workspaces` lists for its
 /// workspace, which `Lock::identify` needs when the Claude Code sessions do not decide.
 pub fn label_workspaces(agents: &mut [Agent], workspaces: &[Workspace]) {
-    for agent in agents
-        .iter_mut()
-        .filter(|agent| agent.cwd == Path::new(SUPERVISOR_CWD))
-    {
+    for agent in agents.iter_mut().filter(|agent| in_checkout(&agent.cwd)) {
         agent.workspace_label = workspaces
             .iter()
             .find(|workspace| workspace.workspace_id == agent.workspace_id)
@@ -125,16 +132,13 @@ pub fn label_workspaces(agents: &mut [Agent], workspaces: &[Workspace]) {
 }
 
 /// `label_workspaces` with the workspaces `herdr` lists on `host`, asked only when one of
-/// `agents` runs in the supervisor's cwd.
+/// `agents` runs in or below the supervisor's cwd.
 pub fn look_up_workspace_labels(
     herdr: &herdr::Herdr,
     host: &Host,
     agents: &mut [Agent],
 ) -> anyhow::Result<()> {
-    if agents
-        .iter()
-        .any(|agent| agent.cwd == Path::new(SUPERVISOR_CWD))
-    {
+    if agents.iter().any(|agent| in_checkout(&agent.cwd)) {
         label_workspaces(agents, &herdr.workspaces(host)?);
     }
     Ok(())
@@ -176,6 +180,7 @@ pub fn not_the_supervisor(lock: &Lock, agent: &Agent) -> String {
 /// the supervisor, for messages.
 pub fn unconfirmed(lock: &Lock, host: &str, agent: &Agent) -> String {
     let label = match agent.workspace_label.as_deref() {
+        Some(SUPERVISOR_NAME) => format!("it runs below {SUPERVISOR_CWD} rather than in it"),
         Some(label) => format!("its workspace is labelled \"{label}\", not \"{SUPERVISOR_NAME}\""),
         None => "its workspace's label could not be read".to_owned(),
     };
@@ -195,9 +200,11 @@ pub fn unconfirmed(lock: &Lock, host: &str, agent: &Agent) -> String {
         }
     };
     format!(
-        "pane {} on {host} holds an agent flow cannot tell from the supervisor: it runs in \
-         {SUPERVISOR_CWD} in the supervisor's workspace {}, but {why}",
-        agent.pane_id, agent.workspace_id
+        "pane {} on {host} holds an agent flow cannot tell from the supervisor: it runs in {} in \
+         the supervisor's workspace {}, but {why}",
+        agent.pane_id,
+        agent.cwd.display(),
+        agent.workspace_id
     )
 }
 

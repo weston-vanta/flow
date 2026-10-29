@@ -98,8 +98,8 @@ pub struct Agent {
     #[serde(default)]
     pub agent_session_id: Option<String>,
     /// The label of the agent's workspace, which herdr's agent list does not carry. flow looks
-    /// it up only for agents in the supervisor's cwd, the ones whose workspace can tell the
-    /// supervisor apart (see `Lock::identify`); `None` for the rest.
+    /// it up only for agents in or below the supervisor's cwd, the ones whose workspace can tell
+    /// the supervisor apart (see `Lock::identify`); `None` for the rest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_label: Option<String>,
 }
@@ -447,6 +447,16 @@ impl Herdr {
     pub fn panes(&self, host: &Host) -> anyhow::Result<Vec<Pane>> {
         let list: PaneList = self.call_json(host, &self.argv(&["pane", "list"]))?;
         Ok(list.panes)
+    }
+
+    /// The panes in this session on `host`, or `None` when its server is not running.
+    pub fn panes_if_running(&self, host: &Host) -> anyhow::Result<Option<Vec<Pane>>> {
+        let argv = self.argv(&["pane", "list"]);
+        let Some(output) = self.call_unless(host, &argv, SERVER_NOT_RUNNING_CODE)? else {
+            return Ok(None);
+        };
+        let list: PaneList = parse_result(host, &argv, &output)?;
+        Ok(Some(list.panes))
     }
 
     /// Stops this session's herdr server on `host`, returning what herdr printed.

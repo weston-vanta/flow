@@ -5,11 +5,11 @@
 //! read from Claude Code's session registry and transcripts. herdr reuses pane ids after a server
 //! restart, so a pane match holds only when the Claude Code session herdr reports for the agent
 //! does not contradict the task's or the supervisor's (see `task_runs` and `Lock::identify`). An
-//! agent in the supervisor's pane, cwd and workspace whose identity cannot be confirmed may be the
-//! supervisor, and is neither the supervisor nor observed. Reading is all flow does there; it never
-//! writes Claude Code's state. Any observed session turning `blocked` wakes the supervisor; the
-//! follow list, `state/supervisor/follow.json`, names the followed ones, whose other state changes
-//! should wake it too.
+//! agent in the supervisor's pane and workspace, in or below its cwd, whose identity cannot be
+//! confirmed may be the supervisor, and is neither the supervisor nor observed. Reading is all flow
+//! does there; it never writes Claude Code's state. Any observed session turning `blocked` wakes
+//! the supervisor; the follow list, `state/supervisor/follow.json`, names the followed ones, whose
+//! other state changes should wake it too.
 //!
 //! herdr can report an agent's Claude Code session id, which names its registry session
 //! exactly. An agent it reports none for is matched by cwd, and only when no other such agent
@@ -984,6 +984,33 @@ mod tests {
             (Some("s-sup"), labelled("my notes", in_clone()), maybe),
             (None, labelled("my notes", in_clone()), maybe),
             (None, agent("default", "w1:p1", "/workspaces/flow"), maybe),
+            (
+                None,
+                labelled(
+                    "flow-supervisor",
+                    agent("default", "w1:p1", "/workspaces/flow/docs"),
+                ),
+                maybe,
+            ),
+            (
+                Some("s-sup"),
+                reporting(
+                    "s-hand",
+                    labelled(
+                        "flow-supervisor",
+                        agent("default", "w1:p1", "/workspaces/flow/docs"),
+                    ),
+                ),
+                maybe,
+            ),
+            (
+                None,
+                labelled(
+                    "flow-supervisor",
+                    agent("default", "w1:p1", "/workspaces/flow-notes"),
+                ),
+                other,
+            ),
         ];
         for (recorded, agent, (supervisor, maybe_supervisor)) in cases {
             let lock = supervisor_lock("w1:p1", recorded);

@@ -2,8 +2,9 @@
 //! live supervisor is found in the herdr session its lock records, whatever the configured one; a
 //! new one starts in the configured session. One `flow down` stopped is not looked for: a new one
 //! starts here at once, resuming its Claude Code session. When the lock's pane holds an agent that
-//! runs in the supervisor's cwd and workspace but cannot be confirmed as the supervisor, it refuses
-//! rather than start a second supervisor on the same session; `flow down --force` clears the way.
+//! runs in or below the supervisor's cwd, in its workspace, but cannot be confirmed as the
+//! supervisor, it refuses rather than start a second supervisor on the same session; `flow down
+//! --force` or `--forget`, as the user tells which it is, clears the way.
 
 use std::os::unix::process::CommandExt;
 use std::path::Path;
@@ -119,8 +120,9 @@ fn live_host<'a>(
             Identity::Supervisor => return Ok(Some(host)),
             Identity::Unconfirmed => bail!(
                 "{}. flow up started nothing, since a second supervisor would resume the same \
-                 session; if it is not the supervisor, run `flow down --force`, then `flow up`",
-                supervisor::unconfirmed(lock, &host.name, agent)
+                 session. {}",
+                supervisor::unconfirmed(lock, &host.name, agent),
+                supervisor::UNCONFIRMED_WAY_OUT
             ),
             Identity::Other => {}
         }

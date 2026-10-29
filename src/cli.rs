@@ -135,10 +135,14 @@ pub enum Command {
         /// herdr's default and has no agents and no workspaces left, without asking
         #[arg(long)]
         yes: bool,
-        /// Close the pane or workspace the lock records and mark it stopped without checking
-        /// what runs there, for an agent flow cannot tell from the supervisor
+        /// For an agent flow cannot tell from the supervisor: it is the supervisor, so close
+        /// the pane the lock records, then mark the supervisor stopped
         #[arg(long)]
         force: bool,
+        /// For an agent flow cannot tell from the supervisor: it is not the supervisor, so close
+        /// nothing and mark the supervisor stopped, keeping its session to resume
+        #[arg(long, conflicts_with = "force")]
+        forget: bool,
     },
 }
 
@@ -465,7 +469,14 @@ pub fn run(cli: Cli, state: &StateDir, repo_root: &Path) -> anyhow::Result<ExitC
         Command::Guard => return cmd::guard::run(state),
         Command::Steer { id, text } => cmd::steer::run(state, &id, &text),
         Command::Up => cmd::up::run(state),
-        Command::Down { yes, force } => return cmd::down::run(state, yes, force),
+        Command::Down { yes, force, forget } => {
+            let occupant = match (force, forget) {
+                (true, _) => cmd::down::Occupant::Supervisor,
+                (_, true) => cmd::down::Occupant::NotSupervisor,
+                _ => cmd::down::Occupant::Unsaid,
+            };
+            return cmd::down::run(state, yes, occupant);
+        }
     };
     done.map(|()| ExitCode::SUCCESS)
 }

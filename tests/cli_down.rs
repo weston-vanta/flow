@@ -510,35 +510,41 @@ fn down_closes_the_workspace_a_dead_supervisor_left_under_its_label() {
 }
 
 #[test]
-fn down_refuses_when_the_supervisors_pane_runs_another_session() {
-    let unconfirmed = |why: &str| {
+fn down_refuses_beside_an_agent_it_cannot_tell_from_the_supervisor() {
+    let unconfirmed = |cwd: &str, why: &str| {
         format!(
             "pane w1:p1 on host-a holds an agent flow cannot tell from the supervisor: it runs in \
-             /workspaces/flow in the supervisor's workspace w1, but {why}. flow down stopped \
-             nothing and kept the lock; if it is not the supervisor, `flow down --force` stops \
-             it\n"
+             {cwd} in the supervisor's workspace w1, but {why}. flow down stopped nothing and \
+             kept the lock. If that is the supervisor, `flow down --force` closes that pane; if \
+             it is your own session, `flow down --forget` leaves it alone and clears the lock; \
+             then `flow up`.\n"
         )
     };
     for (agents, listed, refusal) in [
         (
             in_lock_pane("/workspaces/flow", Some("s-hand")),
             supervisor_listed(),
-            unconfirmed("herdr reports Claude Code session s-hand for it, not the supervisor's s9"),
-        ),
-        (
-            AGENT_LIST.to_owned(),
-            supervisor_listed(),
-            "pane w1:p1 on host-a runs claude in /workspaces/acme-worktrees/login-form, \
-             workspace w1, not the supervisor in /workspaces/flow, workspace w1 labelled \
-             \"flow-supervisor\"; flow down stopped nothing and kept the lock\n"
-                .to_owned(),
+            unconfirmed(
+                "/workspaces/flow",
+                "herdr reports Claude Code session s-hand for it, not the supervisor's s9",
+            ),
         ),
         (
             in_lock_pane("/workspaces/flow", None),
             relabelled("my notes"),
             unconfirmed(
+                "/workspaces/flow",
                 "herdr reports no Claude Code session for it, and its workspace is labelled \
                  \"my notes\", not \"flow-supervisor\"",
+            ),
+        ),
+        (
+            in_lock_pane("/workspaces/flow/docs", None),
+            supervisor_listed(),
+            unconfirmed(
+                "/workspaces/flow/docs",
+                "herdr reports no Claude Code session for it, and it runs below \
+                 /workspaces/flow rather than in it",
             ),
         ),
     ] {
@@ -726,64 +732,139 @@ fn down_closes_only_the_supervisors_pane_when_its_workspace_holds_others() {
 }
 
 #[test]
-fn down_force_closes_the_locks_workspace_whatever_runs_there() {
-    for (agents, panes, closed) in [
-        (
-            in_lock_pane("/workspaces/flow", Some("s-hand")),
-            1,
-            "workspace w1",
-        ),
-        (AGENT_LIST.to_owned(), 2, "pane w1:p1"),
-        (NO_AGENTS.to_owned(), 1, "workspace w1"),
+fn down_marks_the_lock_stopped_when_the_supervisors_pane_runs_someone_else() {
+    let fx = Fixture::new();
+    fx.write_lock("env-0001", "host-a", Some("default"));
+
+    let stdout = stdout_of(
+        fx.flow(&[ok(AGENT_LIST), ok(&supervisor_listed())])
+            .arg("down"),
+    );
+
+    assert_eq!(
+        stdout,
+        format!(
+            "the supervisor is gone from pane w1:p1 on host-a, which now runs claude in \
+             /workspaces/acme-worktrees/login-form, workspace w1, not the supervisor in \
+             /workspaces/flow, workspace w1 labelled \"flow-supervisor\"; flow down leaves that \
+             pane to its owner\n{KEPT}{NOTE}"
+        )
+    );
+    assert_eq!(fx.argvs().len(), 2);
+    fx.assert_stopped();
+}
+
+/// `pane list` answering with one pane per `(pane_id, workspace_id)`.
+fn panes(listed: &[(&str, &str)]) -> Value {
+    let panes: Vec<Value> = listed
+        .iter()
+        .map(|(pane_id, workspace_id)| json!({"pane_id": pane_id, "workspace_id": workspace_id}))
+        .collect();
+    let list = json!({"id": "cli:pane:list", "result": {"type": "pane_list", "panes": panes}});
+    json!({"argv": ["pane", "list"], "status": 0, "stdout": list.to_string(), "stderr": ""})
+}
+
+#[test]
+fn down_force_closes_only_the_locks_pane_and_never_a_workspace() {
+    for listed in [
+        vec![("w1:p1", "w1"), ("w1:p2", "w1"), ("w2:p1", "w2")],
+        vec![("w1:p1", "w1")],
     ] {
         let fx = Fixture::new();
         fx.write_lock("env-0001", "host-a", Some("default"));
-        let listed = if panes == 1 {
-            relabelled("my notes")
-        } else {
-            relabelled("my notes").replacen(r#""pane_count":1"#, r#""pane_count":2"#, 1)
-        };
         let script = [
-            json!({"argv": ["agent", "list"], "status": 0, "stdout": agents, "stderr": ""}),
-            ok(&listed),
-            ok(WORKSPACE_CLOSED),
+            panes(&listed),
+            json!({"argv": ["pane", "close"], "status": 0, "stdout": PANE_CLOSED, "stderr": ""}),
+            json!({"argv": ["workspace", "close"], "status": 0, "stdout": WORKSPACE_CLOSED, "stderr": ""}),
         ];
 
         let stdout = stdout_of(fx.flow(&script).args(["down", "--force"]));
 
-        let close = if panes == 1 {
-            words(&["herdr", "--session", "default", "workspace", "close", "w1"])
-        } else {
-            words(&["herdr", "--session", "default", "pane", "close", "w1:p1"])
-        };
         assert_eq!(
             fx.argvs(),
             [
-                words(&["herdr", "--session", "default", "workspace", "list"]),
-                close
+                words(&["herdr", "--session", "default", "pane", "list"]),
+                words(&["herdr", "--session", "default", "pane", "close", "w1:p1"]),
             ]
         );
-        assert!(
-            stdout.starts_with(&format!(
-                "closed the lock's {closed} on host-a (herdr session default) without checking \
-                 what runs there (--force)\n"
-            )),
-            "{stdout}"
+        assert_eq!(
+            stdout,
+            format!(
+                "closed pane w1:p1 in workspace w1 on host-a (herdr session default), taking it \
+                 to be the supervisor (--force)\n{KEPT}{NOTE}"
+            )
         );
         fx.assert_stopped();
     }
 }
 
 #[test]
-fn down_force_notes_a_workspace_already_gone() {
+fn down_force_refuses_when_the_lock_pane_is_not_listed_in_its_workspace() {
+    let not_running = json!({"status": 1, "stdout": "", "stderr": SERVER_NOT_RUNNING});
+    for answer in [
+        panes(&[("w1:p2", "w1"), ("w2:p1", "w2")]),
+        panes(&[("w1:p1", "w2")]),
+        not_running,
+    ] {
+        let fx = Fixture::new();
+        fx.write_lock("env-0001", "host-a", Some("default"));
+        let before = fs::read_to_string(fx.lock_path()).unwrap();
+
+        let out = fx
+            .flow(std::slice::from_ref(&answer))
+            .args(["down", "--force"])
+            .assert()
+            .code(2)
+            .get_output()
+            .clone();
+
+        assert_eq!(
+            String::from_utf8(out.stderr).unwrap(),
+            "herdr lists no pane w1:p1 in workspace w1 on host-a (herdr session default), so \
+             flow down --force closed nothing and kept the lock; run `flow down` without \
+             --force\n",
+            "{answer}"
+        );
+        assert!(out.stdout.is_empty());
+        assert_eq!(fx.argvs().len(), 1);
+        assert_eq!(fs::read_to_string(fx.lock_path()).unwrap(), before);
+    }
+}
+
+#[test]
+fn down_forget_closes_nothing_and_marks_the_lock_stopped() {
     let fx = Fixture::new();
     fx.write_lock("env-0001", "host-a", Some("default"));
 
-    let stdout = stdout_of(fx.flow(&[ok(EMPTY_WORKSPACES)]).args(["down", "--force"]));
+    let stdout = stdout_of(fx.flow(&[]).args(["down", "--forget"]));
+
+    assert_eq!(
+        stdout,
+        format!("left pane w1:p1 on host-a as it is (--forget)\n{KEPT}{NOTE}")
+    );
+    assert!(fx.argvs().is_empty());
+    fx.assert_stopped();
+}
+
+#[test]
+fn down_force_and_forget_exclude_each_other() {
+    let fx = Fixture::new();
+    fx.write_lock("env-0001", "host-a", Some("default"));
+    let before = fs::read_to_string(fx.lock_path()).unwrap();
+
+    let out = fx
+        .flow(&[])
+        .args(["down", "--force", "--forget"])
+        .assert()
+        .code(2)
+        .get_output()
+        .clone();
 
     assert!(
-        stdout.starts_with("the supervisor's pane w1:p1 on host-a is already gone\n"),
-        "{stdout}"
+        String::from_utf8(out.stderr)
+            .unwrap()
+            .contains("cannot be used with")
     );
-    fx.assert_stopped();
+    assert!(fx.argvs().is_empty());
+    assert_eq!(fs::read_to_string(fx.lock_path()).unwrap(), before);
 }
