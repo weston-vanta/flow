@@ -1,0 +1,14 @@
+{
+  "state": "working",
+  "last_event": "2026-10-26T12:05:00Z",
+  "herdr": {
+    "host": "host-a",
+    "workspace_id": "w1",
+    "pane_id": "w1:p2",
+    "agent": "claude"
+  },
+  "claude_session": {
+    "session_id": "s-old",
+    "transcript_path": "/home/user/.claude/projects/old/s-old.jsonl"
+  }
+}

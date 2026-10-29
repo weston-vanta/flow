@@ -1,0 +1,10 @@
+{
+  "name": "host-b",
+  "env_id": "env-0002",
+  "seen": "2026-10-28T12:00:00Z",
+  "reachable": false,
+  "load1": null,
+  "worktrees": [],
+  "agents": [],
+  "prs": []
+}

@@ -1,0 +1,10 @@
+{
+  "id": "aaaaaaac",
+  "title": "New task",
+  "host": "host-a",
+  "cwd": "/work/repo",
+  "harness": "claude",
+  "created": "2026-10-28T12:00:00Z",
+  "owner": "supervisor",
+  "origin": "adopted"
+}

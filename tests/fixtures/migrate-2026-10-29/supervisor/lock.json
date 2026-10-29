@@ -1,0 +1,11 @@
+{
+  "host_env_id": "env-0001",
+  "herdr": {
+    "host": "host-a",
+    "workspace_id": "w1",
+    "pane_id": "w1:p1",
+    "agent": "claude"
+  },
+  "claude_session": "s-sup",
+  "since": "2026-10-26T11:00:00Z"
+}

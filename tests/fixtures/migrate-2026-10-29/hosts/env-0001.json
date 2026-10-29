@@ -1,0 +1,34 @@
+{
+  "name": "host-a",
+  "env_id": "env-0001",
+  "ssh_alias": "",
+  "seen": "2026-10-28T12:00:00Z",
+  "reachable": true,
+  "load1": 0.5,
+  "worktrees": [
+    {
+      "path": "/work/repo",
+      "branch": "main",
+      "busy": false,
+      "dirty_files": 0
+    }
+  ],
+  "agents": [
+    {
+      "pane_id": "w1:p2",
+      "workspace_id": "w1",
+      "agent": "claude",
+      "status": "working",
+      "cwd": "/work/repo.wt/old",
+      "title": "Old task"
+    }
+  ],
+  "prs": [
+    {
+      "branch": "main",
+      "number": 7,
+      "url": "https://example.com/pr/7",
+      "state": "OPEN"
+    }
+  ]
+}

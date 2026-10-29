@@ -86,12 +86,13 @@ lists every host's workspaces and agents next to the local ones. Run it again wh
 and go; it asks before changing anything.
 
 Moving from the `flow` session: earlier versions ran the supervisor and workers in a herdr
-session named `flow`. A supervisor running there is still found and attached to, and open
-tasks stay in the session they started in, where flow still watches and steers them; add
-`"flow"` to `herdr_sessions` to keep them in `flow sessions` until they close. To move the
-supervisor, exit it, then run `flow down` and `flow up`, which starts a new one in the
-configured session. Once nothing runs in the old session, stop its server by hand with
-`herdr --session flow server stop`.
+session named `flow`, and their records leave that session out, which flow no longer accepts.
+Exit the supervisor, run `scripts/migrate-2026-10-29.sh <state-dir>` once to write the session
+in (`--dry-run` shows the changes first), then run `flow down` and `flow up`, which starts a
+new supervisor in the configured session. Open tasks stay in the session they started in, where
+flow still watches and steers them; add `"flow"` to `herdr_sessions` to keep them in
+`flow sessions` until they close. Once nothing runs in the old session, stop its server by hand
+with `herdr --session flow server stop`.
 
 ## CLI
 

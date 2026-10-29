@@ -1,0 +1,11 @@
+{
+  "state": "done",
+  "last_event": "2026-10-28T13:00:00Z",
+  "herdr": {
+    "host": "host-a",
+    "workspace_id": "w2",
+    "pane_id": "w2:p1",
+    "agent": "claude",
+    "session": "default"
+  }
+}

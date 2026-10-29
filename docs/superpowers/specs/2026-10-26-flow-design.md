@@ -310,14 +310,14 @@ designer's call.
 state/
   config.toml        operator configuration (CDEs, monorepo, worktree tool)
   tasks/<task-id>/
-    task.json        id, parent, title, cde, worktree, harness, created, owner
+    task.json        id, parent, title, host, cwd, repo, harness, created, owner, origin
     status.json      current state, last event, hold (who/what/since), herdr target
     events.jsonl     append-only: {ts, source, kind, data}
     brief.md         what the worker was told, including its completion criteria
     decisions.jsonl  questions, who answered (supervisor|user), rationale
     report.md        final report (when done)
     requests/        dispatch requests written by the worker, consumed by the supervisor
-  cdes/<env-id>.json inventory: name, ssh alias, worktrees, branches, PRs, sessions, load,
+  hosts/<env-id>.json inventory: name, ssh alias, worktrees, branches, PRs, sessions, load,
                      last seen
   supervisor/        lock (host, herdr target, session id), watcher ledger, wake queue
 ```

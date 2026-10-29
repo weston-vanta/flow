@@ -1,0 +1,11 @@
+{
+  "unreachable": [],
+  "agents_reported": {
+    "aaaaaaab": {
+      "seen": "working",
+      "events": 3
+    }
+  },
+  "quiet_reported": {},
+  "seen": {}
+}

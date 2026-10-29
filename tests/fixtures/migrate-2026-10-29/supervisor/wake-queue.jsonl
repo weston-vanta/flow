@@ -1,0 +1,5 @@
+{"seq":1,"ts":"2026-10-26T12:10:00Z","reason":"status: aaaaaaab pending -> working","obs":{"type":"status-changed","task":"aaaaaaab","from":"pending","to":"working"}}
+{"seq":2,"ts":"2026-10-26T12:20:00Z","reason":"adopted-blocked: host-a w3:p1","obs":{"type":"adopted-changed","host":"host-a","session":"flow","pane_id":"w3:p1","status":"blocked"}}
+{"seq":3,"ts":"2026-10-27T09:00:00Z","reason":"observed-blocked: host-a w3:p1","obs":{"type":"observed-changed","host":"host-a","session":"flow","pane_id":"w3:p1","status":"blocked"}}
+{"seq":4,"ts":"2026-10-28T09:00:00Z","reason":"observed-idle: host-a w3:p1 \"Tidy docs\"","obs":{"type":"observed-changed","host":"host-a","session":"default","pane_id":"w3:p1","title":"Tidy docs","status":"idle"}}
+{"seq":5,"ts":"2026-10-28T
