@@ -132,9 +132,14 @@ fn close_workspace(herdr: &Herdr, host: &Host, lock: &Lock) -> anyhow::Result<()
             lock.herdr.pane_id, host.name
         ))
     };
-    let Some(agents) = herdr.agents_if_running(host).map_err(unreachable)? else {
+    let Some(mut agents) = herdr.agents_if_running(host).map_err(unreachable)? else {
         return gone();
     };
+    let workspaces = herdr
+        .workspaces_if_running(host)
+        .map_err(unreachable)?
+        .unwrap_or_default();
+    supervisor::label_workspaces(&mut agents, &workspaces);
     let in_pane = agents
         .iter()
         .find(|agent| agent.pane_id == lock.herdr.pane_id);
@@ -149,10 +154,6 @@ fn close_workspace(herdr: &Herdr, host: &Host, lock: &Lock) -> anyhow::Result<()
         ))
         .into());
     }
-    let workspaces = herdr
-        .workspaces_if_running(host)
-        .map_err(unreachable)?
-        .unwrap_or_default();
     let (workspace_id, label) = match in_pane {
         Some(agent) => (
             agent.workspace_id.as_str(),

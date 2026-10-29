@@ -59,22 +59,58 @@ impl Lock {
     /// Whether `agent`, found in the lock's pane, runs the supervisor. herdr reuses pane ids
     /// after a server restart, so the pane alone could hold anyone's agent. When the lock has
     /// the supervisor's Claude Code session and herdr reports the agent's, they must be the
-    /// same. Otherwise the agent must run in the supervisor's cwd: before the session is
-    /// recorded, and when herdr reports none, which would otherwise leave a live supervisor
-    /// unrecognized and let `flow up` start a second one on the same session.
+    /// same. Otherwise, before the session is recorded or when herdr reports none, the agent
+    /// must run in the supervisor's cwd, in the lock's workspace, still labelled as the
+    /// supervisor's: the user starts sessions in the same checkout, but not in that workspace.
+    /// Without this fallback a live supervisor herdr reports no session for would go
+    /// unrecognized, and `flow up` would start a second one on the same session.
     pub fn runs(&self, agent: &Agent) -> bool {
         match (
             self.claude_session.as_deref(),
             agent.agent_session_id.as_deref(),
         ) {
             (Some(recorded), Some(reported)) => recorded == reported,
-            _ => agent.cwd == Path::new(SUPERVISOR_CWD),
+            _ => {
+                agent.cwd == Path::new(SUPERVISOR_CWD)
+                    && agent.workspace_id == self.herdr.workspace_id
+                    && agent.workspace_label.as_deref() == Some(SUPERVISOR_NAME)
+            }
         }
     }
 }
 
+/// Gives each of `agents` in the supervisor's cwd the label `workspaces` lists for its
+/// workspace, which `Lock::runs` needs when the Claude Code sessions do not decide.
+pub fn label_workspaces(agents: &mut [Agent], workspaces: &[Workspace]) {
+    for agent in agents
+        .iter_mut()
+        .filter(|agent| agent.cwd == Path::new(SUPERVISOR_CWD))
+    {
+        agent.workspace_label = workspaces
+            .iter()
+            .find(|workspace| workspace.workspace_id == agent.workspace_id)
+            .map(|workspace| workspace.label.clone());
+    }
+}
+
+/// `label_workspaces` with the workspaces `herdr` lists on `host`, asked only when one of
+/// `agents` runs in the supervisor's cwd.
+pub fn look_up_workspace_labels(
+    herdr: &herdr::Herdr,
+    host: &Host,
+    agents: &mut [Agent],
+) -> anyhow::Result<()> {
+    if agents
+        .iter()
+        .any(|agent| agent.cwd == Path::new(SUPERVISOR_CWD))
+    {
+        label_workspaces(agents, &herdr.workspaces(host)?);
+    }
+    Ok(())
+}
+
 /// What `agent`, found in `lock`'s pane, runs instead of the supervisor, for messages: its
-/// Claude Code session when the lock has one and herdr reports one, else its kind and cwd.
+/// Claude Code session when the lock has one and herdr reports one, else where it runs.
 pub fn not_the_supervisor(lock: &Lock, agent: &Agent) -> String {
     match (
         lock.claude_session.as_deref(),
@@ -89,9 +125,17 @@ pub fn not_the_supervisor(lock: &Lock, agent: &Agent) -> String {
             } else {
                 agent.agent.as_str()
             };
+            let label = agent
+                .workspace_label
+                .as_deref()
+                .map(|label| format!(" labelled \"{label}\""))
+                .unwrap_or_default();
             format!(
-                "{kind} in {}, not the supervisor in {SUPERVISOR_CWD}",
-                agent.cwd.display()
+                "{kind} in {}, workspace {}{label}, not the supervisor in {SUPERVISOR_CWD}, \
+                 workspace {} labelled \"{SUPERVISOR_NAME}\"",
+                agent.cwd.display(),
+                agent.workspace_id,
+                lock.herdr.workspace_id
             )
         }
     }

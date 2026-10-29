@@ -152,6 +152,26 @@ fn supervisor_agents() -> String {
     list
 }
 
+/// `WORKSPACE_LIST` with `w1` labelled `label`.
+fn w1_labelled(label: &str) -> String {
+    let list = WORKSPACE_LIST.replacen(
+        r#""label":"login-form""#,
+        &format!(r#""label":"{label}""#),
+        1,
+    );
+    assert_ne!(list, WORKSPACE_LIST);
+    list
+}
+
+/// The liveness check's answers for a live supervisor herdr reports no session for: its agent
+/// in the supervisor's cwd, and its workspace `w1` under the supervisor's label.
+fn supervisor_live() -> Vec<Value> {
+    vec![
+        ok(&supervisor_agents()),
+        workspaces(&w1_labelled("flow-supervisor")),
+    ]
+}
+
 /// Answers the `workspace list` that looks for the previous supervisor's workspace with
 /// `list`.
 fn workspaces(list: &str) -> Value {
@@ -452,10 +472,10 @@ fn up_attaches_to_a_live_supervisor_in_the_session_its_lock_records() {
     lock["herdr"]["session"] = json!("work");
     fs::write(&lock_path, lock.to_string()).unwrap();
 
-    let stdout = stdout_of(fx.flow(&[ok(&supervisor_agents())]).arg("up"));
+    let stdout = stdout_of(fx.flow(&supervisor_live()).arg("up"));
 
     let calls = fx.calls();
-    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert_eq!(calls.len(), 2, "{calls:?}");
     assert_eq!(
         calls[0].1[..5],
         ["herdr", "--session", "work", "agent", "list"]
@@ -473,10 +493,10 @@ fn up_attaches_when_lock_live() {
     fx.write_watch_lock("env-0001");
     let before = fs::read_to_string(fx.state.join("supervisor/lock.json")).unwrap();
 
-    let (stdout, stderr) = output_of(fx.flow(&[ok(&supervisor_agents())]).arg("up"));
+    let (stdout, stderr) = output_of(fx.flow(&supervisor_live()).arg("up"));
 
     let calls = fx.calls();
-    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert_eq!(calls.len(), 2, "{calls:?}");
     assert!(
         !has_subcommand(&calls, &["workspace", "create"]),
         "{calls:?}"
@@ -601,20 +621,70 @@ fn up_attaches_when_the_lock_pane_reports_the_lock_session() {
 }
 
 #[test]
-fn up_judges_the_lock_pane_by_cwd_while_the_lock_has_no_session() {
+fn up_judges_the_lock_pane_by_cwd_workspace_and_label_while_the_lock_has_no_session() {
     let fx = Fixture::new();
     fx.write_lock("env-0001", "host-a", LIVE_PANE, None);
 
     let stdout = stdout_of(
-        fx.flow(&[ok(&lock_pane_agent("/workspaces/flow", Some("s-new")))])
-            .arg("up"),
+        fx.flow(&[
+            ok(&lock_pane_agent("/workspaces/flow", Some("s-new"))),
+            workspaces(&w1_labelled("flow-supervisor")),
+        ])
+        .arg("up"),
     );
 
-    assert_eq!(fx.calls().len(), 1);
+    assert_eq!(fx.calls().len(), 2);
     assert_eq!(
         stdout,
         format!("attach: herdr --session flow agent attach {LIVE_PANE}\n")
     );
+}
+
+#[test]
+fn up_starts_fresh_when_a_cwd_match_sits_in_another_or_relabelled_workspace() {
+    let moved = lock_pane_agent("/workspaces/flow", None)
+        .replace(r#""workspace_id":"w1""#, r#""workspace_id":"w2""#);
+    assert_ne!(moved, lock_pane_agent("/workspaces/flow", None));
+    for (session, agents, listed) in [
+        (
+            None,
+            lock_pane_agent("/workspaces/flow", Some("s-hand")),
+            w1_labelled("notes"),
+        ),
+        (
+            Some("s9"),
+            lock_pane_agent("/workspaces/flow", None),
+            w1_labelled("notes"),
+        ),
+        (Some("s9"), moved.clone(), w1_labelled("flow-supervisor")),
+        (None, moved, w1_labelled("flow-supervisor")),
+    ] {
+        let fx = Fixture::new();
+        fx.write_lock("env-0001", "host-a", LIVE_PANE, session);
+        let mut script = vec![
+            ok(&agents),
+            workspaces(&listed),
+            workspaces(&listed),
+            json!({"argv": ["workspace", "close"], "status": 0, "stdout": WORKSPACE_CLOSED, "stderr": ""}),
+        ];
+        script.extend(fresh_start());
+
+        let stdout = stdout_of(fx.flow(&script).arg("up"));
+
+        let calls = fx.calls();
+        assert!(
+            has_subcommand(&calls, &["workspace", "create"]),
+            "{session:?} {agents}: {calls:?}"
+        );
+        assert!(
+            !has_subcommand(&calls, &["workspace", "close", "w2"]),
+            "the agent's own workspace stays: {calls:?}"
+        );
+        assert!(
+            stdout.ends_with(&format!("agent attach {NEW_PANE}\n")),
+            "{stdout}"
+        );
+    }
 }
 
 #[test]
@@ -779,10 +849,10 @@ fn up_attaches_over_ssh_to_a_live_remote_supervisor() {
     let fx = Fixture::new();
     fx.write_lock("env-0002", "host-b", LIVE_PANE, None);
 
-    let stdout = stdout_of(fx.flow(&[ok(&supervisor_agents())]).arg("up"));
+    let stdout = stdout_of(fx.flow(&supervisor_live()).arg("up"));
 
     let calls = fx.calls();
-    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert_eq!(calls.len(), 2, "{calls:?}");
     assert_eq!(calls[0].0, "host-b");
     assert!(stdout.starts_with("attach: ssh -t "), "{stdout}");
     assert!(stdout.contains(" host-b.example zsh -lc "), "{stdout}");
@@ -833,7 +903,7 @@ fn up_without_a_terminal_prints_the_command_to_run() {
     fx.write_lock("env-0001", "host-a", LIVE_PANE, None);
 
     let (stdout, stderr) = output_of(
-        fx.flow(&[ok(&supervisor_agents())])
+        fx.flow(&supervisor_live())
             .env_remove("FLOW_FAKE_TTY")
             .arg("up"),
     );
@@ -846,7 +916,7 @@ fn up_without_a_terminal_prints_the_command_to_run() {
         stderr,
         format!("attaching to the supervisor on host-a (pane {LIVE_PANE})\n")
     );
-    assert_eq!(fx.calls().len(), 1, "only the liveness check runs");
+    assert_eq!(fx.calls().len(), 2, "only the liveness check runs");
 }
 
 #[test]
@@ -876,7 +946,7 @@ fn up_without_a_terminal_quotes_the_remote_command_as_one_word() {
     fx.write_lock("env-0002", "host-b", LIVE_PANE, None);
 
     let stdout = stdout_of(
-        fx.flow(&[ok(&supervisor_agents())])
+        fx.flow(&supervisor_live())
             .env_remove("FLOW_FAKE_TTY")
             .arg("up"),
     );
@@ -896,7 +966,7 @@ fn up_without_a_terminal_creates_the_control_dir_its_ssh_command_names() {
     fs::create_dir(&runtime).unwrap();
 
     let stdout = stdout_of(
-        fx.flow(&[ok(&supervisor_agents())])
+        fx.flow(&supervisor_live())
             .env("XDG_RUNTIME_DIR", &runtime)
             .env_remove("FLOW_FAKE_TTY")
             .arg("up"),

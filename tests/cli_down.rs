@@ -511,15 +511,25 @@ fn down_closes_the_workspace_a_dead_supervisor_left_under_its_label() {
 
 #[test]
 fn down_refuses_when_the_supervisors_pane_runs_another_session() {
-    for (agents, what) in [
+    for (agents, listed, what) in [
         (
             in_lock_pane("/workspaces/flow", Some("s-hand")),
-            "Claude Code session s-hand, not the supervisor's s9",
+            supervisor_listed(),
+            "Claude Code session s-hand, not the supervisor's s9".to_owned(),
         ),
         (
             AGENT_LIST.to_owned(),
-            "claude in /workspaces/acme-worktrees/login-form, not the supervisor in \
-             /workspaces/flow",
+            supervisor_listed(),
+            "claude in /workspaces/acme-worktrees/login-form, workspace w1, not the supervisor \
+             in /workspaces/flow, workspace w1 labelled \"flow-supervisor\""
+                .to_owned(),
+        ),
+        (
+            in_lock_pane("/workspaces/flow", None),
+            relabelled("my notes"),
+            "claude in /workspaces/flow, workspace w1 labelled \"my notes\", not the supervisor \
+             in /workspaces/flow, workspace w1 labelled \"flow-supervisor\""
+                .to_owned(),
         ),
     ] {
         let fx = Fixture::new();
@@ -527,7 +537,7 @@ fn down_refuses_when_the_supervisors_pane_runs_another_session() {
         let mut bystander = StdCommand::new("sleep").arg("30").spawn().unwrap();
         fx.write_watch_lock("env-0001", bystander.id());
         let before = fs::read_to_string(fx.lock_path()).unwrap();
-        let script = [ok(&agents), ok(&supervisor_listed()), ok(WORKSPACE_CLOSED)];
+        let script = [ok(&agents), ok(&listed), ok(WORKSPACE_CLOSED)];
 
         let out = fx
             .flow(&script)
@@ -545,7 +555,7 @@ fn down_refuses_when_the_supervisors_pane_runs_another_session() {
             )
         );
         assert!(out.stdout.is_empty());
-        assert_eq!(fx.argvs().len(), 1);
+        assert_eq!(fx.argvs().len(), 2);
         assert_eq!(fs::read_to_string(fx.lock_path()).unwrap(), before);
         assert!(fx.watch_lock().exists());
         assert!(bystander.try_wait().unwrap().is_none());
@@ -647,5 +657,28 @@ fn down_needs_no_runner_call_for_an_unknown_host() {
         "{stdout}"
     );
     assert!(fx.argvs().is_empty());
+    fx.assert_stopped();
+}
+
+#[test]
+fn down_tells_a_supervisor_herdr_reports_no_session_for_by_its_workspace() {
+    let fx = Fixture::new();
+    fx.write_lock("env-0001", "host-a", Some("default"));
+
+    let stdout = stdout_of(
+        fx.flow(&[
+            ok(&in_lock_pane("/workspaces/flow", None)),
+            ok(&supervisor_listed()),
+            ok(WORKSPACE_CLOSED),
+        ])
+        .arg("down"),
+    );
+
+    assert!(
+        stdout.starts_with(
+            "closed the supervisor's workspace w1 on host-a (herdr session default)\n"
+        ),
+        "{stdout}"
+    );
     fx.assert_stopped();
 }

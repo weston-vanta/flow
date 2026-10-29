@@ -1343,6 +1343,7 @@ default_branch = "main"
                 title: title.to_owned(),
                 session: session.to_owned(),
                 agent_session_id: None,
+                workspace_label: None,
             });
             inventory::save(&self.state, &inv).unwrap();
         }
@@ -1360,13 +1361,14 @@ default_branch = "main"
             inventory::save(&self.state, &inv).unwrap();
         }
 
-        /// Adds the supervisor's agent, in the supervisor's cwd, in `session`'s pane `pane_id`
-        /// on `host-a` to the cached inventory.
+        /// Adds the supervisor's agent, in the supervisor's cwd and labelled workspace, in
+        /// `session`'s pane `pane_id` on `host-a` to the cached inventory.
         fn supervisor_agent(&self, session: &str, pane_id: &str) {
             self.agent("env-0001", session, pane_id, "flow-supervisor");
             let mut inv = inventory::load(&self.state, "env-0001").unwrap().unwrap();
             let agent = inv.agents.last_mut().unwrap();
             agent.cwd = PathBuf::from(supervisor::SUPERVISOR_CWD);
+            agent.workspace_label = Some(supervisor::SUPERVISOR_NAME.to_owned());
             inventory::save(&self.state, &inv).unwrap();
         }
 

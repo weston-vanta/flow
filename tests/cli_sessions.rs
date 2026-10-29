@@ -784,6 +784,11 @@ const SHARED_SESSION_AGENTS: &str = r#"{"id":"cli:agent:list","result":{"agents"
 {"agent":"claude","agent_status":"idle","cwd":"/work/app","pane_id":"w4:p1","terminal_title_stripped":"Fix links","workspace_id":"w4"}
 ],"type":"agent_list"}}"#;
 
+/// `default`'s workspaces on `host-a` when flow runs there: `w1` is the supervisor's.
+const SHARED_SESSION_WORKSPACES: &str = r#"{"id":"cli:workspace:list","result":{"type":"workspace_list","workspaces":[
+{"workspace_id":"w1","label":"flow-supervisor"},{"workspace_id":"w2","label":"Build feature · aaaaaaab"},
+{"workspace_id":"w3","label":"docs"},{"workspace_id":"w4","label":"links"}]}}"#;
+
 impl Fixture {
     /// flow in herdr's `default` session alone: the supervisor, task `TASK`'s worker and task
     /// `aaaaaaac`, adopted, all in it on `host-a`, as `SHARED_SESSION_AGENTS` lists them.
@@ -835,6 +840,7 @@ fn workers_the_supervisor_and_hand_sessions_share_herdrs_default_session() {
     let script = [
         on("host-a", SERVER_RUNNING),
         on("host-a", SHARED_SESSION_AGENTS),
+        on("host-a", SHARED_SESSION_WORKSPACES),
     ];
 
     let stdout = stdout_of(fx.flow(&script).arg("sessions"));
@@ -853,6 +859,7 @@ fn workers_the_supervisor_and_hand_sessions_share_herdrs_default_session() {
         [
             words(&["herdr", "--session", "default", "status", "server"]),
             words(&["herdr", "--session", "default", "agent", "list"]),
+            words(&["herdr", "--session", "default", "workspace", "list"]),
         ]
     );
     let json_out = stdout_of(fx.flow(&script).args(["sessions", "--json"]));
@@ -914,6 +921,7 @@ fn hand_sessions_in_reused_panes_are_observed_and_can_be_followed() {
     let script = [
         on("host-a", SERVER_RUNNING),
         on("host-a", REUSED_PANE_AGENTS),
+        on("host-a", SHARED_SESSION_WORKSPACES),
     ];
 
     let json_out = stdout_of(fx.flow(&script).args(["sessions", "--json"]));
@@ -950,4 +958,31 @@ fn hand_sessions_in_reused_panes_are_observed_and_can_be_followed() {
         .map(|entry| entry["pane_id"].as_str().unwrap())
         .collect();
     assert_eq!(followed, ["w1:p1", "w2:p1", "w4:p1"]);
+}
+
+#[test]
+fn a_session_in_the_flow_checkout_is_the_supervisor_only_in_its_labelled_workspace() {
+    let fx = Fixture::new();
+    fx.single_host();
+    fx.sharing_default();
+    let relabelled = SHARED_SESSION_WORKSPACES.replace("flow-supervisor", "scratch");
+    let rows = |workspaces: &str| {
+        let script = [
+            on("host-a", SERVER_RUNNING),
+            on("host-a", SHARED_SESSION_AGENTS),
+            on("host-a", workspaces),
+        ];
+        let json_out = stdout_of(fx.flow(&script).args(["sessions", "--json"]));
+        let parsed: Value = serde_json::from_str(&json_out).unwrap();
+        parsed
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry["agent"]["pane_id"] == "w1:p1")
+            .map(|entry| entry["supervisor"].as_bool().unwrap())
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(rows(SHARED_SESSION_WORKSPACES), [true]);
+    assert_eq!(rows(&relabelled), [false]);
 }

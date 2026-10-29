@@ -610,6 +610,7 @@ mod tests {
             title: String::new(),
             session: session.to_owned(),
             agent_session_id: None,
+            workspace_label: None,
         }
     }
 
@@ -812,7 +813,10 @@ mod tests {
     #[test]
     fn workers_the_supervisor_and_hand_sessions_share_one_herdr_session() {
         let agents = [
-            agent("default", "w1:p1", "/workspaces/flow"),
+            Agent {
+                workspace_label: Some("flow-supervisor".to_owned()),
+                ..agent("default", "w1:p1", "/workspaces/flow")
+            },
             agent("default", "w2:p1", "/work/repo.wt/feature"),
             agent("default", "w3:p1", "/work/repo"),
             agent("default", "w4:p1", "/work/other"),
@@ -933,17 +937,40 @@ mod tests {
     }
 
     #[test]
-    fn the_supervisor_is_told_by_its_session_and_by_its_cwd_only_without_one() {
-        let in_clone = || agent("default", "w1:p1", "/workspaces/flow");
-        let elsewhere = || agent("default", "w1:p1", "/work/repo");
+    fn the_supervisor_is_told_by_its_session_or_else_by_cwd_workspace_and_label() {
+        let labelled = |label: &str, agent: Agent| Agent {
+            workspace_label: Some(label.to_owned()),
+            ..agent
+        };
+        let in_clone = || {
+            labelled(
+                "flow-supervisor",
+                agent("default", "w1:p1", "/workspaces/flow"),
+            )
+        };
+        let elsewhere = || labelled("flow-supervisor", agent("default", "w1:p1", "/work/repo"));
+        let moved = || Agent {
+            workspace_id: "w4".to_owned(),
+            ..in_clone()
+        };
         let cases = [
             (Some("s-sup"), reporting("s-sup", elsewhere()), true),
+            (
+                Some("s-sup"),
+                reporting("s-sup", agent("default", "w1:p1", "/work/repo")),
+                true,
+            ),
             (Some("s-sup"), reporting("s-hand", in_clone()), false),
             (Some("s-sup"), in_clone(), true),
             (None, in_clone(), true),
             (None, reporting("s-hand", in_clone()), true),
             (None, elsewhere(), false),
             (None, agent("default", "w2:p1", "/workspaces/flow"), false),
+            (Some("s-sup"), moved(), false),
+            (None, moved(), false),
+            (Some("s-sup"), labelled("my notes", in_clone()), false),
+            (None, labelled("my notes", in_clone()), false),
+            (None, agent("default", "w1:p1", "/workspaces/flow"), false),
         ];
         for (recorded, agent, expected) in cases {
             let lock = supervisor_lock("w1:p1", recorded);

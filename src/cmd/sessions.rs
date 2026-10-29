@@ -486,6 +486,7 @@ mod tests {
                 title: title.to_owned(),
                 session: "default".to_owned(),
                 agent_session_id: None,
+                workspace_label: None,
             },
             task: task.map(str::to_owned),
             supervisor: false,

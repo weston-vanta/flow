@@ -102,9 +102,10 @@ fn live_host<'a>(
         Err(err) => return Err(err),
     };
     // No server means no workspaces left to close either.
-    let Some(agents) = agents else {
+    let Some(mut agents) = agents else {
         return Ok(None);
     };
+    supervisor::look_up_workspace_labels(herdr, host, &mut agents)?;
     let in_pane = agents
         .iter()
         .find(|agent| agent.pane_id == lock.herdr.pane_id);

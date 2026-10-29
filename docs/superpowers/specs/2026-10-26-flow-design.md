@@ -157,7 +157,8 @@ designer's call.
    after a server restart, so a pane match is corroborated by the Claude Code session herdr
    reports for the agent, and flow acts on a workspace only once herdr shows it is flow's: a
    task's by a label ending in the task id with the task's pane in it, the supervisor's by
-   the supervisor's session in its pane. An observed
+   the supervisor's session in its pane, or, when herdr reports none, by its cwd, workspace
+   and `flow-supervisor` label. An observed
    session wakes the supervisor only when it turns `blocked`; a followed one, an observed
    session on the follow list, also on `idle` and `done`. Steering an observed session is the
    same herdr operation as steering a worker, used only when the user asks. When the user

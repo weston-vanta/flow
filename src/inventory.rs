@@ -19,6 +19,7 @@ use crate::paths::StateDir;
 use crate::runner::{Output, Runner};
 use crate::state::config::{Host, Repo, WorktreeTool};
 use crate::state::fs::write_atomic;
+use crate::supervisor;
 use crate::worktree;
 
 /// The exit code ssh uses for its own failures, as opposed to the remote command's.
@@ -333,10 +334,11 @@ pub fn refresh(
     })
 }
 
-/// The agents in each of `sessions` on `host`, in session order. With `FlowServer::Start`, the
-/// server of the session it names is started when it is not running; any other session without a
-/// server has no agents. A session whose server cannot be asked is recorded in `error`, and asking
-/// stops at the first session ssh cannot reach.
+/// The agents in each of `sessions` on `host`, in session order, those in the supervisor's cwd with
+/// their workspace's label (see `supervisor::look_up_workspace_labels`). With `FlowServer::Start`,
+/// the server of the session it names is started when it is not running; any other session without
+/// a server has no agents. A session whose server cannot be asked is recorded in `error`, and
+/// asking stops at the first session ssh cannot reach.
 pub fn herdr_agents(
     runner: &Arc<dyn Runner>,
     host: &Host,
@@ -360,9 +362,18 @@ pub fn herdr_agents(
                 .with_context(|| format!("herdr session {session}"))
         };
         match found {
-            Ok(Some(found)) => {
+            Ok(Some(mut found)) => {
                 answered = true;
+                let labelled = supervisor::look_up_workspace_labels(&herdr, host, &mut found)
+                    .with_context(|| format!("herdr session {session} workspaces"));
                 agents.extend(found);
+                if let Err(err) = labelled {
+                    errors.push(format!("{err:#}"));
+                    if herdr::is_unreachable(&err) {
+                        unreachable = true;
+                        break;
+                    }
+                }
             }
             Ok(None) => {}
             Err(err) => {

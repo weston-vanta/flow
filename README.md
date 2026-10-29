@@ -116,7 +116,7 @@ Sessions started by hand sit on a ladder:
 - **followed**: an observed session on the follow list. It also wakes the supervisor on `idle` and `done`.
 - **adopted**: a session started by hand that the supervisor took over as a task with `flow task adopt`. It is a worker in every way flow can manage, and `flow sessions` shows its task id.
 
-herdr reuses pane ids after its server restarts, so a pane alone does not say whose agent it holds. An agent in a task's pane is the task's while the task is open, unless herdr reports a Claude Code session for it other than the task's; once the task is done or orphaned, only while herdr reports the task's own session there. An agent in the supervisor's pane is the supervisor when herdr reports the supervisor's session for it, or, while flow has not recorded that session or herdr reports none, when it runs in `/workspaces/flow`. Any other agent is observed.
+herdr reuses pane ids after its server restarts, so a pane alone does not say whose agent it holds. An agent in a task's pane is the task's while the task is open, unless herdr reports a Claude Code session for it other than the task's; once the task is done or orphaned, only while herdr reports the task's own session there. An agent in the supervisor's pane is the supervisor when herdr reports the supervisor's session for it, or, while flow has not recorded that session or herdr reports none, when it runs in `/workspaces/flow` in the workspace `flow up` opened for it, still labelled `flow-supervisor`. Any other agent is observed.
 
 Supervisor:
 
