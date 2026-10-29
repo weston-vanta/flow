@@ -71,19 +71,20 @@ pub enum Command {
         #[arg(long)]
         summaries: bool,
     },
-    /// Wake the supervisor when an adopted session changes state
+    /// Wake the supervisor when a session started by hand goes idle or done, not only blocked
     Follow {
         /// Host the session runs on
         host: String,
-        /// herdr pane the session runs in, from `flow sessions --json`
-        pane_id: String,
+        /// The session's title as `flow sessions` shows it, or its herdr pane id
+        session: String,
     },
-    /// Stop waking the supervisor for an adopted session
+    /// Stop waking the supervisor for a followed session, except when it turns blocked
     Unfollow {
         /// Host the session runs on
         host: String,
-        /// herdr pane the session runs in
-        pane_id: String,
+        /// The session's title as `flow sessions` shows it, or its herdr pane id; a followed
+        /// pane id is accepted after its session is gone
+        session: String,
     },
     /// Watch tasks and exit 2 with a reason when the supervisor should wake
     #[command(hide = true)]
@@ -377,8 +378,8 @@ pub fn run(cli: Cli, state: &StateDir, repo_root: &Path) -> anyhow::Result<ExitC
         Command::Dispatch(args) => return cmd::dispatch::run(state, &args.try_into()?),
         Command::Inventory { refresh, json } => cmd::inventory::run(state, refresh, json),
         Command::Sessions { json, summaries } => cmd::sessions::run(state, json, summaries),
-        Command::Follow { host, pane_id } => cmd::sessions::run_follow(state, &host, &pane_id),
-        Command::Unfollow { host, pane_id } => cmd::sessions::run_unfollow(state, &host, &pane_id),
+        Command::Follow { host, session } => cmd::sessions::run_follow(state, &host, &session),
+        Command::Unfollow { host, session } => cmd::sessions::run_unfollow(state, &host, &session),
         Command::Watch { heartbeat, once } => return cmd::watch::run(state, heartbeat, once),
         Command::Wake { command } => match command {
             WakeCommand::Drain => cmd::wake::run_drain(state),

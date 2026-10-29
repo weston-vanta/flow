@@ -633,11 +633,9 @@ impl<'a> Watcher<'a> {
             );
         }
         for hand in &self.hands {
-            let followed = follow.iter().any(|followed| {
-                followed.host == hand.host
-                    && followed.session == hand.session
-                    && followed.pane_id == hand.pane_id
-            });
+            let followed = follow
+                .iter()
+                .any(|followed| followed.is(&hand.host, &hand.session, &hand.pane_id));
             let spec = WaitSpec {
                 target: WaitTarget::Adopted {
                     followed,
@@ -1029,6 +1027,7 @@ default_branch = "main"
                     host: "host-a".to_owned(),
                     pane_id: "w1:p1".to_owned(),
                     session: "default".to_owned(),
+                    title: None,
                 });
             })
             .unwrap();

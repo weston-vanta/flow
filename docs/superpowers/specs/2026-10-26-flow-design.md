@@ -344,8 +344,8 @@ Operator:
 - `flow inventory [--refresh] [--json]`: worktrees, agents, and PRs per host; `--refresh` first discovers hosts from Ona (or the static list), probes each running one, and lists open PRs. `--json` gives each host its ssh alias, whether it is the host flow runs on (`local`), its Ona phase, when it was last seen, and whether it is reachable or gone.
 - `flow run <host> -- <argv>...`: run a command on a host, passing its output and exit code through.
 - `flow sessions [--summaries] [--json]`: herdr agents across hosts, with their tasks or as adopted sessions; `--summaries` adds each session's latest summary, and `--json` includes summaries and pane ids.
-- `flow follow <host> <pane-id>`: wake the supervisor when an adopted session changes state (pane ids from `flow sessions --json`).
-- `flow unfollow <host> <pane-id>`: stop waking the supervisor for an adopted session.
+- `flow follow <host> <session>`: wake the supervisor when a session started by hand goes idle or done, not only when it turns blocked. `<session>` is the session's title as `flow sessions` shows it, or its pane id when several share the title; `flow sessions` then marks it `followed`.
+- `flow unfollow <host> <session>`: stop waking the supervisor for a followed session except when it turns blocked; also accepts the pane id of a followed session that is gone.
 
 Supervisor:
 

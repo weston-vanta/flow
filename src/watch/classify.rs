@@ -124,11 +124,10 @@ pub fn classify(obs: &Observation, thresholds: &Thresholds) -> Verdict {
             title,
             status,
         } => {
-            let followed = thresholds.follow.iter().any(|followed| {
-                followed.host == *host
-                    && followed.session == *session
-                    && followed.pane_id == *pane_id
-            });
+            let followed = thresholds
+                .follow
+                .iter()
+                .any(|followed| followed.is(host, session, pane_id));
             if !followed && *status != AgentStatus::Blocked {
                 return Verdict::Absorb;
             }
@@ -316,6 +315,7 @@ mod tests {
                 host: "host-a".to_owned(),
                 pane_id: "w1:p1".to_owned(),
                 session: session.to_owned(),
+                title: None,
             }],
             ..Thresholds::default()
         }

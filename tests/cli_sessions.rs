@@ -519,43 +519,215 @@ fn status_counts_adopted_sessions_from_cache() {
     assert!(fx.calls().is_empty());
 }
 
-#[test]
-fn follow_checks_the_pane_and_is_idempotent() {
-    let fx = Fixture::new();
-    fx.write_cache("env-0002", &host_b_cache());
+const NO_AGENTS: &str = r#"{"id":"cli:agent:list","result":{"agents":[],"type":"agent_list"}}"#;
 
-    stdout_of(fx.flow(&[]).args(["follow", "host-b", "w5:p1"]));
-    stdout_of(fx.flow(&[]).args(["follow", "host-b", "w5:p1"]));
+/// herdr's `default` session on `host-b` as `agents` (pane id, title) pairs list it.
+fn host_b_agents(agents: &[(&str, &str)]) -> Vec<Value> {
+    let agents: Vec<Value> = agents
+        .iter()
+        .map(|(pane_id, title)| {
+            json!({
+                "agent": "claude", "agent_status": "idle", "cwd": "/work/other",
+                "pane_id": pane_id, "terminal_title_stripped": title, "workspace_id": "w5",
+            })
+        })
+        .collect();
+    let list = json!({"id": "cli:agent:list", "result": {"agents": agents, "type": "agent_list"}});
+    vec![
+        on("host-b", SERVER_RUNNING),
+        on("host-b", NO_AGENTS),
+        on("host-b", &list.to_string()),
+    ]
+}
 
-    assert_eq!(
-        fx.follow_list(),
-        json!({"follow": [{"host": "host-b", "pane_id": "w5:p1", "session": "default"}]})
-    );
-    fx.flow(&[])
-        .args(["follow", "host-b", "w9:p9"])
-        .assert()
-        .code(2)
-        .stderr("no agent in pane w9:p9 on host-b (run flow sessions --json)\n");
-    fx.flow(&[])
-        .args(["follow", "host-a", "w5:p1"])
-        .assert()
-        .code(2)
-        .stderr("no agent in pane w5:p1 on host-a (run flow sessions --json)\n");
-    assert!(fx.calls().is_empty());
+fn followed(pane_id: &str, title: &str) -> Value {
+    json!({"host": "host-b", "pane_id": pane_id, "session": "default", "title": title})
 }
 
 #[test]
-fn unfollow_removes_a_followed_pane() {
+fn follow_resolves_a_title_after_listing_the_host_and_is_idempotent() {
     let fx = Fixture::new();
     fx.write_cache("env-0002", &host_b_cache());
-    stdout_of(fx.flow(&[]).args(["follow", "host-b", "w5:p1"]));
+    let agents = [("w5:p1", "Upgrade toolchain"), ("w5:p2", "Fix links")];
 
-    stdout_of(fx.flow(&[]).args(["unfollow", "host-b", "w5:p1"]));
+    stdout_of(
+        fx.flow(&host_b_agents(&agents))
+            .args(["follow", "host-b", "Fix links"]),
+    );
+    stdout_of(
+        fx.flow(&host_b_agents(&agents))
+            .args(["follow", "host-b", "Fix links"]),
+    );
 
-    assert_eq!(fx.follow_list(), json!({"follow": []}));
-    fx.flow(&[])
-        .args(["unfollow", "host-b", "w5:p1"])
+    assert_eq!(
+        fx.follow_list(),
+        json!({"follow": [followed("w5:p2", "Fix links")]})
+    );
+    let calls = fx.calls();
+    assert_eq!(calls.len(), 6, "{calls:?}");
+    assert!(calls.iter().all(|(host, _)| host == "host-b"), "{calls:?}");
+    assert_eq!(fx.cached("env-0002")["agents"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn follow_resolves_a_pane_id() {
+    let fx = Fixture::new();
+    fx.write_cache("env-0002", &host_b_cache());
+    let agents = [("w5:p1", "Upgrade toolchain"), ("w5:p2", "Fix links")];
+
+    stdout_of(
+        fx.flow(&host_b_agents(&agents))
+            .args(["follow", "host-b", "w5:p1"]),
+    );
+
+    assert_eq!(
+        fx.follow_list(),
+        json!({"follow": [followed("w5:p1", "Upgrade toolchain")]})
+    );
+}
+
+#[test]
+fn follow_refuses_a_title_several_sessions_share() {
+    let fx = Fixture::new();
+    fx.write_cache("env-0002", &host_b_cache());
+    let agents = [("w5:p1", "Fix links"), ("w5:p2", "Fix links")];
+
+    fx.flow(&host_b_agents(&agents))
+        .args(["follow", "host-b", "Fix links"])
         .assert()
         .code(2)
-        .stderr("not following w5:p1 on host-b\n");
+        .stderr(
+            "several hand sessions on host-b are titled \"Fix links\"; pass the pane id:\n\
+             w5:p1  Fix links\n\
+             w5:p2  Fix links\n",
+        );
+    assert!(!fx.state.join("supervisor/follow.json").exists());
+}
+
+#[test]
+fn follow_refuses_what_names_no_hand_session() {
+    let fx = Fixture::new();
+    fx.single_host();
+
+    for target in ["Nothing here", "aaaaaaab", "w1:p1"] {
+        let script = [
+            on("host-a", SERVER_RUNNING),
+            on("host-a", FLOW_AGENTS),
+            default_not_running("host-a"),
+        ];
+        fx.flow(&script)
+            .args(["follow", "host-a", target])
+            .assert()
+            .code(2)
+            .stderr(format!(
+                "no hand session titled or in pane {target} on host-a; run flow sessions\n"
+            ));
+    }
+}
+
+#[test]
+fn follow_uses_the_cache_when_the_host_cannot_be_listed() {
+    let fx = Fixture::new();
+    fx.write_cache("env-0002", &host_b_cache());
+    let script = [json!({
+        "host": "host-b", "status": 255, "stdout": "", "repeat": true,
+        "stderr": "ssh: Could not resolve hostname host-b.example: Name or service not known\n",
+    })];
+
+    let out = fx
+        .flow(&script)
+        .args(["follow", "host-b", "Upgrade toolchain"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.starts_with(
+            "could not list agents on host-b, using the cached ones: host unreachable: host-b"
+        ),
+        "{stderr}"
+    );
+    assert_eq!(stderr.lines().count(), 1, "{stderr}");
+    assert_eq!(
+        fx.follow_list(),
+        json!({"follow": [followed("w5:p1", "Upgrade toolchain")]})
+    );
+    assert_eq!(fx.cached("env-0002"), host_b_cache());
+}
+
+#[test]
+fn unfollow_removes_a_followed_session_by_title() {
+    let fx = Fixture::new();
+    fx.write_cache("env-0002", &host_b_cache());
+    let agents = [("w5:p1", "Upgrade toolchain")];
+    stdout_of(
+        fx.flow(&host_b_agents(&agents))
+            .args(["follow", "host-b", "Upgrade toolchain"]),
+    );
+
+    stdout_of(
+        fx.flow(&host_b_agents(&agents))
+            .args(["unfollow", "host-b", "Upgrade toolchain"]),
+    );
+
+    assert_eq!(fx.follow_list(), json!({"follow": []}));
+    fx.flow(&host_b_agents(&agents))
+        .args(["unfollow", "host-b", "Upgrade toolchain"])
+        .assert()
+        .code(2)
+        .stderr("not following Upgrade toolchain on host-b\n");
+}
+
+#[test]
+fn unfollow_removes_a_stale_pane_id() {
+    let fx = Fixture::new();
+    fx.write_cache("env-0002", &host_b_cache());
+    let follow = json!({"follow": [
+        {"host": "host-b", "pane_id": "w9:p9", "session": "default", "title": "Gone session"},
+    ]});
+    fs::create_dir_all(fx.state.join("supervisor")).unwrap();
+    fs::write(fx.state.join("supervisor/follow.json"), follow.to_string()).unwrap();
+    let agents = [("w5:p1", "Upgrade toolchain")];
+
+    stdout_of(
+        fx.flow(&host_b_agents(&agents))
+            .args(["unfollow", "host-b", "w9:p9"]),
+    );
+
+    assert_eq!(fx.follow_list(), json!({"follow": []}));
+    fx.flow(&host_b_agents(&agents))
+        .args(["unfollow", "host-b", "w8:p8"])
+        .assert()
+        .code(2)
+        .stderr("no hand session titled or in pane w8:p8 on host-b; run flow sessions\n");
+}
+
+#[test]
+fn sessions_mark_a_followed_hand_session() {
+    let fx = Fixture::new();
+    fx.single_host();
+    stdout_of(
+        fx.flow(&host_a_agents())
+            .args(["follow", "host-a", "Tidy docs"]),
+    );
+
+    let stdout = stdout_of(fx.flow(&host_a_agents()).arg("sessions"));
+
+    assert_eq!(
+        stdout,
+        "HOST    STATUS   TASK      TITLE\n\
+         host-a  working  aaaaaaab  Build feature\n\
+         host-a  idle     followed  Tidy docs\n"
+    );
+    let json_out = stdout_of(fx.flow(&host_a_agents()).args(["sessions", "--json"]));
+    let parsed: Value = serde_json::from_str(&json_out).unwrap();
+    let marks: Vec<&Value> = parsed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| &entry["followed"])
+        .collect();
+    assert_eq!(marks, [&json!(false), &json!(true)], "{json_out}");
 }

@@ -1,5 +1,8 @@
 //! `flow sessions`, `flow follow`, `flow unfollow`: herdr agents across hosts, matched to tasks or
-//! shown as adopted, and the adopted sessions the supervisor follows.
+//! shown as adopted, and the hand-started sessions the supervisor follows. Any hand-started
+//! session wakes the supervisor when it turns blocked; a followed one also when it goes idle or
+//! done. `follow` and `unfollow` name a session by its title as `flow sessions` shows it, or by
+//! its pane id.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -19,6 +22,7 @@ use crate::state::config::{Config, Host};
 use crate::state::task::{Status, TaskRecord};
 
 const ADOPTED: &str = "adopted";
+const FOLLOWED: &str = "followed";
 const HEADER: [&str; 4] = ["HOST", "STATUS", "TASK", "TITLE"];
 const SUMMARY_WIDTH: usize = 100;
 
@@ -34,6 +38,7 @@ pub fn run(state: &StateDir, json: bool, summaries: bool) -> anyhow::Result<()> 
     let claude_home = adopt::claude_home()?;
     let registry = adopt::registry_sessions(&claude_home)?;
     let mut adopted = adopt::match_agents(&agents_by_host(&inventories), &tasks, &registry);
+    mark_followed(&mut adopted, &FollowList::load(state)?.follow);
     if json || summaries {
         add_summaries(&mut adopted, &claude_home);
     }
@@ -68,49 +73,135 @@ fn agents_by_host(inventories: &[HostInventory]) -> Vec<(&str, &[Agent])> {
         .collect()
 }
 
-/// Adds the agent in `pane_id` on `host`, as of the cached inventory, to the follow list.
-/// A pane id can repeat across herdr sessions; a session other than flow's, where hand-started
-/// sessions run, is preferred.
-pub fn run_follow(state: &StateDir, host: &str, pane_id: &str) -> anyhow::Result<()> {
-    let agents: Vec<Agent> = inventory::load_all(state)?
-        .into_iter()
-        .filter(|inv| !inv.gone && inv.name == host)
-        .flat_map(|inv| inv.agents)
-        .filter(|agent| agent.pane_id == pane_id)
-        .collect();
-    let agent = agents
-        .iter()
-        .find(|agent| agent.session != herdr::SESSION)
-        .or_else(|| agents.first())
-        .ok_or_else(|| {
-            Refused(format!(
-                "no agent in pane {pane_id} on {host} (run flow sessions --json)"
-            ))
-        })?;
+/// Adds the hand session `target` names on `host` to the follow list, recording its title.
+pub fn run_follow(state: &StateDir, host: &str, target: &str) -> anyhow::Result<()> {
+    let hands = hand_sessions(state, host)?;
+    let agent = resolve(&hands, host, target)?;
     let followed = Followed {
         host: host.to_owned(),
-        pane_id: pane_id.to_owned(),
+        pane_id: agent.pane_id.clone(),
         session: agent.session.clone(),
+        title: (!agent.title.is_empty()).then(|| agent.title.clone()),
     };
     FollowList::update(state, |list| {
-        if !list.follow.contains(&followed) {
-            list.follow.push(followed);
+        let existing = list
+            .follow
+            .iter_mut()
+            .find(|entry| entry.is(host, &followed.session, &followed.pane_id));
+        match existing {
+            Some(entry) => entry.title = followed.title,
+            None => list.follow.push(followed),
         }
     })
 }
 
-/// Removes every follow-list entry for `pane_id` on `host`.
-pub fn run_unfollow(state: &StateDir, host: &str, pane_id: &str) -> anyhow::Result<()> {
+/// Removes the hand session `target` names on `host` from the follow list. A pane id the list
+/// holds is removed even when no session runs there any more.
+pub fn run_unfollow(state: &StateDir, host: &str, target: &str) -> anyhow::Result<()> {
+    let hands = hand_sessions(state, host)?;
+    let stale = |entry: &Followed| entry.host == host && entry.pane_id == target;
+    let resolved = match resolve(&hands, host, target) {
+        Ok(agent) => Some(agent),
+        Err(_) if FollowList::load(state)?.follow.iter().any(stale) => None,
+        Err(refused) => return Err(refused.into()),
+    };
     let removed = FollowList::update(state, |list| {
         let before = list.follow.len();
-        list.follow
-            .retain(|followed| !(followed.host == host && followed.pane_id == pane_id));
+        list.follow.retain(|entry| match resolved {
+            Some(agent) => !entry.is(host, &agent.session, &agent.pane_id),
+            None => !stale(entry),
+        });
         list.follow.len() < before
     })?;
     if !removed {
-        return Err(Refused(format!("not following {pane_id} on {host}")).into());
+        return Err(Refused(format!("not following {target} on {host}")).into());
     }
     Ok(())
+}
+
+/// The hand sessions on `host`: its agents outside flow's herdr session, after one listing of
+/// the host refreshed its cached inventory. When the listing fails, the cached agents, saying
+/// so on stderr; none when `host` is not a live host.
+fn hand_sessions(state: &StateDir, host: &str) -> anyhow::Result<Vec<Agent>> {
+    let Some(host) = inventory::live_hosts(state)?
+        .into_iter()
+        .find(|known| known.name == host)
+    else {
+        return Ok(Vec::new());
+    };
+    let config = Config::load(state)?;
+    let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
+    let listed = inventory::list_agents(
+        state,
+        &runner,
+        &config.herdr_sessions,
+        &host,
+        Timestamp::now(),
+    );
+    let failed = |problem: &str| {
+        eprintln!(
+            "could not list agents on {}, using the cached ones: {problem}",
+            host.name
+        );
+    };
+    let agents = match listed {
+        Ok(listed) => {
+            if let Some(error) = &listed.error {
+                failed(error);
+            }
+            listed.inventory.agents
+        }
+        Err(err) => {
+            failed(&format!("{err:#}"));
+            inventory::load(state, &host.env_id)?
+                .map(|cached| cached.agents)
+                .unwrap_or_default()
+        }
+    };
+    Ok(agents
+        .into_iter()
+        .filter(|agent| agent.session != herdr::SESSION)
+        .collect())
+}
+
+/// The hand session titled `target`, else the one in pane `target`. Refuses when several share
+/// the title, listing them, or when none matches.
+fn resolve<'a>(hands: &'a [Agent], host: &str, target: &str) -> Result<&'a Agent, Refused> {
+    let titled: Vec<&Agent> = hands.iter().filter(|agent| agent.title == target).collect();
+    match titled.as_slice() {
+        [agent] => return Ok(agent),
+        [] => {}
+        several => {
+            let candidates: Vec<String> = several
+                .iter()
+                .map(|agent| format!("{}  {}", agent.pane_id, agent.title))
+                .collect();
+            return Err(Refused(format!(
+                "several hand sessions on {host} are titled \"{target}\"; pass the pane id:\n{}",
+                candidates.join("\n")
+            )));
+        }
+    }
+    hands
+        .iter()
+        .find(|agent| agent.pane_id == target)
+        .ok_or_else(|| {
+            Refused(format!(
+                "no hand session titled or in pane {target} on {host}; run flow sessions"
+            ))
+        })
+}
+
+/// Marks each hand session `follow` names as followed.
+fn mark_followed(adopted: &mut [Adopted], follow: &[Followed]) {
+    for entry in adopted {
+        let agent = &entry.agent;
+        entry.followed = entry.task.is_none()
+            && agent.session != herdr::SESSION
+            && follow
+                .iter()
+                .any(|followed| followed.is(&entry.host, &agent.session, &agent.pane_id));
+    }
 }
 
 /// Each of `hosts`' inventory with live agents, asked in parallel, in the order given. Any
@@ -149,7 +240,8 @@ fn add_summaries(adopted: &mut [Adopted], claude_home: &Path) {
 }
 
 /// A table of `HOST  STATUS  TASK  TITLE`, the local host's agents first, then by host, status
-/// (`working`, `blocked`, the rest), and title. TASK is the agent's task or `adopted`; TITLE is
+/// (`working`, `blocked`, the rest), and title. TASK is the agent's task, or `followed` or
+/// `adopted` for a hand-started session the supervisor follows or not; TITLE is
 /// the task's title for a worker, else herdr's title, or the pane id when there is none. With
 /// `summaries`, a known summary follows its agent on a line of its own, indented to TITLE and
 /// cut to `SUMMARY_WIDTH`.
@@ -169,7 +261,10 @@ fn render_text(
             vec![
                 entry.host.clone(),
                 entry.agent.status.as_str().to_owned(),
-                entry.task.clone().unwrap_or_else(|| ADOPTED.to_owned()),
+                entry.task.clone().unwrap_or_else(|| {
+                    let mark = if entry.followed { FOLLOWED } else { ADOPTED };
+                    mark.to_owned()
+                }),
                 (*title).to_owned(),
             ]
         }))
@@ -261,6 +356,7 @@ mod tests {
                 agent_session_id: None,
             },
             task: task.map(str::to_owned),
+            followed: false,
             session: None,
             matched_by: None,
             summary: None,

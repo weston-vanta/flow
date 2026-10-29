@@ -75,6 +75,8 @@ pub struct Adopted {
     pub agent: Agent,
     /// The task whose worker runs in the agent's pane; `None` for a hand-started session.
     pub task: Option<String>,
+    /// Whether the agent is a hand-started session in the follow list.
+    pub followed: bool,
     pub session: Option<RegistrySession>,
     /// How `session` was found; `None` when there is no session.
     pub matched_by: Option<MatchedBy>,
@@ -106,6 +108,16 @@ pub struct Followed {
     pub host: String,
     pub pane_id: String,
     pub session: String,
+    /// The agent's title when it was followed, for display only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+impl Followed {
+    /// Whether this names the pane `pane_id` in herdr session `session` on `host`.
+    pub fn is(&self, host: &str, session: &str, pane_id: &str) -> bool {
+        self.host == host && self.session == session && self.pane_id == pane_id
+    }
 }
 
 impl FollowList {
@@ -322,6 +334,7 @@ pub fn match_agents(
                 host: f.host.to_owned(),
                 agent: f.agent.clone(),
                 task: f.task.map(|(record, _)| record.id.clone()),
+                followed: false,
                 session: session.cloned(),
                 matched_by: session.map(|_| matched_by),
                 summary: None,
