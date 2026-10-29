@@ -37,7 +37,7 @@ const WAITABLE_STATUSES: &[AgentStatus] = &[
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum WaitTarget {
     Task(String),
-    Adopted { followed: bool, title: String },
+    Observed { followed: bool, title: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,7 +53,7 @@ impl WaitSpec {
     pub(super) fn key(&self) -> String {
         match &self.target {
             WaitTarget::Task(task) => task.clone(),
-            WaitTarget::Adopted { .. } => {
+            WaitTarget::Observed { .. } => {
                 format!("{}/{}/{}", self.host, self.session, self.pane_id)
             }
         }
@@ -62,8 +62,8 @@ impl WaitSpec {
     pub(super) fn wake_statuses(&self) -> &'static [AgentStatus] {
         match self.target {
             WaitTarget::Task(_) => TASK_WAKE_STATUSES,
-            WaitTarget::Adopted { followed: true, .. } => FOLLOWED_WAKE_STATUSES,
-            WaitTarget::Adopted {
+            WaitTarget::Observed { followed: true, .. } => FOLLOWED_WAKE_STATUSES,
+            WaitTarget::Observed {
                 followed: false, ..
             } => HAND_WAKE_STATUSES,
         }
@@ -73,7 +73,7 @@ impl WaitSpec {
     pub(super) fn unfollowed_hand(&self) -> bool {
         matches!(
             self.target,
-            WaitTarget::Adopted {
+            WaitTarget::Observed {
                 followed: false,
                 ..
             }
@@ -86,7 +86,7 @@ impl WaitSpec {
                 task: task.clone(),
                 status,
             },
-            WaitTarget::Adopted { title, .. } => self.adopted(title, status),
+            WaitTarget::Observed { title, .. } => self.observed(title, status),
         }
     }
 
@@ -94,12 +94,12 @@ impl WaitSpec {
     pub(super) fn gone(&self) -> Observation {
         match &self.target {
             WaitTarget::Task(task) => Observation::AgentGone { task: task.clone() },
-            WaitTarget::Adopted { title, .. } => self.adopted(title, AgentStatus::Unknown),
+            WaitTarget::Observed { title, .. } => self.observed(title, AgentStatus::Unknown),
         }
     }
 
-    fn adopted(&self, title: &str, status: AgentStatus) -> Observation {
-        Observation::AdoptedChanged {
+    fn observed(&self, title: &str, status: AgentStatus) -> Observation {
+        Observation::ObservedChanged {
             host: self.host.clone(),
             session: self.session.clone(),
             pane_id: self.pane_id.clone(),
@@ -270,7 +270,7 @@ mod tests {
     }
 
     fn hand_wait(followed: bool) -> PaneWait {
-        let target = WaitTarget::Adopted {
+        let target = WaitTarget::Observed {
             followed,
             title: "Tidy docs".to_owned(),
         };
@@ -281,7 +281,7 @@ mod tests {
         let fake = Arc::new(FakeRunner::new(script));
         let session = match target {
             WaitTarget::Task(_) => herdr::SESSION,
-            WaitTarget::Adopted { .. } => "default",
+            WaitTarget::Observed { .. } => "default",
         };
         let spec = WaitSpec {
             target,
@@ -355,7 +355,7 @@ mod tests {
     #[test]
     fn a_wait_seeded_with_a_reported_status_waits_for_a_change_from_it() {
         let (wait, _) = wait_on(
-            WaitTarget::Adopted {
+            WaitTarget::Observed {
                 followed: false,
                 title: String::new(),
             },

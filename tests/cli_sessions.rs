@@ -213,7 +213,7 @@ fn host_b_cache() -> Value {
 }
 
 #[test]
-fn sessions_lists_adopted_with_summary() {
+fn sessions_lists_observed_with_summary() {
     let fx = Fixture::new();
     fx.single_host();
 
@@ -223,7 +223,7 @@ fn sessions_lists_adopted_with_summary() {
         stdout,
         "HOST    STATUS   TASK      TITLE\n\
          host-a  working  aaaaaaab  Build feature\n\
-         host-a  idle     adopted   Tidy docs\n"
+         host-a  idle     observed  Tidy docs\n"
     );
     let argvs: Vec<Vec<String>> = fx.calls().into_iter().map(|(_, argv)| argv).collect();
     assert_eq!(
@@ -252,7 +252,7 @@ fn sessions_lists_adopted_with_summary() {
         stdout,
         "HOST    STATUS   TASK      TITLE\n\
          host-a  working  aaaaaaab  Build feature\n\
-         host-a  idle     adopted   Tidy docs\n\
+         host-a  idle     observed  Tidy docs\n\
          \x20                          Moved the guides into one folder and fixed the links \
          between them; waiting for a review of the new …\n"
     );
@@ -452,7 +452,7 @@ fn sessions_record_a_flow_session_failure() {
     );
     assert_eq!(
         stdout,
-        "HOST    STATUS  TASK     TITLE\nhost-a  idle    adopted  Tidy docs\n"
+        "HOST    STATUS  TASK      TITLE\nhost-a  idle    observed  Tidy docs\n"
     );
     let cached = fx.cached("env-0001");
     assert_eq!(cached["herdr_error"], stderr.trim_end());
@@ -487,12 +487,12 @@ fn sessions_fall_back_to_cache_for_unreachable_host() {
     assert!(stderr.starts_with("host unreachable: host-b"), "{stderr}");
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines.len(), 4, "{stdout}");
-    assert_eq!(lines[3], "host-b  blocked  adopted   Upgrade toolchain");
+    assert_eq!(lines[3], "host-b  blocked  observed  Upgrade toolchain");
     assert_eq!(fx.cached("env-0002"), host_b_cache());
 }
 
 #[test]
-fn status_counts_adopted_sessions_from_cache() {
+fn status_counts_observed_sessions_from_cache() {
     let fx = Fixture::new();
     fx.write_cache("env-0002", &host_b_cache());
     let mut host_a = host_b_cache();
@@ -510,12 +510,12 @@ fn status_counts_adopted_sessions_from_cache() {
 
     assert_eq!(
         stdout.lines().last(),
-        Some("adopted: 2 sessions"),
+        Some("observed: 2 sessions"),
         "{stdout}"
     );
     let json_out = stdout_of(fx.flow(&[]).args(["status", "--json"]));
     let parsed: Value = serde_json::from_str(&json_out).unwrap();
-    assert_eq!(parsed["adopted"], 2);
+    assert_eq!(parsed["observed"], 2);
     assert!(fx.calls().is_empty());
 }
 

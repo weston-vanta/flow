@@ -27,7 +27,7 @@ Nothing from that project's design is carried over.
   is woken when something is actionable.
 - Keep working while the user is disconnected: the supervisor stays alive and keeps
   answering workers between the user's visits.
-- Adopt sessions the user started by hand so they appear in the same picture.
+- Observe sessions the user started by hand so they appear in the same picture.
 - Survive the supervisor session ending, the supervisor CDE being recycled, and any worker
   CDE being recycled. Durable truth lives on EFS, not in any session or host.
 - Direct access when needed: the user can attach to any worker's terminal.
@@ -39,8 +39,8 @@ Nothing from that project's design is carried over.
 - Connected services (chat, documents, calendar, issue tracker). Designed around, not built.
 - Codex workers. The harness adapter boundary exists so Codex can be added; only Claude
   Code is implemented.
-- Sessions started outside herdr. The user will start every session in herdr, so adoption
-  is herdr-only.
+- Sessions started outside herdr. The user will start every session in herdr, so observing
+  them is herdr-only.
 - Automatic credential refresh for the CDE control plane. The supervisor reports an
   expiring or expired login; renewing it is manual for now.
 - Running workers anywhere other than a CDE reachable over Ona ssh.
@@ -147,11 +147,13 @@ designer's call.
 7. **Placement never collides with live work.** The supervisor refuses to dispatch into a
    worktree that has a live session unless the user says so, surfaces CDE load in the
    inventory when it matters, and imposes no cap on workers per CDE.
-8. **Adoption is herdr-only and in scope for v1.** Every session the user starts by hand
-   runs in a herdr pane. The supervisor lists herdr agents on every known CDE, matches them
-   to task records where one exists, and shows the rest as adopted sessions with their
-   herdr state and a summary drawn from the registry and transcript. Steering an adopted
-   session is the same herdr operation as steering a worker, used only when the user asks.
+8. **Observing hand sessions is herdr-only and in scope for v1.** Every session the user
+   starts by hand runs in a herdr pane. The supervisor lists herdr agents on every known CDE,
+   matches them to task records where one exists, and shows the rest as observed sessions
+   with their herdr state and a summary drawn from the registry and transcript. An observed
+   session wakes the supervisor only when it turns `blocked`; a followed one, an observed
+   session on the follow list, also on `idle` and `done`. Steering an observed session is
+   the same herdr operation as steering a worker, used only when the user asks.
 
 ### Durability and layout
 
@@ -189,7 +191,7 @@ designer's call.
     and reports are files. Starting a worker, running a herdr API command on another CDE,
     and attaching to a terminal go over ssh using the Ona aliases. Nothing in the steady
     state polls over ssh.
-14. **herdr is the only runtime.** Workers, adopted sessions, and the supervisor itself
+14. **herdr is the only runtime.** Workers, observed sessions, and the supervisor itself
     run in herdr panes. `flow` uses herdr for: starting a harness in a pane, native
     idle/working/blocked/done state, waiting on state transitions, reading terminal
     output, steering with confirmation, session identity (once the hook path is fixed),
@@ -323,8 +325,8 @@ question; if it can answer, it steers the worker through herdr and logs the deci
 not, it records a hold naming the user, asks the user, and on reply steers the worker and
 clears the hold.
 
-**Adopt.** On session start and on each wake, the supervisor lists herdr agents on every
-known CDE, matches them to tasks where possible, and lists the rest as adopted sessions
+**Observe.** On session start and on each wake, the supervisor lists herdr agents on every
+known CDE, matches them to tasks where possible, and lists the rest as observed sessions
 with their latest summary and state.
 
 **Recycle.** A worker CDE is recycled: watch sees the CDE unreachable and its sessions
@@ -344,10 +346,10 @@ Operator:
 
 - `flow init [--force]`: write `state/config.toml` from what this machine can tell, then refresh the inventory; `--force` replaces an existing file.
 - `flow up`: attach to the live supervisor session, or start one on this host and attach. When stdout is not a terminal, it prints the command to attach with instead of attaching.
-- `flow status [--all] [--json]`: open tasks, their holds, pending dispatch requests from workers (`req-id  from-task  host  title`), and adopted sessions; `--all` includes done and orphaned tasks.
+- `flow status [--all] [--json]`: open tasks, their holds, pending dispatch requests from workers (`req-id  from-task  host  title`), and observed sessions; `--all` includes done and orphaned tasks.
 - `flow inventory [--refresh] [--json]`: worktrees, agents, and PRs per host; `--refresh` first discovers hosts from Ona (or the static list), probes each running one, and lists open PRs. `--json` gives each host its ssh alias, whether it is the host flow runs on (`local`), its Ona phase, when it was last seen, and whether it is reachable or gone.
 - `flow run <host> -- <argv>...`: run a command on a host, passing its output and exit code through.
-- `flow sessions [--summaries] [--json]`: herdr agents across hosts, with their tasks or as adopted sessions; `--summaries` adds each session's latest summary, and `--json` includes summaries and pane ids.
+- `flow sessions [--summaries] [--json]`: herdr agents across hosts, with their tasks or as observed sessions; `--summaries` adds each session's latest summary, and `--json` includes summaries and pane ids.
 - `flow follow <host> <session>`: wake the supervisor when a session started by hand goes idle or done, not only when it turns blocked. `<session>` is the session's title as `flow sessions` shows it, or its pane id when several share the title; `flow sessions` then marks it `followed`.
 - `flow unfollow <host> <session>`: stop waking the supervisor for a followed session except when it turns blocked; also accepts the pane id of a followed session that is gone.
 

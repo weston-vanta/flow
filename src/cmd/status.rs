@@ -15,7 +15,7 @@ const NO_HOST: &str = "-";
 struct StatusView<'a> {
     tasks: Vec<TaskView<'a>>,
     requests: Vec<RequestView<'a>>,
-    adopted: usize,
+    observed: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -26,7 +26,7 @@ struct RequestView<'a> {
 }
 
 /// Open tasks, or with `all` every task, oldest first; then their holds, then pending dispatch
-/// requests, then the number of adopted sessions in the cached inventories.
+/// requests, then the number of observed sessions in the cached inventories.
 pub fn run(state: &StateDir, all: bool, json: bool) -> anyhow::Result<()> {
     let store = Store::open(state);
     let mut tasks = store.list_tasks()?;
@@ -41,7 +41,7 @@ pub fn run(state: &StateDir, all: bool, json: bool) -> anyhow::Result<()> {
             }
         })
         .collect();
-    let adopted = super::sessions::count_adopted(state, &tasks)?;
+    let observed = super::sessions::count_observed(state, &tasks)?;
     if !all {
         tasks.retain(|(_, status)| status.state.is_open());
     }
@@ -52,14 +52,14 @@ pub fn run(state: &StateDir, all: bool, json: bool) -> anyhow::Result<()> {
                 .iter()
                 .map(|(id, request)| RequestView { id, request })
                 .collect(),
-            adopted,
+            observed,
         });
     }
     super::print(&render_text(
         &tasks,
         all,
         &requests,
-        adopted,
+        observed,
         Timestamp::now(),
     ))
 }
@@ -68,7 +68,7 @@ fn render_text(
     tasks: &[(TaskRecord, Status)],
     all: bool,
     requests: &[(String, Request)],
-    adopted: usize,
+    observed: usize,
     now: Timestamp,
 ) -> String {
     let mut out = if tasks.is_empty() {
@@ -96,7 +96,7 @@ fn render_text(
         out.push_str("requests:\n");
         out.push_str(&render::table(&request_rows(requests)));
     }
-    out.push_str(&format!("adopted: {adopted} sessions\n"));
+    out.push_str(&format!("observed: {observed} sessions\n"));
     out
 }
 

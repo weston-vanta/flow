@@ -1,9 +1,9 @@
-pub mod adopt;
 pub mod cmd;
 pub mod harness;
 pub mod herdr;
 pub mod host;
 pub mod inventory;
+pub mod observe;
 pub mod ona;
 pub mod paths;
 pub mod render;

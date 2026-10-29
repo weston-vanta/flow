@@ -41,10 +41,10 @@ one reason; handle every row.
   Check `flow task events <id> --last 5` and `flow sessions`, then steer the worker with a
   short status question.
 - `request: <id>`: a dispatch request; follow the `flow-dispatch` skill.
-- `adopted-blocked: <host> <pane> "<title>"`: a session the user started by hand is stuck at a
+- `observed-blocked: <host> <pane> "<title>"`: a session the user started by hand is stuck at a
   harness prompt (a permission or dialog). Tell the user which host and session it is and that
   they need to attend to it. Do not steer a hand session unless they ask you to.
-- `adopted-<status>: <host> <pane> "<title>"`, for `idle`, `done` or `unknown` (its pane went
+- `observed-<status>: <host> <pane> "<title>"`, for `idle`, `done` or `unknown` (its pane went
   away): a session the user asked you to follow changed state; tell them what it is doing, from
   `flow sessions --summaries`. A summary whose `matched_by` is `cwd` in `flow sessions --json`
   is a guess by directory; say so. `flow unfollow <host> <title>` once they no longer need it.

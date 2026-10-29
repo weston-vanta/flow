@@ -1,5 +1,5 @@
 //! `flow sessions`, `flow follow`, `flow unfollow`: herdr agents across hosts, matched to tasks or
-//! shown as adopted, and the hand-started sessions the supervisor follows. Any hand-started
+//! shown as observed, and the hand-started sessions the supervisor follows. Any hand-started
 //! session wakes the supervisor when it turns blocked; a followed one also when it goes idle or
 //! done. `follow` and `unfollow` name a session by its title as `flow sessions` shows it, or by
 //! its pane id.
@@ -10,10 +10,10 @@ use std::sync::Arc;
 use jiff::Timestamp;
 
 use super::Refused;
-use crate::adopt::{self, Adopted, FollowList, Followed};
 use crate::herdr::{self, Agent, AgentStatus};
 use crate::host;
 use crate::inventory::{self, FlowServer, HostInventory};
+use crate::observe::{self, FollowList, Followed, MatchedAgent};
 use crate::paths::StateDir;
 use crate::render;
 use crate::runner::{self, Runner};
@@ -21,7 +21,7 @@ use crate::state::Store;
 use crate::state::config::{Config, Host};
 use crate::state::task::{Status, TaskRecord};
 
-const ADOPTED: &str = "adopted";
+const OBSERVED: &str = "observed";
 const FOLLOWED: &str = "followed";
 const HEADER: [&str; 4] = ["HOST", "STATUS", "TASK", "TITLE"];
 const SUMMARY_WIDTH: usize = 100;
@@ -35,16 +35,16 @@ pub fn run(state: &StateDir, json: bool, summaries: bool) -> anyhow::Result<()> 
     let hosts = inventory::live_hosts(state)?;
     let inventories = live_inventories(state, &runner, &config, &hosts, Timestamp::now())?;
     let tasks = Store::open(state).list_tasks()?;
-    let claude_home = adopt::claude_home()?;
-    let registry = adopt::registry_sessions(&claude_home)?;
-    let mut adopted = adopt::match_agents(&agents_by_host(&inventories), &tasks, &registry);
-    mark_followed(&mut adopted, &FollowList::load(state)?.follow);
+    let claude_home = observe::claude_home()?;
+    let registry = observe::registry_sessions(&claude_home)?;
+    let mut matched = observe::match_agents(&agents_by_host(&inventories), &tasks, &registry);
+    mark_followed(&mut matched, &FollowList::load(state)?.follow);
     if json || summaries {
-        add_summaries(&mut adopted, &claude_home);
+        add_summaries(&mut matched, &claude_home);
     }
     if json {
-        super::print_json(&adopted)
-    } else if adopted.is_empty() {
+        super::print_json(&matched)
+    } else if matched.is_empty() {
         super::print("no agents\n")
     } else {
         let local = host::local_env_id();
@@ -52,18 +52,18 @@ pub fn run(state: &StateDir, json: bool, summaries: bool) -> anyhow::Result<()> 
             .iter()
             .find(|inv| Some(inv.env_id.as_str()) == local.as_deref())
             .map(|inv| inv.name.as_str());
-        super::print(&render_text(&adopted, &tasks, local_host, summaries))
+        super::print(&render_text(&matched, &tasks, local_host, summaries))
     }
 }
 
-/// How many cached agents run no task: the adopted sessions as of each host's last inventory.
-pub fn count_adopted(state: &StateDir, tasks: &[(TaskRecord, Status)]) -> anyhow::Result<usize> {
+/// How many cached agents run no task: the observed sessions as of each host's last inventory.
+pub fn count_observed(state: &StateDir, tasks: &[(TaskRecord, Status)]) -> anyhow::Result<usize> {
     let inventories: Vec<HostInventory> = inventory::load_all(state)?
         .into_iter()
         .filter(|inv| !inv.gone)
         .collect();
-    let adopted = adopt::match_agents(&agents_by_host(&inventories), tasks, &[]);
-    Ok(adopted.iter().filter(|entry| entry.task.is_none()).count())
+    let matched = observe::match_agents(&agents_by_host(&inventories), tasks, &[]);
+    Ok(matched.iter().filter(|entry| entry.task.is_none()).count())
 }
 
 fn agents_by_host(inventories: &[HostInventory]) -> Vec<(&str, &[Agent])> {
@@ -199,8 +199,8 @@ fn resolve<'a>(hands: &'a [Agent], host: &str, target: &str) -> Result<&'a Agent
 }
 
 /// Marks each hand session `follow` names as followed.
-fn mark_followed(adopted: &mut [Adopted], follow: &[Followed]) {
-    for entry in adopted {
+fn mark_followed(matched: &mut [MatchedAgent], follow: &[Followed]) {
+    for entry in matched {
         let agent = &entry.agent;
         entry.followed = entry.task.is_none()
             && agent.session != herdr::SESSION
@@ -234,12 +234,12 @@ fn live_inventories(
 
 /// Reads each matched session's latest summary. A transcript that cannot be read leaves the
 /// summary empty and is reported on stderr.
-fn add_summaries(adopted: &mut [Adopted], claude_home: &Path) {
-    for entry in adopted {
+fn add_summaries(matched: &mut [MatchedAgent], claude_home: &Path) {
+    for entry in matched {
         let Some(session) = &entry.session else {
             continue;
         };
-        match adopt::latest_summary(&adopt::transcript_path(claude_home, session)) {
+        match observe::latest_summary(&observe::transcript_path(claude_home, session)) {
             Ok(summary) => entry.summary = summary,
             Err(err) => eprintln!("{err:#}"),
         }
@@ -248,17 +248,17 @@ fn add_summaries(adopted: &mut [Adopted], claude_home: &Path) {
 
 /// A table of `HOST  STATUS  TASK  TITLE`, the local host's agents first, then by host, status
 /// (`working`, `blocked`, the rest), and title. TASK is the agent's task, or `followed` or
-/// `adopted` for a hand-started session the supervisor follows or not; TITLE is
+/// `observed` for a hand-started session the supervisor follows or not; TITLE is
 /// the task's title for a worker, else herdr's title, or the pane id when there is none. With
 /// `summaries`, a known summary follows its agent on a line of its own, indented to TITLE and
 /// cut to `SUMMARY_WIDTH`.
 fn render_text(
-    adopted: &[Adopted],
+    matched: &[MatchedAgent],
     tasks: &[(TaskRecord, Status)],
     local_host: Option<&str>,
     summaries: bool,
 ) -> String {
-    let mut sorted: Vec<(&Adopted, &str)> = adopted
+    let mut sorted: Vec<(&MatchedAgent, &str)> = matched
         .iter()
         .map(|entry| (entry, title(entry, tasks)))
         .collect();
@@ -269,7 +269,7 @@ fn render_text(
                 entry.host.clone(),
                 entry.agent.status.as_str().to_owned(),
                 entry.task.clone().unwrap_or_else(|| {
-                    let mark = if entry.followed { FOLLOWED } else { ADOPTED };
+                    let mark = if entry.followed { FOLLOWED } else { OBSERVED };
                     mark.to_owned()
                 }),
                 (*title).to_owned(),
@@ -311,7 +311,7 @@ fn render_text(
 }
 
 fn sort_key<'a>(
-    (entry, title): &(&'a Adopted, &'a str),
+    (entry, title): &(&'a MatchedAgent, &'a str),
     local_host: Option<&str>,
 ) -> (bool, &'a str, u8, &'a str) {
     let status = match entry.agent.status {
@@ -328,7 +328,7 @@ fn sort_key<'a>(
 }
 
 /// The title of `entry`'s task when it has one, else herdr's title, else its pane id.
-fn title<'a>(entry: &'a Adopted, tasks: &'a [(TaskRecord, Status)]) -> &'a str {
+fn title<'a>(entry: &'a MatchedAgent, tasks: &'a [(TaskRecord, Status)]) -> &'a str {
     let task_title = entry.task.as_deref().and_then(|id| {
         tasks
             .iter()
@@ -349,8 +349,8 @@ mod tests {
     use super::*;
     use crate::state::task::Harness;
 
-    fn entry(host: &str, status: AgentStatus, title: &str, task: Option<&str>) -> Adopted {
-        Adopted {
+    fn entry(host: &str, status: AgentStatus, title: &str, task: Option<&str>) -> MatchedAgent {
+        MatchedAgent {
             host: host.to_owned(),
             agent: Agent {
                 pane_id: "w1:p3".to_owned(),
@@ -385,8 +385,8 @@ mod tests {
         (record, Status::pending(Timestamp::UNIX_EPOCH))
     }
 
-    fn summarized(summary: &str, entry: Adopted) -> Adopted {
-        Adopted {
+    fn summarized(summary: &str, entry: MatchedAgent) -> MatchedAgent {
+        MatchedAgent {
             summary: Some(summary.to_owned()),
             ..entry
         }
@@ -394,7 +394,7 @@ mod tests {
 
     #[test]
     fn render_lays_out_a_header_and_a_summary_line_per_agent() {
-        let adopted = [
+        let matched = [
             entry("host-b", AgentStatus::Idle, "Write notes", Some("2sqz6nfw")),
             summarized(
                 "Building feature-x; waiting on review.",
@@ -403,9 +403,9 @@ mod tests {
         ];
 
         assert_eq!(
-            render_text(&adopted, &[], Some("host-a"), true),
+            render_text(&matched, &[], Some("host-a"), true),
             "HOST    STATUS   TASK      TITLE\n\
-             host-a  working  adopted   Build feature-x\n\
+             host-a  working  observed  Build feature-x\n\
              \x20                          Building feature-x; waiting on review.\n\
              host-b  idle     2sqz6nfw  Write notes\n"
         );
@@ -413,7 +413,7 @@ mod tests {
 
     #[test]
     fn render_puts_the_local_host_first_then_sorts_by_host_status_and_title() {
-        let adopted = [
+        let matched = [
             entry("host-a", AgentStatus::Idle, "s1", None),
             entry("host-c", AgentStatus::Idle, "s2", None),
             entry("host-b", AgentStatus::Done, "s3", None),
@@ -423,7 +423,7 @@ mod tests {
             entry("host-b", AgentStatus::Working, "s6", None),
         ];
 
-        let titles: Vec<String> = render_text(&adopted, &[], Some("host-c"), true)
+        let titles: Vec<String> = render_text(&matched, &[], Some("host-c"), true)
             .lines()
             .skip(1)
             .map(|line| line.rsplit(' ').next().unwrap().to_owned())
@@ -436,23 +436,23 @@ mod tests {
     fn render_cuts_the_summary_at_100_characters() {
         // 98 characters, then a two-byte character as the 99th and more text after it.
         let summary = format!("{}éxyz", "a".repeat(98));
-        let adopted = [summarized(
+        let matched = [summarized(
             &summary,
             entry("host-a", AgentStatus::Idle, "s1", None),
         )];
 
-        let text = render_text(&adopted, &[], None, true);
+        let text = render_text(&matched, &[], None, true);
 
         let line = text.lines().nth(2).unwrap().trim_start();
         assert_eq!(line, format!("{}é…", "a".repeat(98)));
         assert_eq!(line.chars().count(), 100);
         let short = format!("{}é", "a".repeat(99));
-        let adopted = [summarized(
+        let matched = [summarized(
             &short,
             entry("host-a", AgentStatus::Idle, "s1", None),
         )];
         assert_eq!(
-            render_text(&adopted, &[], None, true)
+            render_text(&matched, &[], None, true)
                 .lines()
                 .nth(2)
                 .unwrap()
@@ -463,22 +463,22 @@ mod tests {
 
     #[test]
     fn render_names_an_untitled_agent_by_its_pane_and_skips_a_missing_summary() {
-        let adopted = [
+        let matched = [
             entry("host-a", AgentStatus::Idle, "", None),
             summarized("", entry("host-a", AgentStatus::Idle, "s1", None)),
         ];
 
         assert_eq!(
-            render_text(&adopted, &[], None, true),
-            "HOST    STATUS  TASK     TITLE\n\
-             host-a  idle    adopted  s1\n\
-             host-a  idle    adopted  w1:p3\n"
+            render_text(&matched, &[], None, true),
+            "HOST    STATUS  TASK      TITLE\n\
+             host-a  idle    observed  s1\n\
+             host-a  idle    observed  w1:p3\n"
         );
     }
 
     #[test]
     fn render_has_no_trailing_whitespace() {
-        let adopted = [
+        let matched = [
             summarized(
                 "trailing spaces   ",
                 entry("host-a", AgentStatus::Working, "padded title  ", None),
@@ -486,7 +486,7 @@ mod tests {
             entry("host-b", AgentStatus::Idle, "s1", Some("aaaaaaab")),
         ];
 
-        let text = render_text(&adopted, &[], Some("host-a"), true);
+        let text = render_text(&matched, &[], Some("host-a"), true);
 
         assert!(text.ends_with('\n'));
         for line in text.lines() {
@@ -497,31 +497,31 @@ mod tests {
 
     #[test]
     fn render_without_summaries_prints_one_line_per_agent() {
-        let adopted = [summarized(
+        let matched = [summarized(
             "Building feature-x; waiting on review.",
             entry("host-a", AgentStatus::Working, "Build feature-x", None),
         )];
 
         assert_eq!(
-            render_text(&adopted, &[], Some("host-a"), false),
-            "HOST    STATUS   TASK     TITLE\n\
-             host-a  working  adopted  Build feature-x\n"
+            render_text(&matched, &[], Some("host-a"), false),
+            "HOST    STATUS   TASK      TITLE\n\
+             host-a  working  observed  Build feature-x\n"
         );
     }
 
     #[test]
     fn render_titles_a_worker_by_its_task() {
-        let adopted = [
+        let matched = [
             entry("host-a", AgentStatus::Working, "aaaaaaab", Some("aaaaaaab")),
             entry("host-a", AgentStatus::Idle, "Hand session", None),
         ];
         let tasks = [task("aaaaaaab", "Build feature-x")];
 
         assert_eq!(
-            render_text(&adopted, &tasks, None, false),
+            render_text(&matched, &tasks, None, false),
             "HOST    STATUS   TASK      TITLE\n\
              host-a  working  aaaaaaab  Build feature-x\n\
-             host-a  idle     adopted   Hand session\n"
+             host-a  idle     observed  Hand session\n"
         );
     }
 }

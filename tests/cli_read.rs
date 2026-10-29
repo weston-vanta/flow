@@ -73,7 +73,7 @@ fn status_lists_open_tasks_compactly() {
         "{out}"
     );
     assert!(!out.contains("aaaaaaac"), "{out}");
-    assert_eq!(lines[1], "adopted: 0 sessions");
+    assert_eq!(lines[1], "observed: 0 sessions");
 }
 
 #[test]
@@ -106,7 +106,7 @@ fn status_lists_holds() {
         lines[2].starts_with("aaaaaaab  supervisor  Which backoff schedule?  "),
         "{out}"
     );
-    assert_eq!(lines[3], "adopted: 0 sessions");
+    assert_eq!(lines[3], "observed: 0 sessions");
 }
 
 #[test]
@@ -180,7 +180,7 @@ fn status_hides_done_and_orphaned_unless_all() {
     assert!(all_lines[0].starts_with("aaaaaaab  pending   "), "{all}");
     assert!(all_lines[1].starts_with("aaaaaaac  done      "), "{all}");
     assert!(all_lines[2].starts_with("aaaaaaad  orphaned  "), "{all}");
-    assert_eq!(all_lines[3], "adopted: 0 sessions");
+    assert_eq!(all_lines[3], "observed: 0 sessions");
 }
 
 #[test]
@@ -231,8 +231,8 @@ fn status_without_tasks_says_so() {
     let open = stdout(flow(&state).arg("status"));
     let all = stdout(flow(&state).args(["status", "--all"]));
 
-    assert_eq!(open, "no open tasks\nadopted: 0 sessions\n");
-    assert_eq!(all, "no tasks\nadopted: 0 sessions\n");
+    assert_eq!(open, "no open tasks\nobserved: 0 sessions\n");
+    assert_eq!(all, "no tasks\nobserved: 0 sessions\n");
 }
 
 #[test]

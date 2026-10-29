@@ -16,7 +16,7 @@ You provide:
 - A Rust toolchain on every host.
 - herdr on every host, with its Claude Code integration: `herdr integration install claude`.
 - Claude Code installed and logged in on every host.
-- A `~/.claude` shared across hosts. Without it, flow cannot summarize adopted sessions
+- A `~/.claude` shared across hosts. Without it, flow cannot summarize observed sessions
   running on other hosts, and the supervisor's conversation cannot be resumed with
   `--resume` after the supervisor moves to another host.
 - The Ona CLI logged in as you on every host that may run or attach to the supervisor:
@@ -72,12 +72,17 @@ Operator:
 
 - `flow init [--force]`: write `state/config.toml` from what this machine can tell, then refresh the inventory; `--force` replaces an existing file.
 - `flow up`: attach to the live supervisor session, or start one on this host and attach. When stdout is not a terminal, it prints the command to attach with instead of attaching.
-- `flow status [--all] [--json]`: open tasks, their holds, pending dispatch requests from workers (`req-id  from-task  host  title`), and adopted sessions; `--all` includes done and orphaned tasks.
+- `flow status [--all] [--json]`: open tasks, their holds, pending dispatch requests from workers (`req-id  from-task  host  title`), and observed sessions; `--all` includes done and orphaned tasks.
 - `flow inventory [--refresh] [--json]`: worktrees, agents, and PRs per host; `--refresh` first discovers hosts from Ona (or the static list), probes each running one, and lists open PRs. `--json` gives each host its ssh alias, whether it is the host flow runs on (`local`), its Ona phase, when it was last seen, and whether it is reachable or gone.
 - `flow run <host> -- <argv>...`: run a command on a host, passing its output and exit code through.
-- `flow sessions [--summaries] [--json]`: herdr agents across hosts, with their tasks or as adopted sessions; `--summaries` adds each session's latest summary, and `--json` includes summaries and pane ids.
+- `flow sessions [--summaries] [--json]`: herdr agents across hosts, with their tasks or as observed sessions; `--summaries` adds each session's latest summary, and `--json` includes summaries and pane ids.
 - `flow follow <host> <session>`: wake the supervisor when a session started by hand goes idle or done, not only when it turns blocked. `<session>` is the session's title as `flow sessions` shows it, or its pane id when several share the title; `flow sessions` then marks it `followed`.
 - `flow unfollow <host> <session>`: stop waking the supervisor for a followed session except when it turns blocked; also accepts the pane id of a followed session that is gone.
+
+Sessions started by hand sit on a ladder:
+
+- **observed**: a herdr agent flow can see but does not manage, started by hand outside flow's herdr session. It wakes the supervisor only when it turns `blocked`.
+- **followed**: an observed session on the follow list. It also wakes the supervisor on `idle` and `done`.
 
 Supervisor:
 

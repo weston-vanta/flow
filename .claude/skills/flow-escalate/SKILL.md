@@ -52,5 +52,5 @@ hold on the user and say what is needed.
 - herdr refuses to prompt a worker blocked at a harness prompt (such as a permission dialog);
   hold on the user and tell them which pane to attach to.
 - Keep steer messages self-contained: the worker has its brief and its own context, not yours.
-- Steer adopted sessions (those not started by `flow dispatch`) only when the user asks;
+- Steer observed sessions (those started by hand) only when the user asks;
   `flow steer` targets tasks.

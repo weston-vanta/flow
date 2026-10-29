@@ -62,9 +62,9 @@ use anyhow::Context;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use crate::adopt::{FollowList, Followed};
 use crate::herdr::{self, Herdr};
 use crate::inventory::{self, FlowServer};
+use crate::observe::{FollowList, Followed};
 use crate::paths::StateDir;
 use crate::runner::Runner;
 use crate::state::Store;
@@ -758,7 +758,7 @@ impl<'a> Watcher<'a> {
                 .iter()
                 .any(|followed| followed.is(&hand.host, &hand.session, &hand.pane_id));
             let spec = WaitSpec {
-                target: WaitTarget::Adopted {
+                target: WaitTarget::Observed {
                     followed,
                     title: hand.title.clone(),
                 },
@@ -770,7 +770,7 @@ impl<'a> Watcher<'a> {
         }
         for followed in follow {
             let spec = WaitSpec {
-                target: WaitTarget::Adopted {
+                target: WaitTarget::Observed {
                     followed: true,
                     title: String::new(),
                 },
@@ -823,7 +823,7 @@ impl<'a> Watcher<'a> {
                 }
                 Polled::Gone => {
                     reported.reachable(&wait.host.name);
-                    if matches!(wait.spec.target, WaitTarget::Adopted { .. }) {
+                    if matches!(wait.spec.target, WaitTarget::Observed { .. }) {
                         reported.agent_seen(&wait.spec.key(), herdr::AgentStatus::Unknown);
                     }
                     wait.spec.gone()
@@ -1056,7 +1056,7 @@ default_branch = "main"
     const NOT_FOUND: &str = r#"{"error":{"code":"agent_not_found","message":"agent target w1:p1 not found"},"id":"cli:agent:wait"}"#;
     const NO_AGENTS: &str = r#"{"id":"cli:agent:list","result":{"agents":[],"type":"agent_list"}}"#;
     const DEFAULT_AGENTS: &str = r#"{"id":"cli:agent:list","result":{"agents":[{"agent":"claude","agent_status":"idle","cwd":"/work/repo","pane_id":"w1:p1","terminal_title":"✳ Tidy docs","terminal_title_stripped":"Tidy docs","workspace_id":"w1"}],"type":"agent_list"}}"#;
-    const TIDY_DOCS_BLOCKED: &str = r#"adopted-blocked: host-a w1:p1 "Tidy docs""#;
+    const TIDY_DOCS_BLOCKED: &str = r#"observed-blocked: host-a w1:p1 "Tidy docs""#;
 
     struct Fixture {
         _dir: tempfile::TempDir,
@@ -1358,7 +1358,7 @@ default_branch = "main"
         let mut first = fx.watcher(&runner, DEFAULT_QUIET_SECS);
         assert_eq!(
             two_cycles(&mut first).as_deref(),
-            Some(r#"adopted-idle: host-a w1:p1 "w1:p1""#)
+            Some(r#"observed-idle: host-a w1:p1 "w1:p1""#)
         );
         drop(first);
 
@@ -1423,7 +1423,7 @@ default_branch = "main"
         let log = fx.log();
         assert!(
             log.lines().any(|line| line.contains("absorb")
-                && line.contains(r#""type":"adopted-changed""#)
+                && line.contains(r#""type":"observed-changed""#)
                 && line.contains(r#""status":"unknown""#)),
             "{log}"
         );
@@ -1449,7 +1449,7 @@ default_branch = "main"
         let mut watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
         assert_eq!(
             two_cycles(&mut watcher).as_deref(),
-            Some(r#"adopted-idle: host-a w1:p1 "Tidy docs""#)
+            Some(r#"observed-idle: host-a w1:p1 "Tidy docs""#)
         );
         assert_eq!(wait_untils(&runner), [vec!["idle", "blocked", "done"]]);
     }
@@ -1685,7 +1685,7 @@ default_branch = "main"
         fx.follow();
         assert_eq!(
             cycles(&mut watcher, 2).as_deref(),
-            Some(r#"adopted-idle: host-a w1:p1 "Tidy docs""#)
+            Some(r#"observed-idle: host-a w1:p1 "Tidy docs""#)
         );
         assert_eq!(cycles(&mut watcher, 2), None);
         assert_eq!(

@@ -1,9 +1,10 @@
-//! Adoption of sessions the user started by hand in herdr: each herdr agent is matched to the
-//! task whose worker runs in its pane, or shown as adopted, with the Claude Code session it runs
-//! and that session's latest summary, read from Claude Code's session registry and transcripts.
-//! Reading is all flow does there; it never writes Claude Code's state. Any hand-started session
-//! turning `blocked` wakes the supervisor; the follow list, `state/supervisor/follow.json`,
-//! names the ones whose other state changes should wake it too.
+//! Observed sessions, the ones the user started by hand in herdr: each herdr agent is matched to
+//! the task whose worker runs in its pane, or shown as observed, with the Claude Code session it
+//! runs and that session's latest summary, read from Claude Code's session registry and
+//! transcripts. Reading is all flow does there; it never writes Claude Code's state. Any
+//! observed session turning `blocked` wakes the supervisor; the follow list,
+//! `state/supervisor/follow.json`, names the followed ones, whose other state changes should
+//! wake it too.
 //!
 //! herdr can report an agent's Claude Code session id, which names its registry session
 //! exactly. An agent it reports none for is matched by cwd, and only when no other such agent
@@ -70,7 +71,7 @@ struct TranscriptLine {
 
 /// A herdr agent with what flow knows about it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Adopted {
+pub struct MatchedAgent {
     pub host: String,
     pub agent: Agent,
     /// The task whose worker runs in the agent's pane; `None` for a hand-started session.
@@ -281,7 +282,7 @@ pub fn match_agents(
     hosts: &[(&str, &[Agent])],
     tasks: &[(TaskRecord, Status)],
     registry: &[RegistrySession],
-) -> Vec<Adopted> {
+) -> Vec<MatchedAgent> {
     let by_id = |id: &str| registry.iter().find(|s| s.session_id == id);
     let found: Vec<Found> = hosts
         .iter()
@@ -330,7 +331,7 @@ pub fn match_agents(
                 (None, Some(id)) => (by_id(id), MatchedBy::Id),
                 (None, None) => (by_cwd(f.agent), MatchedBy::Cwd),
             };
-            Adopted {
+            MatchedAgent {
                 host: f.host.to_owned(),
                 agent: f.agent.clone(),
                 task: f.task.map(|(record, _)| record.id.clone()),
@@ -531,8 +532,8 @@ mod tests {
         }
     }
 
-    fn session_ids(adopted: &[Adopted]) -> Vec<Option<&str>> {
-        adopted
+    fn session_ids(matched: &[MatchedAgent]) -> Vec<Option<&str>> {
+        matched
             .iter()
             .map(|a| a.session.as_ref().map(|s| s.session_id.as_str()))
             .collect()
@@ -594,9 +595,9 @@ mod tests {
             registered("s-hand", "/work/repo", 300),
         ];
 
-        let adopted = match_agents(&[("host-a", &agents)], &tasks, &registry);
+        let matched = match_agents(&[("host-a", &agents)], &tasks, &registry);
 
-        let summary: Vec<(Option<&str>, Option<&str>)> = adopted
+        let summary: Vec<(Option<&str>, Option<&str>)> = matched
             .iter()
             .map(|a| {
                 (
@@ -614,11 +615,11 @@ mod tests {
             ]
         );
         assert_eq!(
-            matched_by(&adopted),
+            matched_by(&matched),
             [Some(MatchedBy::Task), Some(MatchedBy::Cwd), None]
         );
-        assert!(adopted.iter().all(|a| a.host == "host-a"));
-        assert_eq!(adopted[1].agent, agents[1]);
+        assert!(matched.iter().all(|a| a.host == "host-a"));
+        assert_eq!(matched[1].agent, agents[1]);
     }
 
     #[test]
@@ -633,9 +634,9 @@ mod tests {
             registered("s3", "/work/repo", 300),
         ];
 
-        let adopted = match_agents(&[("host-a", &agents)], &[], &registry);
+        let matched = match_agents(&[("host-a", &agents)], &[], &registry);
 
-        assert_eq!(session_ids(&adopted), [Some("s1"), Some("s2")]);
+        assert_eq!(session_ids(&matched), [Some("s1"), Some("s2")]);
     }
 
     #[test]
@@ -643,13 +644,13 @@ mod tests {
         let agents = [reporting("s-gone", agent("default", "w1:p1", "/work/repo"))];
         let registry = [registered("s1", "/work/repo", 100)];
 
-        let adopted = match_agents(&[("host-a", &agents)], &[], &registry);
+        let matched = match_agents(&[("host-a", &agents)], &[], &registry);
 
-        assert_eq!(session_ids(&adopted), [None]);
+        assert_eq!(session_ids(&matched), [None]);
     }
 
-    fn matched_by(adopted: &[Adopted]) -> Vec<Option<MatchedBy>> {
-        adopted.iter().map(|a| a.matched_by).collect()
+    fn matched_by(matched: &[MatchedAgent]) -> Vec<Option<MatchedBy>> {
+        matched.iter().map(|a| a.matched_by).collect()
     }
 
     #[test]
@@ -662,18 +663,18 @@ mod tests {
             registered("s3", "/work/repo", 300),
         ];
 
-        let adopted = match_agents(
+        let matched = match_agents(
             &[("host-a", &agents), ("host-b", &elsewhere)],
             &[],
             &registry,
         );
 
-        assert_eq!(session_ids(&adopted), [Some("s2"), Some("s3")]);
+        assert_eq!(session_ids(&matched), [Some("s2"), Some("s3")]);
         assert_eq!(
-            matched_by(&adopted),
+            matched_by(&matched),
             [Some(MatchedBy::Cwd), Some(MatchedBy::Id)]
         );
-        assert_eq!(adopted[1].host, "host-b");
+        assert_eq!(matched[1].host, "host-b");
     }
 
     #[test]
@@ -689,13 +690,13 @@ mod tests {
             registered("s3", "/work/app", 300),
         ];
 
-        let adopted = match_agents(
+        let matched = match_agents(
             &[("host-a", &agents), ("host-b", &elsewhere)],
             &[],
             &registry,
         );
 
-        assert_eq!(session_ids(&adopted), [None, Some("s3"), None]);
-        assert_eq!(matched_by(&adopted), [None, Some(MatchedBy::Cwd), None]);
+        assert_eq!(session_ids(&matched), [None, Some("s3"), None]);
+        assert_eq!(matched_by(&matched), [None, Some(MatchedBy::Cwd), None]);
     }
 }

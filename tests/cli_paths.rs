@@ -50,7 +50,7 @@ fn status_on_empty_state_has_no_open_tasks() {
         .arg("status")
         .assert()
         .success()
-        .stdout("no open tasks\nadopted: 0 sessions\n");
+        .stdout("no open tasks\nobserved: 0 sessions\n");
 }
 
 #[test]

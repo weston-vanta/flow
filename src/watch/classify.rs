@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::adopt::Followed;
 use crate::herdr::AgentStatus;
+use crate::observe::Followed;
 use crate::state::task::State;
 
 /// The default `Thresholds::quiet_secs`: half an hour without a task event.
@@ -46,8 +46,10 @@ pub enum Observation {
         since_secs: u64,
         worktree_written: bool,
     },
-    /// herdr reports a hand session's agent in `status`: an agent outside flow's herdr session.
-    AdoptedChanged {
+    /// herdr reports an observed session's agent in `status`: an agent outside flow's herdr
+    /// session.
+    #[serde(alias = "adopted-changed")]
+    ObservedChanged {
         host: String,
         session: String,
         pane_id: String,
@@ -118,7 +120,7 @@ pub fn classify(obs: &Observation, thresholds: &Thresholds) -> Verdict {
             }
             format!("quiet: {task} {since_secs}s")
         }
-        Observation::AdoptedChanged {
+        Observation::ObservedChanged {
             host,
             session,
             pane_id,
@@ -133,7 +135,7 @@ pub fn classify(obs: &Observation, thresholds: &Thresholds) -> Verdict {
                 return Verdict::Absorb;
             }
             let title = if title.is_empty() { pane_id } else { title };
-            format!("adopted-{}: {host} {pane_id} \"{title}\"", status.as_str())
+            format!("observed-{}: {host} {pane_id} \"{title}\"", status.as_str())
         }
         Observation::Heartbeat => "heartbeat".to_owned(),
         Observation::WatchFailed { error } => format!("watch-failed: {error}"),
@@ -158,7 +160,7 @@ pub struct Reported {
 pub struct PaneReport {
     /// The agent's status, or `gone`.
     pub seen: String,
-    /// The length of the task's `events.jsonl` when the report was made; `None` for an adopted
+    /// The length of the task's `events.jsonl` when the report was made; `None` for an observed
     /// session, which has no event log.
     #[serde(default)]
     pub events: Option<u64>,
@@ -179,7 +181,7 @@ impl Reported {
             }
             Observation::AgentState { .. }
             | Observation::AgentGone { .. }
-            | Observation::AdoptedChanged { .. } => {
+            | Observation::ObservedChanged { .. } => {
                 let key = pane_key(obs).expect("agent observations name a pane");
                 let seen = pane_report(obs).expect("agent observations report a pane");
                 if self
@@ -252,7 +254,7 @@ impl Reported {
 /// What an agent observation says about its pane: the agent's status, or `gone`.
 fn pane_report(obs: &Observation) -> Option<String> {
     match obs {
-        Observation::AgentState { status, .. } | Observation::AdoptedChanged { status, .. } => {
+        Observation::AgentState { status, .. } | Observation::ObservedChanged { status, .. } => {
             Some(status.as_str().to_owned())
         }
         Observation::AgentGone { .. } => Some(GONE.to_owned()),
@@ -261,13 +263,13 @@ fn pane_report(obs: &Observation) -> Option<String> {
 }
 
 /// The key `Reported` files an agent observation's pane under: the task id for a worker,
-/// `<host>/<session>/<pane>` for an adopted session.
+/// `<host>/<session>/<pane>` for an observed session.
 pub fn pane_key(obs: &Observation) -> Option<String> {
     match obs {
         Observation::AgentState { task, .. } | Observation::AgentGone { task } => {
             Some(task.clone())
         }
-        Observation::AdoptedChanged {
+        Observation::ObservedChanged {
             host,
             session,
             pane_id,
@@ -314,8 +316,8 @@ mod tests {
         }
     }
 
-    fn adopted(pane_id: &str, status: AgentStatus) -> Observation {
-        Observation::AdoptedChanged {
+    fn observed(pane_id: &str, status: AgentStatus) -> Observation {
+        Observation::ObservedChanged {
             host: "host-a".to_owned(),
             session: "default".to_owned(),
             pane_id: pane_id.to_owned(),
@@ -450,20 +452,20 @@ mod tests {
     }
 
     #[test]
-    fn classify_adopted_change_of_followed_pane_wakes() {
+    fn classify_observed_change_of_followed_pane_wakes() {
         let thresholds = following("default");
         assert_eq!(
-            classify(&adopted("w1:p1", AgentStatus::Idle), &thresholds),
-            wake(r#"adopted-idle: host-a w1:p1 "Tidy docs""#)
+            classify(&observed("w1:p1", AgentStatus::Idle), &thresholds),
+            wake(r#"observed-idle: host-a w1:p1 "Tidy docs""#)
         );
         assert_eq!(
-            classify(&adopted("w1:p1", AgentStatus::Unknown), &thresholds),
-            wake(r#"adopted-unknown: host-a w1:p1 "Tidy docs""#)
+            classify(&observed("w1:p1", AgentStatus::Unknown), &thresholds),
+            wake(r#"observed-unknown: host-a w1:p1 "Tidy docs""#)
         );
     }
 
     #[test]
-    fn classify_adopted_change_of_unfollowed_pane_absorbs_all_but_blocked() {
+    fn classify_observed_change_of_unfollowed_pane_absorbs_all_but_blocked() {
         for status in [
             AgentStatus::Idle,
             AgentStatus::Working,
@@ -471,7 +473,7 @@ mod tests {
             AgentStatus::Unknown,
         ] {
             assert_eq!(
-                verdict(adopted("w1:p1", status)),
+                verdict(observed("w1:p1", status)),
                 Verdict::Absorb,
                 "{status:?}"
             );
@@ -480,28 +482,28 @@ mod tests {
 
     #[test]
     fn classify_blocked_hand_session_wakes_whether_followed_or_not() {
-        let blocked = adopted("w1:p1", AgentStatus::Blocked);
-        let reason = wake(r#"adopted-blocked: host-a w1:p1 "Tidy docs""#);
+        let blocked = observed("w1:p1", AgentStatus::Blocked);
+        let reason = wake(r#"observed-blocked: host-a w1:p1 "Tidy docs""#);
         assert_eq!(verdict(blocked.clone()), reason);
         assert_eq!(classify(&blocked, &following("default")), reason);
     }
 
     #[test]
     fn classify_names_an_untitled_hand_session_by_its_pane() {
-        let mut untitled = adopted("w1:p1", AgentStatus::Blocked);
-        if let Observation::AdoptedChanged { title, .. } = &mut untitled {
+        let mut untitled = observed("w1:p1", AgentStatus::Blocked);
+        if let Observation::ObservedChanged { title, .. } = &mut untitled {
             title.clear();
         }
         assert_eq!(
             verdict(untitled),
-            wake(r#"adopted-blocked: host-a w1:p1 "w1:p1""#)
+            wake(r#"observed-blocked: host-a w1:p1 "w1:p1""#)
         );
     }
 
     #[test]
     fn classify_follows_a_pane_only_in_its_own_herdr_session() {
         assert_eq!(
-            classify(&adopted("w1:p1", AgentStatus::Idle), &following("other")),
+            classify(&observed("w1:p1", AgentStatus::Idle), &following("other")),
             Verdict::Absorb
         );
     }
@@ -586,14 +588,14 @@ mod tests {
     }
 
     #[test]
-    fn adopted_report_is_not_cleared_by_events() {
+    fn observed_report_is_not_cleared_by_events() {
         let mut reported = Reported::default();
-        let idle = adopted("w1:p1", AgentStatus::Idle);
-        reported.review(&idle, wake("adopted-idle: host-a w1:p1"));
+        let idle = observed("w1:p1", AgentStatus::Idle);
+        reported.review(&idle, wake("observed-idle: host-a w1:p1"));
         let key = pane_key(&idle).unwrap();
         reported.events_grew(&key, 1_000);
         assert_eq!(
-            reported.review(&idle, wake("adopted-idle: host-a w1:p1")),
+            reported.review(&idle, wake("observed-idle: host-a w1:p1")),
             Verdict::Absorb
         );
     }
@@ -616,23 +618,23 @@ mod tests {
     }
 
     #[test]
-    fn pane_keys_name_the_task_or_the_adopted_pane() {
+    fn pane_keys_name_the_task_or_the_observed_pane() {
         assert_eq!(pane_key(&agent(AgentStatus::Done)).as_deref(), Some(TASK));
         assert_eq!(
-            pane_key(&adopted("w1:p1", AgentStatus::Done)).as_deref(),
+            pane_key(&observed("w1:p1", AgentStatus::Done)).as_deref(),
             Some("host-a/default/w1:p1")
         );
         assert_eq!(pane_key(&Observation::Heartbeat), None);
     }
 
     #[test]
-    fn adopted_change_queued_before_titles_parses_untitled() {
+    fn observed_change_queued_before_titles_parses_untitled() {
         let queued = serde_json::json!({
             "type": "adopted-changed", "host": "host-a", "session": "default",
             "pane_id": "w1:p1", "status": "blocked",
         });
-        let mut untitled = adopted("w1:p1", AgentStatus::Blocked);
-        if let Observation::AdoptedChanged { title, .. } = &mut untitled {
+        let mut untitled = observed("w1:p1", AgentStatus::Blocked);
+        if let Observation::ObservedChanged { title, .. } = &mut untitled {
             title.clear();
         }
         assert_eq!(
@@ -642,11 +644,23 @@ mod tests {
     }
 
     #[test]
+    fn observed_change_queued_under_its_old_name_parses_and_is_written_under_the_new_one() {
+        let blocked = observed("w1:p1", AgentStatus::Blocked);
+        let mut queued = serde_json::to_value(&blocked).unwrap();
+        assert_eq!(queued["type"], "observed-changed");
+        queued["type"] = "adopted-changed".into();
+        assert_eq!(
+            serde_json::from_value::<Observation>(queued).unwrap(),
+            blocked
+        );
+    }
+
+    #[test]
     fn reported_status_reads_back_only_agent_statuses() {
         let mut reported = Reported::default();
         reported.review(
-            &adopted("w1:p1", AgentStatus::Blocked),
-            wake("adopted-blocked"),
+            &observed("w1:p1", AgentStatus::Blocked),
+            wake("observed-blocked"),
         );
         reported.review(
             &Observation::AgentGone {

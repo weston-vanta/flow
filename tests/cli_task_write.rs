@@ -320,7 +320,7 @@ fn status_lists_pending_requests() {
             "requests:".to_owned(),
             format!("{with_host}  {TASK}  host-b  Update docs"),
             format!("{without_host}  aaaaaaac  -       Bump the client"),
-            "adopted: 0 sessions".to_owned(),
+            "observed: 0 sessions".to_owned(),
         ],
         "{listed}"
     );
@@ -346,7 +346,7 @@ fn status_lists_pending_requests() {
 }
 
 #[test]
-fn status_lists_holds_then_requests_then_adopted() {
+fn status_lists_holds_then_requests_then_observed() {
     let (repo, state, store) = setup();
     store
         .set_status(TASK, |s| {
@@ -385,7 +385,7 @@ fn status_lists_holds_then_requests_then_adopted() {
         lines[4],
         format!("{}  {TASK}  -  Update docs", req_id.trim())
     );
-    assert_eq!(lines[5], "adopted: 0 sessions", "{listed}");
+    assert_eq!(lines[5], "observed: 0 sessions", "{listed}");
 }
 
 #[test]

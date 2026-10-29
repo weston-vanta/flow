@@ -29,7 +29,7 @@ pub enum Command {
         #[arg(long)]
         force: bool,
     },
-    /// Show open tasks, their holds, pending dispatch requests, and adopted sessions
+    /// Show open tasks, their holds, pending dispatch requests, and observed sessions
     Status {
         /// Include done and orphaned tasks
         #[arg(long)]
@@ -62,7 +62,7 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// List herdr agents across hosts, with their tasks or as adopted sessions
+    /// List herdr agents across hosts, with their tasks or as observed sessions
     Sessions {
         /// Print raw JSON instead of the compact view
         #[arg(long)]
