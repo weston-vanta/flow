@@ -1,0 +1,50 @@
+[
+  {
+    "id": "0123456789abcdef0123456789abcdef",
+    "label": "host-e",
+    "target": "host-e.example",
+    "session": "default",
+    "enabled": true,
+    "selected": false
+  },
+  {
+    "id": "11111111111111111111111111111111",
+    "label": "host-f",
+    "target": "host-f.example",
+    "session": "flow",
+    "enabled": true,
+    "selected": false
+  },
+  {
+    "id": "22222222222222222222222222222222",
+    "label": "host-d",
+    "target": "host-d.example",
+    "session": "default",
+    "enabled": true,
+    "selected": false
+  },
+  {
+    "id": "33333333333333333333333333333333",
+    "label": "host-g",
+    "target": "elsewhere.example",
+    "session": "default",
+    "enabled": true,
+    "selected": false
+  },
+  {
+    "id": "44444444444444444444444444444444",
+    "label": "my-box",
+    "target": "box.example",
+    "session": "work",
+    "enabled": false,
+    "selected": false
+  },
+  {
+    "id": "55555555555555555555555555555555",
+    "label": "host-a",
+    "target": "somewhere.example",
+    "session": "default",
+    "enabled": true,
+    "selected": true
+  }
+]

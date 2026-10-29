@@ -1,6 +1,7 @@
 //! `flow inventory`: worktrees, agents, PRs, and load per host, from the cache or refreshed.
 
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 use std::sync::Arc;
 use std::thread;
 
@@ -31,7 +32,7 @@ const ONA_PHASE_PREFIX: &str = "ENVIRONMENT_PHASE_";
 pub fn run(state: &StateDir, refresh: bool, json: bool) -> anyhow::Result<()> {
     let config = Config::load(state)?;
     let failed = if refresh {
-        refresh_all(state, &config)?
+        refresh_all(state, &config, &Arc::from(runner::from_env()?))?
     } else {
         Vec::new()
     };
@@ -60,6 +61,29 @@ pub fn run(state: &StateDir, refresh: bool, json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Refreshes every host first when `refresh`, as `run` does, then syncs herdr's saved machines
+/// with the hosts as `flow inventory --sync`; see `sync::run`. A host that could not be
+/// refreshed fails the command once the sync is done.
+pub fn run_sync(
+    state: &StateDir,
+    refresh: bool,
+    json: bool,
+    yes: bool,
+) -> anyhow::Result<ExitCode> {
+    let config = Config::load(state)?;
+    let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
+    let failed = if refresh {
+        refresh_all(state, &config, &runner)?
+    } else {
+        Vec::new()
+    };
+    let code = super::sync::run(state, &config, runner.as_ref(), json, yes)?;
+    if !failed.is_empty() {
+        bail!("could not refresh {}", failed.join(", "));
+    }
+    Ok(code)
+}
+
 /// The cached record as JSON, with `ssh_alias` resolved as flow reaches the host, `local` for
 /// the host this runs on, and `phase` for Ona's phase.
 fn json_view(inventory: &HostInventory, local_env_id: Option<&str>) -> anyhow::Result<Value> {
@@ -79,7 +103,7 @@ fn json_view(inventory: &HostInventory, local_env_id: Option<&str>) -> anyhow::R
 /// name, environment id, Ona phase, and which configured repos it has a checkout of.
 pub fn run_summary(state: &StateDir) -> anyhow::Result<()> {
     let config = Config::load(state)?;
-    let failed = refresh_all(state, &config)?;
+    let failed = refresh_all(state, &config, &Arc::from(runner::from_env()?))?;
     let summary: String = inventory::load_all(state)?
         .iter()
         .map(|inventory| summary_line(inventory, &config))
@@ -136,7 +160,11 @@ fn summary_line(inventory: &HostInventory, config: &Config) -> String {
 /// in parallel, joins the user's open PRs, listed once per repo, to each reachable host's
 /// worktrees, and writes each inventory. A repo whose PRs cannot be listed keeps each host's
 /// cached PRs of that repo. Returns the hosts that failed.
-fn refresh_all(state: &StateDir, config: &Config) -> anyhow::Result<Vec<String>> {
+fn refresh_all(
+    state: &StateDir,
+    config: &Config,
+    runner: &Arc<dyn Runner>,
+) -> anyhow::Result<Vec<String>> {
     let now = Timestamp::now();
     let discovered = discovery::discover(state, &config.hosts, now)?;
     if let Some(warning) = &discovered.warning {
@@ -148,12 +176,10 @@ fn refresh_all(state: &StateDir, config: &Config) -> anyhow::Result<Vec<String>>
         .filter(HostInventory::should_probe)
         .map(|record| (record.host(), record))
         .collect();
-    let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
     let results: Vec<(&Host, anyhow::Result<HostInventory>)> = thread::scope(|scope| {
         let handles: Vec<_> = targets
             .iter()
             .map(|(host, record)| {
-                let runner = &runner;
                 scope.spawn(move || (host, refresh_one(runner, config, host, record, now)))
             })
             .collect();

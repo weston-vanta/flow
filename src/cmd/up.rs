@@ -2,7 +2,6 @@
 //! A live supervisor is found in the herdr session its lock records, whatever the configured
 //! one; a new one starts in the configured session.
 
-use std::io::{self, IsTerminal};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
@@ -284,9 +283,6 @@ fn launch_argv(state_root: &Path, session: Option<&str>) -> anyhow::Result<Vec<S
     Ok(argv.into_iter().map(str::to_owned).collect())
 }
 
-/// Under the fake runner, makes `attach` treat stdout as a terminal when set.
-const FAKE_TTY_VAR: &str = "FLOW_FAKE_TTY";
-
 /// Runs the attach command in place of this process, so it owns the terminal. When stdout is
 /// not a terminal, which the attach command needs, it prints the attach command to run from one
 /// and returns. Under the fake runner it prints `attach: <argv>` in place of running it.
@@ -294,7 +290,7 @@ fn attach(lock: &Lock, host: &Host) -> anyhow::Result<()> {
     let local = host::is_local(host, host::local_env_id().as_deref());
     let control_dir = runner::default_control_dir();
     let argv = supervisor::attach_argv(lock, host, local, &control_dir);
-    if !stdout_is_terminal() {
+    if !super::stdout_is_terminal() {
         // The printed ssh command names a socket in the control dir, which is gone after a
         // reboot.
         if !local {
@@ -318,9 +314,4 @@ fn attach(lock: &Lock, host: &Host) -> anyhow::Result<()> {
     let (program, args) = argv.split_first().expect("the attach argv names a program");
     let err = Command::new(program).args(args).exec();
     Err(err).with_context(|| format!("running `{}`", argv.join(" ")))
-}
-
-fn stdout_is_terminal() -> bool {
-    io::stdout().is_terminal()
-        || (runner::fake_runner_active() && std::env::var_os(FAKE_TTY_VAR).is_some())
 }
