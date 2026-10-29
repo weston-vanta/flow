@@ -78,7 +78,7 @@ pub fn run(state: &StateDir, id: &str, force: bool) -> anyhow::Result<()> {
                 format!("closed {id} (workspace already gone)\n")
             }
             Closing::Reused(why) => {
-                owner::retire_target(&store, id, &why)?;
+                owner::retire_target(&store, id, &target, &why)?;
                 data["reused"] = Value::String(why.clone());
                 format!("closed {id} ({why}; closed nothing)\n")
             }

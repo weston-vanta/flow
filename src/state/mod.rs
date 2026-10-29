@@ -161,6 +161,26 @@ impl Store {
         })
     }
 
+    /// Clears the task's herdr target and appends `ev`, under the `status.json` lock, only if
+    /// the target is still `target`; `last_event` stays as it was. `false` when it was not.
+    pub fn clear_target(
+        &self,
+        id: &str,
+        target: &task::HerdrTarget,
+        ev: &Event,
+    ) -> anyhow::Result<bool> {
+        let mut cleared = false;
+        self.update_status(id, |dir, status| {
+            if status.herdr.as_ref() == Some(target) {
+                status.herdr = None;
+                events::append(dir, ev).map_err(io::Error::other)?;
+                cleared = true;
+            }
+            Ok(())
+        })?;
+        Ok(cleared)
+    }
+
     /// Appends `ev` to the task's `events.jsonl` and advances `last_event` to `ev.ts`, both under
     /// the `status.json` lock.
     pub fn append_event(&self, id: &str, ev: &Event) -> anyhow::Result<()> {

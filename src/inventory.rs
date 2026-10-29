@@ -401,7 +401,7 @@ pub struct Listed {
 }
 
 /// `host`'s cached inventory with the agents and herdr error herdr reports now in `sessions`,
-/// saved, after retiring the targets of dispatched tasks herdr reused (see `owner::retire_reused`).
+/// saved, after retiring the targets of tasks herdr reused (see `owner::retire_reused`).
 /// When the host does not answer, or no herdr server runs there and nothing failed, the cached
 /// inventory as is: nothing was learned.
 pub fn list_agents(

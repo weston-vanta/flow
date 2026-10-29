@@ -32,7 +32,8 @@ one reason; handle every row.
   `pending`, without reporting through flow. Check `flow task events <id>`, then steer it to
   continue or to report its status. A worker that stops after reporting `needs-decision` or
   `blocked` is waiting on its hold and does not wake you.
-- `agent-gone: <id>`: the worker's pane or session disappeared. Check `flow sessions`. If the
+- `agent-gone: <id>`: the worker's pane or session disappeared, or herdr reused its pane and flow
+  retired the task's herdr target (`target.retired` in its events). Check `flow sessions`. If the
   work cannot continue, `flow task orphan <id> --reason "<last known: branch pushed or not>"`
   and ask the user whether to redispatch. Never tear down what is left. For an adopted task
   (`origin` is `adopted` in `flow task show`), its owner closed the pane: orphan it with what

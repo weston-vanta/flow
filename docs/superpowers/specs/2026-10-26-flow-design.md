@@ -158,9 +158,10 @@ designer's call.
    Claude Code session herdr reports for its agent, and acts on a workspace only once herdr
    shows it is flow's: a task's by a label ending in the task id with the task's worker or no
    agent in its pane. An agent herdr reports no session for is the worker of the task whose
-   recorded target is its pane while the pane's workspace label names the task (any label for an
-   adopted task); under another label flow retires the task's target as reused, logging
-   `target.retired`. In the supervisor's pane it may be the supervisor, so flow
+   recorded target is its pane while the pane's workspace label names the task (any label for a
+   task adopted from a session that reported none); under another label any listing retires the
+   task's target as reused, logging `target.retired`, which wakes the supervisor as
+   `agent-gone` while the task is open. In the supervisor's pane it may be the supervisor, so flow
    neither watches, follows nor adopts it, and flow up and flow down refuse beside it until the
    user says which it is.
    An observed session wakes the supervisor only when it turns `blocked`; a followed one, an observed session on the follow list, also on `idle` and

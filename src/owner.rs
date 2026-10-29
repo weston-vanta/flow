@@ -1,7 +1,7 @@
 //! Who a herdr agent belongs to: the supervisor, a task's worker, or nobody flow manages. herdr
 //! reuses pane and workspace ids after a server restart, so the Claude Code session id herdr
-//! reports decides; a pane decides only for an agent herdr reports no id for, and for a
-//! dispatched task only under a workspace label naming the task.
+//! reports decides; a pane decides only for an agent herdr reports no id for, and only under a
+//! workspace label naming the task unless the task was adopted from a session that reported none.
 
 use jiff::Timestamp;
 use serde::Serialize;
@@ -71,14 +71,21 @@ fn in_pane(host: &str, agent: &Agent, target: &HerdrTarget) -> bool {
     target.is(host, &agent.session, &agent.pane_id)
 }
 
-/// Whether `task` records `agent`'s pane as its target and, for a dispatched task, the agent's
-/// workspace label names the task. An adopted task's workspace keeps the user's label.
-fn claims(host: &str, agent: &Agent, (record, status): &(TaskRecord, Status)) -> bool {
+/// Whether an agent with no id in `task`'s pane is the task's only under a workspace label
+/// naming it: the task was dispatched, or adopted from a session that reported an id.
+fn label_decides((record, status): &(TaskRecord, Status)) -> bool {
+    record.origin == Origin::Dispatched || status.claude_session.is_some()
+}
+
+/// Whether `task` records `agent`'s pane as its target and, where `label_decides`, the agent's
+/// workspace label names the task.
+fn claims(host: &str, agent: &Agent, task: &(TaskRecord, Status)) -> bool {
+    let (record, status) = task;
     status
         .herdr
         .as_ref()
         .is_some_and(|target| in_pane(host, agent, target))
-        && (record.origin == Origin::Adopted
+        && (!label_decides(task)
             || agent
                 .workspace_label
                 .as_deref()
@@ -86,12 +93,13 @@ fn claims(host: &str, agent: &Agent, (record, status): &(TaskRecord, Status)) ->
 }
 
 /// Whether `agent`'s workspace label can decide its owner: herdr reports no id for it, and a
-/// dispatched task records its pane.
+/// task whose label decides records its pane.
 pub fn needs_label(host: &str, agent: &Agent, tasks: &[(TaskRecord, Status)]) -> bool {
     agent.agent_session_id.is_none()
-        && tasks.iter().any(|(record, status)| {
-            record.origin == Origin::Dispatched
-                && status
+        && tasks.iter().any(|task| {
+            label_decides(task)
+                && task
+                    .1
                     .herdr
                     .as_ref()
                     .is_some_and(|target| in_pane(host, agent, target))
@@ -116,13 +124,14 @@ pub fn label_where_needed(
     Ok(())
 }
 
-/// The dispatched tasks among `tasks` whose recorded pane on `host` holds one of `agents` with
-/// no id under a workspace label naming another, with why: herdr reused the pane.
+/// The tasks among `tasks` whose recorded pane on `host` holds one of `agents` with no id under
+/// a workspace label naming another, where the label decides, with the target and why: herdr
+/// reused the pane.
 pub fn reused_targets(
     host: &str,
     agents: &[Agent],
     tasks: &[(TaskRecord, Status)],
-) -> Vec<(String, String)> {
+) -> Vec<(String, HerdrTarget, String)> {
     let mut reused = Vec::new();
     for agent in agents
         .iter()
@@ -131,40 +140,42 @@ pub fn reused_targets(
         let Some(label) = agent.workspace_label.as_deref() else {
             continue;
         };
-        for (record, status) in tasks {
-            let recorded = status
+        for task @ (record, status) in tasks {
+            let Some(target) = status
                 .herdr
                 .as_ref()
-                .is_some_and(|target| in_pane(host, agent, target));
-            if record.origin == Origin::Dispatched
-                && recorded
-                && !herdr::label_names_task(label, &record.id)
-            {
+                .filter(|target| in_pane(host, agent, target))
+            else {
+                continue;
+            };
+            if label_decides(task) && !herdr::label_names_task(label, &record.id) {
                 let why = format!(
                     "herdr reused pane {} on {host}: its workspace {} is labelled \"{label}\", \
                      not task {}'s",
                     agent.pane_id, agent.workspace_id, record.id
                 );
-                reused.push((record.id.clone(), why));
+                reused.push((record.id.clone(), target.clone(), why));
             }
         }
     }
     reused
 }
 
-/// Clears task `id`'s herdr target, as for a workspace already gone, and logs `why` as a
-/// `target.retired` event.
-pub fn retire_target(store: &Store, id: &str, why: &str) -> anyhow::Result<()> {
-    store.set_status(id, |status| status.herdr = None)?;
-    store.append_event(
-        id,
-        &Event {
-            ts: Timestamp::now(),
-            source: "flow".to_owned(),
-            kind: TARGET_RETIRED.to_owned(),
-            data: json!({ "reason": why }),
-        },
-    )
+/// Clears task `id`'s herdr target if it is still `target`, as for a workspace already gone, and
+/// logs `why` as a `target.retired` event; `false` when the target had changed.
+pub fn retire_target(
+    store: &Store,
+    id: &str,
+    target: &HerdrTarget,
+    why: &str,
+) -> anyhow::Result<bool> {
+    let event = Event {
+        ts: Timestamp::now(),
+        source: "flow".to_owned(),
+        kind: TARGET_RETIRED.to_owned(),
+        data: json!({ "reason": why }),
+    };
+    store.clear_target(id, target, &event)
 }
 
 /// `retire_target` for each of `reused_targets`; returns the retired task ids.
@@ -175,9 +186,10 @@ pub fn retire_reused(
     tasks: &[(TaskRecord, Status)],
 ) -> anyhow::Result<Vec<String>> {
     let mut retired = Vec::new();
-    for (id, why) in reused_targets(host, agents, tasks) {
-        retire_target(store, &id, &why)?;
-        retired.push(id);
+    for (id, target, why) in reused_targets(host, agents, tasks) {
+        if retire_target(store, &id, &target, &why)? {
+            retired.push(id);
+        }
     }
     Ok(retired)
 }
@@ -278,6 +290,14 @@ mod tests {
             };
             (record, status)
         };
+        let adopted_with = |session| {
+            let (record, status) = task("aaaaaaab", State::Working, Some("w1:p2"), session);
+            let record = TaskRecord {
+                origin: Origin::Adopted,
+                ..record
+            };
+            (record, status)
+        };
         let done = |pane, session| task("aaaaaaab", State::Done, pane, session);
         let cases = [
             (
@@ -372,6 +392,13 @@ mod tests {
                 is_task("aaaaaaab"),
             ),
             (
+                "no id in an adopted task's pane after its session is recorded",
+                labelled(Some("Notes"), agent("w1:p2", None)),
+                None,
+                vec![adopted_with(Some("s-w"))],
+                Owner::Observed,
+            ),
+            (
                 "no id in a closed task's pane",
                 agent("w1:p2", None),
                 None,
@@ -424,13 +451,67 @@ mod tests {
         let reused = reused_targets("host-a", &[user], &tasks);
         assert_eq!(reused.len(), 1);
         assert_eq!(reused[0].0, "aaaaaaab");
+        assert_eq!(reused[0].1, target("w1:p2"));
         assert!(
-            reused[0].1.contains(r#"labelled "Notes""#),
+            reused[0].2.contains(r#"labelled "Notes""#),
             "{}",
-            reused[0].1
+            reused[0].2
         );
         assert!(reused_targets("host-a", &[agent("w1:p2", None)], &tasks).is_empty());
         assert!(reused_targets("host-a", &[unlabelled], &tasks).is_empty());
+    }
+
+    #[test]
+    fn an_adopted_tasks_pane_is_judged_by_label_once_its_session_is_recorded() {
+        let adopted = |session| {
+            let (record, status) = task("aaaaaaab", State::Working, Some("w1:p2"), session);
+            let record = TaskRecord {
+                origin: Origin::Adopted,
+                ..record
+            };
+            [(record, status)]
+        };
+        let user = labelled(Some("Notes"), agent("w1:p2", None));
+        let unlabelled = labelled(None, agent("w1:p2", None));
+
+        assert!(needs_label("host-a", &unlabelled, &adopted(Some("s-w"))));
+        assert!(!needs_label("host-a", &unlabelled, &adopted(None)));
+        let reused = reused_targets("host-a", std::slice::from_ref(&user), &adopted(Some("s-w")));
+        assert_eq!(reused.len(), 1);
+        assert!(reused_targets("host-a", &[user], &adopted(None)).is_empty());
+    }
+
+    #[test]
+    fn retiring_clears_only_the_target_judged_reused() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("state")).unwrap();
+        let state = crate::paths::StateDir::resolve(dir.path()).unwrap();
+        let store = Store::open(&state);
+        let (record, _) = task("aaaaaaab", State::Working, None, None);
+        store.create_task(record, "brief").unwrap();
+        store
+            .set_status("aaaaaaab", |status| status.herdr = Some(target("w1:p3")))
+            .unwrap();
+        let before = store.task("aaaaaaab").unwrap().1.last_event;
+
+        assert!(!retire_target(&store, "aaaaaaab", &target("w1:p2"), "stale").unwrap());
+        let status = store.task("aaaaaaab").unwrap().1;
+        assert_eq!(status.herdr, Some(target("w1:p3")));
+
+        assert!(retire_target(&store, "aaaaaaab", &target("w1:p3"), "reused").unwrap());
+        let status = store.task("aaaaaaab").unwrap().1;
+        assert_eq!(status.herdr, None);
+        assert_eq!(status.last_event, before);
+        let dir = store.task_dir("aaaaaaab").unwrap();
+        let kinds: Vec<String> = crate::state::events::read_all(&dir)
+            .unwrap()
+            .into_iter()
+            .map(|event| event.kind)
+            .collect();
+        assert_eq!(
+            kinds.iter().filter(|kind| *kind == TARGET_RETIRED).count(),
+            1
+        );
     }
 
     #[test]

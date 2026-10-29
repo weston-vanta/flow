@@ -175,6 +175,14 @@ impl HandSession {
         }
     }
 
+    /// Whether `owner`, not the task whose pane this is, rests on evidence: another owner, a
+    /// reported id, or a workspace label that was looked up. An unknown label proves nothing.
+    fn shows_reuse(&self, owner: &Owner) -> bool {
+        *owner != Owner::Observed
+            || self.agent.agent_session_id.is_some()
+            || self.agent.workspace_label.is_some()
+    }
+
     fn is_in(&self, host: &str, session: &str, pane_id: &str) -> bool {
         self.host == host && self.agent.session == session && self.agent.pane_id == pane_id
     }
@@ -710,7 +718,8 @@ impl<'a> Watcher<'a> {
     /// Status changes and appended events since each task's files were last read. A task
     /// read for the first time is replayed from `pending` and an empty event log; a closed task
     /// whose closing was read is passed over. New events drop the task's pane report, so its next
-    /// wait ends on the status it holds, as after a steer.
+    /// wait ends on the status it holds, as after a steer. An open task's `target.retired` event
+    /// reads as its agent gone.
     fn read_task_files(&mut self, tasks: &[(TaskRecord, Status)]) -> Vec<(Observation, Progress)> {
         let mut observed = Vec::new();
         for (rec, status) in tasks {
@@ -747,9 +756,13 @@ impl<'a> Watcher<'a> {
                     for (kind, end) in lines {
                         seen.events = end;
                         let task = rec.id.clone();
-                        let obs = Observation::EventAppended {
-                            task: task.clone(),
-                            kind,
+                        let obs = if kind == owner::TARGET_RETIRED && status.state.is_open() {
+                            Observation::AgentGone { task: task.clone() }
+                        } else {
+                            Observation::EventAppended {
+                                task: task.clone(),
+                                kind,
+                            }
                         };
                         observed.push((obs, Progress::Seen { task, seen }));
                     }
@@ -764,7 +777,8 @@ impl<'a> Watcher<'a> {
         observed
     }
 
-    /// Keeps one wait per open task's target unless an agent listed there is another's, and one
+    /// Keeps one wait per open task's target unless an agent listed there is shown to be another's
+    /// (see `HandSession::shows_reuse`), and one
     /// per observed or followed pane no task waits on. A wait whose spec changed, as on following
     /// or unfollowing, starts afresh.
     fn reconcile_waits(&mut self, tasks: &[(TaskRecord, Status)], follow: &[Followed]) {
@@ -781,7 +795,9 @@ impl<'a> Watcher<'a> {
             };
             let task = Owner::Task(rec.id.clone());
             if owned.iter().any(|(hand, owner)| {
-                hand.is_in(&target.host, &target.session, &target.pane_id) && *owner != task
+                hand.is_in(&target.host, &target.session, &target.pane_id)
+                    && *owner != task
+                    && hand.shows_reuse(owner)
             }) {
                 reused.push(format!(
                     "pane {} on {} (herdr session {}) no longer runs task {}'s worker: herdr \
@@ -1621,6 +1637,97 @@ default_branch = "main"
             ]
         );
         assert!(runner.calls()[0].argv.contains(&"default".to_owned()));
+    }
+
+    fn task_workspaces(label: &str) -> String {
+        format!(
+            r#"{{"id":"cli:workspace:list","result":{{"type":"workspace_list","workspaces":[{{"workspace_id":"w1","label":"{label}"}}]}}}}"#
+        )
+    }
+
+    /// Listings of host-a in which `TASK`'s pane in `flow` holds an agent herdr reports no id
+    /// for, with `workspaces` answering its workspace list, and waits that see it working.
+    fn listing_idless_in_task_pane(workspaces: Scripted) -> Arc<FakeRunner> {
+        fake(vec![
+            Scripted {
+                repeat: true,
+                ..on(
+                    "host-a",
+                    &["--session", "flow", "agent", "list"],
+                    DEFAULT_AGENTS,
+                )
+            },
+            Scripted {
+                repeat: true,
+                ..workspaces
+            },
+            Scripted {
+                repeat: true,
+                ..on(
+                    "host-a",
+                    &["--session", "default", "agent", "list"],
+                    NO_AGENTS,
+                )
+            },
+            Scripted {
+                repeat: true,
+                ..on("host-a", &["agent", "wait"], WORKING)
+            },
+        ])
+    }
+
+    #[test]
+    fn an_open_task_whose_target_a_listing_retires_wakes_once() {
+        let fx = Fixture::new();
+        fx.task(true);
+        let runner = listing_idless_in_task_pane(on(
+            "host-a",
+            &["--session", "flow", "workspace", "list"],
+            &task_workspaces("Notes"),
+        ));
+        let lock = lock::acquire(&fx.state, std::process::id())
+            .unwrap()
+            .unwrap();
+        let once = Settings {
+            once: true,
+            list_agents: true,
+            ..settings(Duration::from_secs(3600))
+        };
+
+        assert_eq!(
+            run(&fx.state, runner.clone(), &once, &lock)
+                .unwrap()
+                .as_deref(),
+            Some("agent-gone: aaaaaaab")
+        );
+        assert_eq!(Store::open(&fx.state).task(TASK).unwrap().1.herdr, None);
+        assert_eq!(run(&fx.state, runner, &once, &lock).unwrap(), None);
+    }
+
+    #[test]
+    fn a_failed_label_listing_keeps_the_tasks_wait() {
+        let fx = Fixture::new();
+        fx.task(true);
+        let runner = listing_idless_in_task_pane(Scripted {
+            status: 2,
+            stderr: "workspace list failed".to_owned(),
+            ..on("host-a", &["--session", "flow", "workspace", "list"], "")
+        });
+        let lock = lock::acquire(&fx.state, std::process::id())
+            .unwrap()
+            .unwrap();
+        let listing = Settings {
+            list_agents: true,
+            ..settings(Duration::from_secs(3600))
+        };
+        let mut watcher = Watcher::new(&fx.state, runner, &listing).unwrap();
+        watcher.refresh_hands(&lock);
+
+        assert_eq!(watcher.cycle().unwrap(), None);
+
+        assert_eq!(watcher.waits.keys().collect::<Vec<_>>(), [TASK]);
+        assert!(Store::open(&fx.state).task(TASK).unwrap().1.herdr.is_some());
+        assert!(!fx.log().contains("reused"), "{}", fx.log());
     }
 
     #[test]
