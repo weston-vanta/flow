@@ -510,6 +510,7 @@ mod tests {
             title: String::new(),
             session: session.to_owned(),
             agent_session_id: None,
+            workspace_label: None,
         }
     }
 
@@ -614,6 +615,7 @@ mod tests {
             agent("default", "w1:p1", "/work/repo"),
         ];
         let mut adopted = in_default(task("aaaaaaab", "host-a", "w1:p1", "s-task"));
+        adopted.0.origin = Origin::Adopted;
         adopted.1.claude_session = None;
 
         let matched = match_agents(&[("host-a", &agents)], &[adopted], None, &[]);

@@ -978,3 +978,80 @@ fn an_agent_with_no_session_in_the_supervisors_pane_is_unconfirmed_and_not_follo
         );
     assert!(!fx.state.join("supervisor/follow.json").exists());
 }
+
+/// One agent herdr reports no session id for, in task `TASK_ID`'s recorded pane `w2:p1` of the
+/// `default` session, and the workspace list labelling `w2` as `label`.
+fn idless_in_task_pane(label: &str) -> [Value; 3] {
+    let agents = json!({"id": "cli:agent:list", "result": {"type": "agent_list", "agents": [
+        {"agent": "claude", "agent_status": "idle", "cwd": "/work/repo.wt/feature",
+         "pane_id": "w2:p1", "terminal_title_stripped": "Notes", "workspace_id": "w2"}]}});
+    let workspaces = json!({"id": "cli:workspace:list", "result": {"type": "workspace_list",
+        "workspaces": [{"workspace_id": "w2", "label": label}]}});
+    [
+        on("host-a", SERVER_RUNNING),
+        on("host-a", &agents.to_string()),
+        on("host-a", &workspaces.to_string()),
+    ]
+}
+
+fn owners(json_out: &str) -> Vec<Value> {
+    let parsed: Value = serde_json::from_str(json_out).unwrap();
+    parsed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["owner"].clone())
+        .collect()
+}
+
+#[test]
+fn an_agent_without_an_id_under_a_workspace_label_naming_another_retires_the_target() {
+    let fx = Fixture::new();
+    fx.single_host();
+    fx.sharing_default();
+    let state = StateDir::resolve(fx.dir.path()).unwrap();
+    let store = Store::open(&state);
+    store
+        .set_status(TASK_ID, |status| status.state = State::Done)
+        .unwrap();
+
+    let json_out = stdout_of(
+        fx.flow(&idless_in_task_pane("My notes"))
+            .args(["sessions", "--json"]),
+    );
+
+    assert_eq!(owners(&json_out), [json!("observed")]);
+    let (_, status) = store.task(TASK_ID).unwrap();
+    assert_eq!(status.herdr, None);
+    let retired = flow::state::events::read_all(&store.task_dir(TASK_ID).unwrap())
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(retired.kind, "target.retired");
+    assert_eq!(
+        retired.data["reason"],
+        "herdr reused pane w2:p1 on host-a: its workspace w2 is labelled \"My notes\", not task \
+         aaaaaaab's"
+    );
+    fx.flow(&[])
+        .args(["steer", TASK_ID, "keep going"])
+        .assert()
+        .code(2)
+        .stderr("task aaaaaaab has no herdr target; the worker's pane is gone\n");
+}
+
+#[test]
+fn an_agent_without_an_id_under_its_tasks_workspace_label_is_the_tasks() {
+    let fx = Fixture::new();
+    fx.single_host();
+    fx.sharing_default();
+
+    let json_out = stdout_of(
+        fx.flow(&idless_in_task_pane("Build feature · aaaaaaab"))
+            .args(["sessions", "--json"]),
+    );
+
+    assert_eq!(owners(&json_out), [json!({"task": TASK_ID})]);
+    let state = StateDir::resolve(fx.dir.path()).unwrap();
+    assert!(Store::open(&state).task(TASK_ID).unwrap().1.herdr.is_some());
+}

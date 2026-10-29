@@ -82,8 +82,8 @@ fn reachable_host(state: &StateDir, lock: &Lock) -> anyhow::Result<Option<Host>>
 }
 
 /// Closes the supervisor's pane on `host`, wherever herdr shows it in `sessions`. Refuses
-/// beside an unconfirmed agent in the lock's pane. When the supervisor runs nowhere, closes the
-/// lock's pane only if herdr still lists it, in the lock's workspace, with no agent in it.
+/// beside an unconfirmed agent in the lock's pane; when the supervisor runs nowhere, closes
+/// nothing, since a pane id alone does not say whose pane it is.
 fn close_supervisor(
     runner: &Arc<dyn Runner>,
     host: &Host,
@@ -97,9 +97,16 @@ fn close_supervisor(
             host.name
         ))
     };
+    let nowhere = || {
+        super::print(&format!(
+            "the supervisor runs in no pane on {}; closed nothing, so any pane it left stays \
+             open\n",
+            host.name
+        ))
+    };
     let found = supervisor::find(runner, host, lock, sessions, tasks).map_err(unreachable)?;
-    let (session, pane_id, what) = match found {
-        Found::Supervisor(agent) => (agent.session, agent.pane_id, "the supervisor's pane"),
+    let agent = match found {
+        Found::Supervisor(agent) => agent,
         Found::Unconfirmed => {
             return Err(Refused(format!(
                 "{}. flow down stopped nothing and kept the lock. {}",
@@ -108,46 +115,17 @@ fn close_supervisor(
             ))
             .into());
         }
-        Found::Nowhere => {
-            let herdr = Herdr::with_session(runner.clone(), &lock.herdr.session);
-            if !left_empty(&herdr, host, lock).map_err(unreachable)? {
-                return super::print(&format!(
-                    "the supervisor runs in no pane on {}; closed nothing\n",
-                    host.name
-                ));
-            }
-            let target = &lock.herdr;
-            (
-                target.session.clone(),
-                target.pane_id.clone(),
-                "the supervisor's empty pane",
-            )
-        }
+        Found::Nowhere => return nowhere(),
     };
-    let herdr = Herdr::with_session(runner.clone(), &session);
-    if herdr.close_pane(host, &pane_id).map_err(unreachable)? {
-        super::print(&format!(
-            "closed {what} {pane_id} on {} (herdr session {session})\n",
-            host.name
-        ))
-    } else {
-        super::print(&format!(
-            "the supervisor runs in no pane on {}; closed nothing\n",
-            host.name
-        ))
-    }
-}
-
-/// Whether herdr still lists the lock's pane in the lock's workspace with no agent in it.
-fn left_empty(herdr: &Herdr, host: &Host, lock: &Lock) -> anyhow::Result<bool> {
-    let target = &lock.herdr;
-    let listed = herdr.panes_if_running(host)?.unwrap_or_default();
-    if !listed
-        .iter()
-        .any(|pane| pane.pane_id == target.pane_id && pane.workspace_id == target.workspace_id)
+    let herdr = Herdr::with_session(runner.clone(), &agent.session);
+    if !herdr
+        .close_pane(host, &agent.pane_id)
+        .map_err(unreachable)?
     {
-        return Ok(false);
+        return nowhere();
     }
-    let agents = herdr.agents_if_running(host)?.unwrap_or_default();
-    Ok(!agents.iter().any(|agent| agent.pane_id == target.pane_id))
+    super::print(&format!(
+        "closed the supervisor's pane {} on {} (herdr session {})\n",
+        agent.pane_id, host.name, agent.session
+    ))
 }

@@ -3,9 +3,10 @@
 //! it keeps running per worker and hand session, checks tasks gone quiet, and classifies what
 //! it saw. Absorbed observations go to `state/supervisor/watch.log`; the first wake is queued
 //! and returned. Nothing here changes a task's state: the supervisor acts on what watch
-//! reports. The one write is a `turn.end` event for an adopted task whose agent goes from
-//! `working` to `idle`, standing in for the Stop hook a session started by hand lacks, so its
-//! quiet check counts from the end of its last turn as a dispatched worker's does.
+//! reports. It writes a `turn.end` event for an adopted task whose agent goes from `working` to
+//! `idle`, standing in for the Stop hook a session started by hand lacks, so its quiet check
+//! counts from the end of its last turn as a dispatched worker's does; and the run-start listing
+//! retires the herdr target of a task whose pane herdr reused, as every listing does.
 //!
 //! `state/supervisor/watch-state.json` carries what one run hands the next: how far each task's
 //! files were read, so a change made between runs still wakes the next one, and what earlier
@@ -1121,7 +1122,7 @@ fn load_watch_state(state: &StateDir) -> anyhow::Result<WatchState> {
 }
 
 /// A watch state with every closed task read as it is now; open tasks are left unread, so a
-/// run replays them, at most one wake each.
+/// run replays their logs.
 fn seeded_state(state: &StateDir) -> anyhow::Result<WatchState> {
     let store = Store::open(state);
     let mut memory = WatchState::default();
@@ -1171,6 +1172,8 @@ path = "/work/repo"
 default_branch = "main"
 "#;
     const TASK: &str = "aaaaaaab";
+    /// The workspace label dispatch gives `TASK`'s workspace.
+    const TASK_LABEL: &str = "Build feature · aaaaaaab";
     const IDLE: &str = r#"{"id":"cli:agent:wait","result":{"agent":{"agent":"claude","agent_status":"idle","pane_id":"w1:p1","workspace_id":"w1"},"type":"agent_info"}}"#;
     const BLOCKED: &str = r#"{"id":"cli:agent:wait","result":{"agent":{"agent":"claude","agent_status":"blocked","pane_id":"w1:p1","workspace_id":"w1"},"type":"agent_info"}}"#;
     const WORKING: &str = r#"{"id":"cli:agent:wait","result":{"agent":{"agent":"claude","agent_status":"working","pane_id":"w1:p1","workspace_id":"w1"},"type":"agent_info"}}"#;
@@ -1289,7 +1292,18 @@ default_branch = "main"
                 title: title.to_owned(),
                 session: session.to_owned(),
                 agent_session_id: None,
+                workspace_label: None,
             });
+            inventory::save(&self.state, &inv).unwrap();
+        }
+
+        /// Records the cached agent in pane `pane_id` on `env_id` under workspace label `label`,
+        /// as a listing that needed it would.
+        fn labelled(&self, env_id: &str, pane_id: &str, label: &str) {
+            let mut inv = inventory::load(&self.state, env_id).unwrap().unwrap();
+            for agent in inv.agents.iter_mut().filter(|a| a.pane_id == pane_id) {
+                agent.workspace_label = Some(label.to_owned());
+            }
             inventory::save(&self.state, &inv).unwrap();
         }
 
@@ -1610,9 +1624,37 @@ default_branch = "main"
     }
 
     #[test]
+    fn a_dispatched_tasks_pane_under_another_label_is_not_the_tasks_wait() {
+        let fx = Fixture::new();
+        fx.hand();
+        fx.labelled("env-0001", "w1:p1", "My notes");
+        fx.task(true);
+        Store::open(&fx.state)
+            .set_status(TASK, |status| {
+                if let Some(target) = &mut status.herdr {
+                    target.session = "default".to_owned();
+                }
+            })
+            .unwrap();
+        let runner = fake(vec![Scripted {
+            repeat: true,
+            ..on("host-a", &["agent", "wait"], WORKING)
+        }]);
+        let mut watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+
+        assert_eq!(watcher.cycle().unwrap(), None);
+
+        assert_eq!(
+            watcher.waits.keys().collect::<Vec<_>>(),
+            ["host-a/default/w1:p1"]
+        );
+    }
+
+    #[test]
     fn an_adopted_pane_is_watched_as_its_task_only() {
         let fx = Fixture::new();
         fx.hand();
+        fx.labelled("env-0001", "w1:p1", TASK_LABEL);
         fx.follow();
         fx.task(true);
         Store::open(&fx.state)
@@ -1853,6 +1895,7 @@ default_branch = "main"
         fx.supervisor_agent("default", "w1:p1");
         fx.supervisor_in("default", "w1:p1");
         fx.agent("env-0001", "default", "w2:p1", "aaaaaaab");
+        fx.labelled("env-0001", "w2:p1", TASK_LABEL);
         fx.task(true);
         Store::open(&fx.state)
             .set_status(TASK, |status| {

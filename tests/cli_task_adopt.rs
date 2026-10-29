@@ -502,8 +502,12 @@ fn adopt_refuses_what_it_cannot_take_over() {
 fn adopt_refuses_a_pane_an_open_task_runs_in() {
     let fx = Fixture::new();
     fx.task_in("default", "w5:p2");
+    let mut script = host_b_lists(&[hand("w5:p2", "Fix links")]);
+    let labelled = json!({"id": "cli:workspace:list", "result": {"type": "workspace_list",
+        "workspaces": [{"workspace_id": "w5", "label": format!("Build feature · {DISPATCHED}")}]}});
+    script.push(on("host-b", &labelled.to_string()));
 
-    fx.flow(&host_b_lists(&[hand("w5:p2", "Fix links")]))
+    fx.flow(&script)
         .args(adopt_args("Fix links", &[]))
         .assert()
         .code(2)

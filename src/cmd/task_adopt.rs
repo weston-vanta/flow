@@ -298,6 +298,7 @@ mod tests {
             title: "Fix links".to_owned(),
             session: "default".to_owned(),
             agent_session_id: session_id.map(str::to_owned),
+            workspace_label: None,
         }
     }
 

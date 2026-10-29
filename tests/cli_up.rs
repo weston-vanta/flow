@@ -624,10 +624,11 @@ fn up_starts_fresh_beside_an_open_tasks_worker_in_the_lock_pane() {
                 }
             })
             .unwrap();
-        let mut script = vec![
-            ok(&lock_pane_agent("/workspaces/flow", reported)),
-            ok(NO_AGENTS),
-        ];
+        let mut script = vec![ok(&lock_pane_agent("/workspaces/flow", reported))];
+        if reported.is_none() {
+            script.push(lock_workspace_labelled_with_the_task());
+        }
+        script.push(ok(NO_AGENTS));
         script.extend(fresh_start_as("s9"));
 
         let stdout = stdout_of(fx.flow(&script).arg("up"));
@@ -995,21 +996,43 @@ fn task_pane_agent(session: Option<&str>) -> Value {
     )
 }
 
+/// herdr's workspace list with the lock's workspace `w1` under the label dispatch gives `TASK`.
+fn lock_workspace_labelled_with_the_task() -> Value {
+    let workspace = json!({"workspace_id": "w1",
+        "label": format!("Add retry to the example client · {TASK}")});
+    let list = json!({"id": "cli:workspace:list",
+        "result": {"type": "workspace_list", "workspaces": [workspace]}});
+    ok(&list.to_string())
+}
+
+/// herdr's workspace list with the task's workspace `w2` under the label dispatch gives it.
+fn task_workspace() -> Value {
+    let workspace = json!({"workspace_id": "w2",
+        "label": format!("Add retry to the example client · {TASK}")});
+    let list = json!({"id": "cli:workspace:list",
+        "result": {"type": "workspace_list", "workspaces": [workspace]}});
+    ok(&list.to_string())
+}
+
 #[test]
 fn steer_prompts_pane_and_logs_event() {
     let fx = Fixture::new();
     let store = create_task_with_pane(&fx);
     let prompted = AGENT_GET.replace("agent_info", "agent_prompted");
 
-    fx.flow(&[task_pane_agent(None), ok(&prompted)])
+    fx.flow(&[task_pane_agent(None), task_workspace(), ok(&prompted)])
         .args(["steer", TASK, "Use the existing retry helper."])
         .assert()
         .success();
 
     let calls = fx.calls();
-    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert_eq!(calls.len(), 3, "{calls:?}");
     assert_eq!(calls[0].1, ["herdr", "--session", "flow", "agent", "list"]);
-    let (host, argv) = &calls[1];
+    assert_eq!(
+        calls[1].1,
+        ["herdr", "--session", "flow", "workspace", "list"]
+    );
+    let (host, argv) = &calls[2];
     assert_eq!(host, "host-b");
     assert_eq!(
         argv[..6],
@@ -1042,15 +1065,15 @@ fn steer_prompts_an_adopted_task_in_its_own_herdr_session() {
         .unwrap();
     let prompted = AGENT_GET.replace("agent_info", "agent_prompted");
 
-    fx.flow(&[task_pane_agent(None), ok(&prompted)])
+    fx.flow(&[task_pane_agent(None), task_workspace(), ok(&prompted)])
         .args(["steer", TASK, "Use the existing retry helper."])
         .assert()
         .success();
 
     let calls = fx.calls();
-    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert_eq!(calls.len(), 3, "{calls:?}");
     assert_eq!(
-        calls[1].1[..6],
+        calls[2].1[..6],
         ["herdr", "--session", "default", "agent", "prompt", "w2:p1"]
     );
 }
@@ -1124,7 +1147,7 @@ fn steer_hands_an_escalated_task_back_to_its_worker() {
             })
             .unwrap();
 
-        fx.flow(&[task_pane_agent(None), ok(&prompted)])
+        fx.flow(&[task_pane_agent(None), task_workspace(), ok(&prompted)])
             .args(["steer", TASK, "Give up after five tries."])
             .assert()
             .success();

@@ -1,6 +1,6 @@
 //! `flow task close`: the supervisor retires a task's worker pane by closing its herdr workspace,
 //! only while herdr lists it under a label naming the task and its pane holds the task's worker
-//! or nothing. An adopted task's workspace is the user's, so it is left open.
+//! or nothing; under another label herdr reused the id. An adopted task's workspace is left open.
 
 use std::sync::Arc;
 
@@ -8,7 +8,7 @@ use jiff::Timestamp;
 use serde_json::{Value, json};
 
 use super::Refused;
-use crate::herdr::Herdr;
+use crate::herdr::{self, Herdr};
 use crate::host;
 use crate::inventory;
 use crate::owner::{self, Owner};
@@ -26,9 +26,9 @@ const EVENT_SOURCE: &str = "supervisor";
 /// herdr target, then prints `closed <id> (workspace <ws> on <host>)`, or `closed <id>
 /// (workspace already gone)` when herdr no longer knows the workspace. An adopted task's
 /// workspace is left open, its event marked `workspace_left`, and it prints `closed <id> (pane
-/// left to its owner)`. Refuses a task still open (anything but `done` or `orphaned`) unless
-/// `force`, one with no herdr target, and one whose workspace herdr does not show to be the
-/// task's.
+/// left to its owner)`. A workspace herdr lists under another label is left open and the target
+/// retired. Refuses a task still open (anything but `done` or `orphaned`) unless `force`, one
+/// with no herdr target, and one whose pane holds another agent.
 pub fn run(state: &StateDir, id: &str, force: bool) -> anyhow::Result<()> {
     let store = Store::open(state);
     let (record, status) = store.task(id)?;
@@ -65,15 +65,23 @@ pub fn run(state: &StateDir, id: &str, force: bool) -> anyhow::Result<()> {
         let herdr = Herdr::with_session(Arc::from(runner::from_env()?), &target.session);
         let lock = supervisor::running(state)?;
         let tasks = store.list_tasks()?;
-        let closed = close_task_workspace(&herdr, host, &target, id, lock.as_ref(), &tasks)?;
-        data["already_gone"] = Value::Bool(!closed);
-        if closed {
-            format!(
-                "closed {id} (workspace {} on {})\n",
-                target.workspace_id, target.host
-            )
-        } else {
-            format!("closed {id} (workspace already gone)\n")
+        match close_task_workspace(&herdr, host, &target, id, lock.as_ref(), &tasks)? {
+            Closing::Closed => {
+                data["already_gone"] = Value::Bool(false);
+                format!(
+                    "closed {id} (workspace {} on {})\n",
+                    target.workspace_id, target.host
+                )
+            }
+            Closing::Gone => {
+                data["already_gone"] = Value::Bool(true);
+                format!("closed {id} (workspace already gone)\n")
+            }
+            Closing::Reused(why) => {
+                owner::retire_target(&store, id, &why)?;
+                data["reused"] = Value::String(why.clone());
+                format!("closed {id} ({why}; closed nothing)\n")
+            }
         }
     };
     store.set_status(id, |status| status.herdr = None)?;
@@ -89,10 +97,19 @@ pub fn run(state: &StateDir, id: &str, force: bool) -> anyhow::Result<()> {
     super::print(&printed)
 }
 
-/// Closes `target`'s workspace once herdr shows it is task `id`'s: listed under a label naming
-/// the task, with the task's worker (see `owner::owner`, given the running supervisor's `lock`
-/// and `tasks`) or no agent in the task's pane. Returns `false` when herdr no longer lists it.
-/// Refuses, closing nothing, otherwise.
+/// How closing a task's workspace ended.
+#[derive(Debug, PartialEq, Eq)]
+enum Closing {
+    Closed,
+    /// herdr no longer lists the workspace.
+    Gone,
+    /// herdr lists the workspace under another label, why: it reused the id.
+    Reused(String),
+}
+
+/// Closes `target`'s workspace once herdr lists it under a label naming task `id`, with the
+/// task's worker (see `owner::owner`, given `lock` and `tasks`) or no agent in the task's pane.
+/// Refuses, closing nothing, when another agent is there.
 fn close_task_workspace(
     herdr: &Herdr,
     host: &Host,
@@ -100,26 +117,26 @@ fn close_task_workspace(
     id: &str,
     lock: Option<&Lock>,
     tasks: &[(TaskRecord, Status)],
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<Closing> {
     let Some(workspaces) = herdr.workspaces_if_running(host)? else {
-        return Ok(false);
+        return Ok(Closing::Gone);
     };
     let Some(workspace) = workspaces
         .iter()
         .find(|workspace| workspace.workspace_id == target.workspace_id)
     else {
-        return Ok(false);
+        return Ok(Closing::Gone);
     };
     if !workspace.names_task(id) {
-        return Err(Refused(format!(
-            "herdr lists workspace {} on {} as \"{}\", which does not name task {id}; herdr \
-             reuses workspace ids, so flow closed nothing",
+        return Ok(Closing::Reused(format!(
+            "herdr reused workspace {} on {}, now labelled \"{}\"",
             target.workspace_id, host.name, workspace.label
-        ))
-        .into());
+        )));
     }
     let task = Owner::Task(id.to_owned());
-    let other = herdr.agents(host)?.iter().any(|agent| {
+    let mut agents = herdr.agents(host)?;
+    herdr::label_agents(&workspaces, &mut agents);
+    let other = agents.iter().any(|agent| {
         agent.pane_id == target.pane_id && owner::owner(&host.name, agent, lock, tasks) != task
     });
     if other {
@@ -130,5 +147,9 @@ fn close_task_workspace(
         ))
         .into());
     }
-    herdr.close_workspace(host, &target.workspace_id)
+    Ok(if herdr.close_workspace(host, &target.workspace_id)? {
+        Closing::Closed
+    } else {
+        Closing::Gone
+    })
 }

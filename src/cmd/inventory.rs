@@ -15,7 +15,9 @@ use crate::inventory::{self, HostInventory, Unreachable, Worktree, discovery};
 use crate::paths::StateDir;
 use crate::render;
 use crate::runner::{self, Runner};
+use crate::state::Store;
 use crate::state::config::{Config, Host, Repo};
+use crate::state::task::{Status, TaskRecord};
 use crate::worktree;
 
 const DETACHED: &str = "(detached)";
@@ -166,6 +168,7 @@ fn refresh_all(
     runner: &Arc<dyn Runner>,
 ) -> anyhow::Result<Vec<String>> {
     let now = Timestamp::now();
+    let tasks = &Store::open(state).list_tasks().unwrap_or_default();
     let discovered = discovery::discover(state, &config.hosts, now)?;
     if let Some(warning) = &discovered.warning {
         eprintln!("{warning}");
@@ -180,7 +183,10 @@ fn refresh_all(
         let handles: Vec<_> = targets
             .iter()
             .map(|(host, record)| {
-                scope.spawn(move || (host, refresh_one(runner, config, host, record, now)))
+                scope.spawn(move || {
+                    let fresh = refresh_one(runner, config, host, record, tasks, now);
+                    (host, fresh)
+                })
             })
             .collect();
         handles
@@ -246,6 +252,7 @@ fn refresh_one(
     config: &Config,
     host: &Host,
     record: &HostInventory,
+    tasks: &[(TaskRecord, Status)],
     now: Timestamp,
 ) -> anyhow::Result<HostInventory> {
     let sessions = &config.herdr_sessions;
@@ -255,6 +262,7 @@ fn refresh_one(
         &config.repos,
         sessions,
         &config.herdr_session,
+        tasks,
         now,
     ) {
         Ok(fresh) => Ok(HostInventory {
@@ -708,6 +716,7 @@ default_branch = "main"
             title: title.to_owned(),
             session: session.to_owned(),
             agent_session_id: None,
+            workspace_label: None,
         }
     }
 

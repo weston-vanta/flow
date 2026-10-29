@@ -491,6 +491,7 @@ mod tests {
                 title: title.to_owned(),
                 session: "default".to_owned(),
                 agent_session_id: None,
+                workspace_label: None,
             },
             owner: task.map_or(Owner::Observed, |id| Owner::Task(id.to_owned())),
             followed: false,

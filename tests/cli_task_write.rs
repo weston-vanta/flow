@@ -695,7 +695,7 @@ fn close_of_a_workspace_already_gone_still_retires_the_pane() {
 }
 
 #[test]
-fn close_refuses_a_workspace_id_listed_under_another_label() {
+fn close_retires_the_target_of_a_workspace_id_listed_under_another_label() {
     for label in [
         "notes",
         "Add retry to the example client",
@@ -704,24 +704,30 @@ fn close_refuses_a_workspace_id_listed_under_another_label() {
         let (_repo, state, store, script) =
             setup_close(State::Done, &[workspaces_with_w2(label), closed()]);
 
-        let out = flow(&state)
-            .env("FLOW_FAKE_RUNNER", &script)
-            .args(["task", "close", TASK])
-            .assert()
-            .code(2)
-            .get_output()
-            .clone();
+        let out = stdout(
+            flow(&state)
+                .env("FLOW_FAKE_RUNNER", &script)
+                .args(["task", "close", TASK]),
+        );
 
-        let stderr = String::from_utf8(out.stderr).unwrap();
         assert_eq!(
-            stderr,
+            out,
             format!(
-                "herdr lists workspace w2 on host-a as \"{label}\", which does not name task \
-                 {TASK}; herdr reuses workspace ids, so flow closed nothing\n"
+                "closed {TASK} (herdr reused workspace w2 on host-a, now labelled \"{label}\"; \
+                 closed nothing)\n"
             )
         );
         assert_eq!(herdr_argvs(&script).len(), 1, "{label}");
-        assert!(store.task(TASK).unwrap().1.herdr.is_some(), "{label}");
+        assert_eq!(store.task(TASK).unwrap().1.herdr, None, "{label}");
+        let kinds: Vec<String> = events::read_all(&store.task_dir(TASK).unwrap())
+            .unwrap()
+            .into_iter()
+            .map(|ev| ev.kind)
+            .collect();
+        assert!(
+            kinds.ends_with(&["target.retired".to_owned(), "close".to_owned()]),
+            "{kinds:?}"
+        );
     }
 }
 

@@ -82,7 +82,8 @@ pub fn find(
         .filter(|session| **session != lock.herdr.session);
     for session in std::iter::once(&lock.herdr.session).chain(others) {
         let herdr = Herdr::with_session(runner.clone(), session);
-        let agents = herdr.agents_if_running(host)?.unwrap_or_default();
+        let mut agents = herdr.agents_if_running(host)?.unwrap_or_default();
+        owner::label_where_needed(&herdr, host, &mut agents, tasks)?;
         let mut unconfirmed = false;
         for agent in agents {
             match owner::owner(&host.name, &agent, Some(lock), tasks) {
