@@ -96,23 +96,37 @@ pub fn run_follow(state: &StateDir, host: &str, target: &str) -> anyhow::Result<
     })
 }
 
-/// Removes the hand session `target` names on `host` from the follow list. A pane id the list
-/// holds is removed even when no session runs there any more.
+/// Removes the hand session `target` names on `host` from the follow list. A pane the list
+/// holds, by its pane id or `<session>/<pane id>`, is removed even when no session runs there any
+/// more; a pane id the list holds in several herdr sessions is refused.
 pub fn run_unfollow(state: &StateDir, host: &str, target: &str) -> anyhow::Result<()> {
     let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
     let hands = hand_sessions(state, &runner, host)?;
-    let stale = |entry: &Followed| entry.host == host && entry.pane_id == target;
-    let resolved = match resolve(&hands, host, target) {
-        Ok(agent) => Some(agent),
-        Err(_) if FollowList::load(state)?.follow.iter().any(stale) => None,
-        Err(refused) => return Err(refused.into()),
+    let (session, pane_id) = match resolve(&hands, host, target) {
+        Ok(agent) => (agent.session.clone(), agent.pane_id.clone()),
+        Err(refused) => {
+            let follow = FollowList::load(state)?.follow;
+            match stale_entries(&follow, host, target).as_slice() {
+                [] => return Err(refused.into()),
+                [entry] => (entry.session.clone(), entry.pane_id.clone()),
+                several => {
+                    return Err(several_in_pane(
+                        host,
+                        &several[0].pane_id,
+                        several.iter().map(|entry| {
+                            let title = entry.title.as_deref().unwrap_or_default();
+                            (entry.session.as_str(), title)
+                        }),
+                    )
+                    .into());
+                }
+            }
+        }
     };
     let removed = FollowList::update(state, |list| {
         let before = list.follow.len();
-        list.follow.retain(|entry| match resolved {
-            Some(agent) => !entry.is(host, &agent.session, &agent.pane_id),
-            None => !stale(entry),
-        });
+        list.follow
+            .retain(|entry| !entry.is(host, &session, &pane_id));
         list.follow.len() < before
     })?;
     if !removed {
@@ -175,8 +189,9 @@ pub(super) fn hand_sessions(
         .collect())
 }
 
-/// The hand session titled `target`, else the one in pane `target`. Refuses when several share
-/// the title, listing them, or when none matches.
+/// The hand session titled `target`, else the one in pane `target`, a pane id or `<session>/<pane
+/// id>`. Refuses when several share the title or the pane id, listing them, or when none
+/// matches.
 pub(super) fn resolve<'a>(
     hands: &'a [Agent],
     host: &str,
@@ -197,14 +212,63 @@ pub(super) fn resolve<'a>(
             )));
         }
     }
-    hands
+    let (session, pane_id) = pane_ref(target);
+    let in_pane: Vec<&Agent> = hands
         .iter()
-        .find(|agent| agent.pane_id == target)
-        .ok_or_else(|| {
-            Refused(format!(
-                "no hand session titled or in pane {target} on {host}; run flow sessions"
-            ))
+        .filter(|agent| {
+            agent.pane_id == pane_id && session.is_none_or(|session| agent.session == session)
         })
+        .collect();
+    match in_pane.as_slice() {
+        [agent] => Ok(agent),
+        [] => Err(Refused(format!(
+            "no hand session titled or in pane {target} on {host}; run flow sessions"
+        ))),
+        several => Err(several_in_pane(
+            host,
+            pane_id,
+            several
+                .iter()
+                .map(|agent| (agent.session.as_str(), agent.title.as_str())),
+        )),
+    }
+}
+
+/// A pane named as `<session>/<pane id>`, or by its pane id alone.
+fn pane_ref(target: &str) -> (Option<&str>, &str) {
+    match target.split_once('/') {
+        Some((session, pane_id)) => (Some(session), pane_id),
+        None => (None, target),
+    }
+}
+
+/// The follow list's entries for `target` on `host`, a pane id or `<session>/<pane id>`.
+fn stale_entries<'a>(follow: &'a [Followed], host: &str, target: &str) -> Vec<&'a Followed> {
+    let (session, pane_id) = pane_ref(target);
+    follow
+        .iter()
+        .filter(|entry| {
+            entry.host == host
+                && entry.pane_id == pane_id
+                && session.is_none_or(|session| entry.session == session)
+        })
+        .collect()
+}
+
+/// The refusal for a pane id that several herdr sessions on `host` hold, listing each
+/// `(session, title)` as `<session>/<pane id>  <title>`.
+fn several_in_pane<'a>(
+    host: &str,
+    pane_id: &str,
+    candidates: impl Iterator<Item = (&'a str, &'a str)>,
+) -> Refused {
+    let lines: Vec<String> = candidates
+        .map(|(session, title)| format!("{session}/{pane_id}  {title}"))
+        .collect();
+    Refused(format!(
+        "several hand sessions on {host} are in pane {pane_id}; pass <session>/<pane id>:\n{}",
+        lines.join("\n")
+    ))
 }
 
 /// Marks each hand session `follow` names as followed.
@@ -400,6 +464,57 @@ mod tests {
             summary: Some(summary.to_owned()),
             ..entry
         }
+    }
+
+    fn hand(session: &str, pane_id: &str, title: &str) -> Agent {
+        Agent {
+            pane_id: pane_id.to_owned(),
+            session: session.to_owned(),
+            title: title.to_owned(),
+            ..entry("host-b", AgentStatus::Idle, title, None).agent
+        }
+    }
+
+    #[test]
+    fn resolve_refuses_a_pane_id_several_herdr_sessions_hold() {
+        let hands = [
+            hand("default", "w1:p1", "Tidy docs"),
+            hand("other", "w1:p1", "Fix links"),
+            hand("other", "w1:p2", "Upgrade toolchain"),
+        ];
+
+        let refused = resolve(&hands, "host-b", "w1:p1").unwrap_err();
+
+        assert_eq!(
+            refused.0,
+            "several hand sessions on host-b are in pane w1:p1; pass <session>/<pane id>:\n\
+             default/w1:p1  Tidy docs\n\
+             other/w1:p1  Fix links"
+        );
+        assert_eq!(
+            resolve(&hands, "host-b", "other/w1:p1").unwrap().title,
+            "Fix links"
+        );
+        assert_eq!(resolve(&hands, "host-b", "w1:p2").unwrap().session, "other");
+        assert!(resolve(&hands, "host-b", "default/w1:p2").is_err());
+    }
+
+    #[test]
+    fn stale_follow_entries_honour_the_session() {
+        let followed = |session: &str| Followed {
+            host: "host-b".to_owned(),
+            pane_id: "w9:p9".to_owned(),
+            session: session.to_owned(),
+            title: None,
+        };
+        let follow = [followed("default"), followed("other")];
+
+        assert_eq!(stale_entries(&follow, "host-b", "w9:p9").len(), 2);
+        assert_eq!(
+            stale_entries(&follow, "host-b", "other/w9:p9"),
+            [&follow[1]]
+        );
+        assert!(stale_entries(&follow, "host-a", "w9:p9").is_empty());
     }
 
     #[test]

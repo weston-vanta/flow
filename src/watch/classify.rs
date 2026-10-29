@@ -47,7 +47,7 @@ pub enum Observation {
         worktree_written: bool,
     },
     /// herdr reports an observed session's agent in `status`: an agent outside flow's herdr
-    /// session whose pane is no open task's.
+    /// session whose pane is no task's target.
     #[serde(alias = "adopted-changed")]
     ObservedChanged {
         host: String,

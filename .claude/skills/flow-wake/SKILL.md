@@ -25,14 +25,19 @@ one reason; handle every row.
 - `agent-blocked: <id>`: the worker's harness waits at a prompt (a permission or dialog), not
   a question the worker asked through flow. Check `flow task events <id>`; if you cannot tell
   what it waits on, `flow task hold <id> --on user --what "..."` and tell the user which pane
-  (`flow task show <id>`) to attach to.
+  to attach to: `flow task show <id>` names it as `<herdr session>/<pane>`. Name the herdr
+  session too when it is not `flow`, as for an adopted task, since the same pane id can exist
+  in both.
 - `agent-done: <id>`: the worker's session stopped while its task still reads `working` or
   `pending`, without reporting through flow. Check `flow task events <id>`, then steer it to
   continue or to report its status. A worker that stops after reporting `needs-decision` or
   `blocked` is waiting on its hold and does not wake you.
 - `agent-gone: <id>`: the worker's pane or session disappeared. Check `flow sessions`. If the
   work cannot continue, `flow task orphan <id> --reason "<last known: branch pushed or not>"`
-  and ask the user whether to redispatch. Never tear down what is left.
+  and ask the user whether to redispatch. Never tear down what is left. For an adopted task
+  (`origin` is `adopted` in `flow task show`), its owner closed the pane: orphan it with what
+  was last known and `flow task close` it, which makes no herdr call; there is nothing to
+  redispatch unless the user asks.
 - `host-unreachable: <host>`: keep working from state. Tell the user plainly that `<host>` cannot
   be reached (an expired login, or a stopped or recycled host). After `flow inventory
   --refresh`, `flow inventory` shows a recycled host as `gone`; its tasks are orphaned with what
@@ -48,6 +53,8 @@ one reason; handle every row.
   away): a session the user asked you to follow changed state; tell them what it is doing, from
   `flow sessions --summaries`. A summary whose `matched_by` is `cwd` in `flow sessions --json`
   is a guess by directory; say so. `flow unfollow <host> <title>` once they no longer need it.
+- A wake queued before flow called these sessions observed may read `adopted-<status>: …`;
+  handle it as `observed-<status>: …`.
 - A session taken over with `flow task adopt` is a task: its wakes are the task reasons above,
   never `observed-`. It has no hooks; the watcher logs a `turn.end` event whenever herdr sees
   it go from working to idle. A `quiet:` wake for it means it ended a turn, or reported, that

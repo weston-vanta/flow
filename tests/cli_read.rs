@@ -4,9 +4,9 @@ use assert_cmd::Command;
 use flow::paths::StateDir;
 use flow::state::Store;
 use flow::state::events::Event;
-use flow::state::task::{Harness, Hold, HoldOn, Origin, State, TaskRecord};
+use flow::state::task::{Harness, HerdrTarget, Hold, HoldOn, Origin, State, TaskRecord};
 use jiff::Timestamp;
-use serde_json::json;
+use serde_json::{Value, json};
 
 fn flow(state: &Path) -> Command {
     let mut cmd = Command::cargo_bin("flow").expect("flow binary is built");
@@ -135,6 +135,45 @@ fn task_show_elides_brief() {
         "{out}"
     );
     assert!(!out.contains("11 xxx"), "{out}");
+}
+
+#[test]
+fn task_show_names_the_origin_and_the_herdr_session() {
+    let (_repo, state, store) = setup();
+    store
+        .create_task(
+            TaskRecord {
+                origin: Origin::Adopted,
+                ..record("aaaaaaab", "Tidy docs")
+            },
+            "brief",
+        )
+        .unwrap();
+    store
+        .set_status("aaaaaaab", |status| {
+            status.herdr = Some(HerdrTarget {
+                host: "host-a".to_owned(),
+                workspace_id: "w1".to_owned(),
+                pane_id: "w1:p1".to_owned(),
+                agent: "claude".to_owned(),
+                session: "default".to_owned(),
+            });
+        })
+        .unwrap();
+
+    let out = stdout(flow(&state).args(["task", "show", "aaaaaaab"]));
+
+    assert!(out.contains("origin      adopted\n"), "{out}");
+    assert!(
+        out.contains("herdr       host-a default/w1:p1 (workspace w1, claude)\n"),
+        "{out}"
+    );
+    let json_out = stdout(flow(&state).args(["status", "--json"]));
+    let parsed: Value = serde_json::from_str(&json_out).unwrap();
+    assert_eq!(
+        parsed["tasks"][0]["task"]["origin"], "adopted",
+        "{json_out}"
+    );
 }
 
 #[test]

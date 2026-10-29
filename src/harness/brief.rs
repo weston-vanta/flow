@@ -1,9 +1,8 @@
 //! The brief a worker starts from: the task, the ask, its completion criteria, and the commands
-//! the worker reports through.
+//! the worker reports through. A session adopted from one started by hand gets the same brief,
+//! worded for a session that already has a conversation and a user at its terminal.
 
-use std::path::Path;
-
-use crate::state::task::TaskRecord;
+use crate::state::task::{Origin, TaskRecord};
 
 const TEMPLATE: &str = include_str!("../../templates/brief.md");
 
@@ -12,16 +11,30 @@ const TEMPLATE: &str = include_str!("../../templates/brief.md");
 const WORKTREE_NOTE: &str =
     "\nWork only inside this directory; never touch the main checkout or other worktrees.\n";
 
-/// `templates/brief.md` filled in for `task`, with `body` and `criteria` verbatim. Commands in
-/// the brief call `flow_bin` by path, so it must be valid on the worker's host.
-pub fn render(task: &TaskRecord, body: &str, criteria: &str, flow_bin: &Path) -> String {
+const DISPATCHED_ROLE: &str =
+    "You are a worker session run by a supervisor. This brief is your whole assignment.";
+const ADOPTED_ROLE: &str = "You are a session the user started by hand, now run as a task by a \
+     supervisor. The conversation so far is the context; this brief adds what counts as done and \
+     how to report.";
+const DISPATCHED_CONTACT: &str = "You never address the user directly: everything goes to the \
+     supervisor through these commands.";
+const ADOPTED_CONTACT: &str = "Report to the supervisor through these commands. The user may also \
+     talk to you directly in this pane.";
+
+/// `templates/brief.md` filled in for `task`, worded by its origin, with `body` and `criteria`
+/// verbatim. Commands in the brief start with the words `flow`, which must run flow on the
+/// worker's host.
+pub fn render(task: &TaskRecord, body: &str, criteria: &str, flow: &str) -> String {
     let cwd = task.cwd.display().to_string();
     let worktree_note = if task.repo.is_some() {
         WORKTREE_NOTE
     } else {
         ""
     };
-    let flow = flow_bin.display().to_string();
+    let (role, contact) = match task.origin {
+        Origin::Dispatched => (DISPATCHED_ROLE, DISPATCHED_CONTACT),
+        Origin::Adopted => (ADOPTED_ROLE, ADOPTED_CONTACT),
+    };
     fill(TEMPLATE, |name| match name {
         "id" => &task.id,
         "title" => &task.title,
@@ -29,7 +42,9 @@ pub fn render(task: &TaskRecord, body: &str, criteria: &str, flow_bin: &Path) ->
         "worktree_note" => worktree_note,
         "body" => body,
         "criteria" => criteria,
-        "flow" => &flow,
+        "flow" => flow,
+        "role" => role,
+        "contact" => contact,
         _ => panic!("brief template has unknown placeholder {{{{{name}}}}}"),
     })
 }
@@ -78,7 +93,7 @@ mod tests {
     }
 
     fn rendered() -> String {
-        render(&task(), BODY, CRITERIA, Path::new(FLOW_BIN))
+        render(&task(), BODY, CRITERIA, FLOW_BIN)
     }
 
     /// Byte offset of `needle` in `text`, failing the test when it is absent.
@@ -123,7 +138,7 @@ mod tests {
             repo: None,
             ..task()
         };
-        let text = render(&task, BODY, CRITERIA, Path::new(FLOW_BIN));
+        let text = render(&task, BODY, CRITERIA, FLOW_BIN);
         assert!(
             text.contains(
                 "## Working directory\n\n`/work/state/tasks/aaaaaaab/work`\n\n## What is asked\n"
@@ -157,8 +172,53 @@ mod tests {
     #[test]
     fn brief_keeps_placeholder_text_in_the_ask_verbatim() {
         let body = "Rename {{criteria}} to {{id}} in the docs.";
-        let text = render(&task(), body, CRITERIA, Path::new(FLOW_BIN));
+        let text = render(&task(), body, CRITERIA, FLOW_BIN);
         assert!(text.contains(body), "{text}");
+    }
+
+    #[test]
+    fn dispatched_brief_is_unchanged() {
+        assert_eq!(
+            rendered(),
+            include_str!("../../tests/fixtures/brief_dispatched.md")
+        );
+    }
+
+    #[test]
+    fn adopted_brief_builds_on_the_conversation_and_pins_the_state() {
+        let task = TaskRecord {
+            cwd: PathBuf::from("/work/repo"),
+            repo: None,
+            origin: Origin::Adopted,
+            ..task()
+        };
+        let flow = "env FLOW_STATE='/shared/flow/state' '/opt/flow/bin/flow'";
+        let text = render(&task, BODY, CRITERIA, flow);
+        assert!(
+            text.contains(
+                "You are a session the user started by hand, now run as a task by a supervisor. \
+                 The conversation so far is the context; this brief adds what counts as done and \
+                 how to report."
+            ),
+            "{text}"
+        );
+        assert!(
+            text.ends_with(
+                "Report to the supervisor through these commands. The user may also talk to you \
+                 directly in this pane.\n"
+            ),
+            "{text}"
+        );
+        for gone in ["whole assignment", "never address the user"] {
+            assert!(!text.contains(gone), "{gone}: {text}");
+        }
+        assert!(
+            text.contains(&format!(
+                r#"{flow} task status aaaaaaab working --message "<what you are doing>""#
+            )),
+            "{text}"
+        );
+        assert!(text.contains(&format!("{flow} task done aaaaaaab --report <path>")));
     }
 
     #[test]

@@ -64,6 +64,7 @@ fn render_text(
     }
     fields.extend([
         ("harness", task.harness.to_string()),
+        ("origin", task.origin.to_string()),
         ("created", render::relative(task.created, now)),
         ("last event", render::relative(status.last_event, now)),
     ]);
@@ -76,8 +77,8 @@ fn render_text(
     }
     if let Some(herdr) = &status.herdr {
         let target = format!(
-            "{} {}/{} ({})",
-            herdr.host, herdr.workspace_id, herdr.pane_id, herdr.agent
+            "{} {}/{} (workspace {}, {})",
+            herdr.host, herdr.session, herdr.pane_id, herdr.workspace_id, herdr.agent
         );
         fields.push(("herdr", target));
     }

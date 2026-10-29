@@ -53,6 +53,7 @@ pub fn run(state: &StateDir, id: &str, force: bool) -> anyhow::Result<()> {
         "forced": force,
     });
     let printed = if adopted {
+        data["session"] = Value::String(target.session.clone());
         data["workspace_left"] = Value::Bool(true);
         format!("closed {id} (pane left to its owner)\n")
     } else {

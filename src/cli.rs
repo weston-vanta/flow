@@ -76,15 +76,16 @@ pub enum Command {
     Follow {
         /// Host the session runs on
         host: String,
-        /// The session's title as `flow sessions` shows it, or its herdr pane id
+        /// The session's title as `flow sessions` shows it, or its herdr pane id, or
+        /// `<herdr session>/<pane id>` when several herdr sessions hold that pane id
         session: String,
     },
     /// Stop waking the supervisor for a followed session, except when it turns blocked
     Unfollow {
         /// Host the session runs on
         host: String,
-        /// The session's title as `flow sessions` shows it, or its herdr pane id; a followed
-        /// pane id is accepted after its session is gone
+        /// The session's title as `flow sessions` shows it, or its herdr pane id, or
+        /// `<herdr session>/<pane id>`; a followed pane is accepted after its session is gone
         session: String,
     },
     /// Watch tasks and exit 2 with a reason when the supervisor should wake
@@ -241,7 +242,8 @@ impl TryFrom<DispatchCli> for DispatchArgs {
 pub struct AdoptCli {
     /// Host the session runs on
     host: String,
-    /// The session's title as `flow sessions` shows it, or its herdr pane id
+    /// The session's title as `flow sessions` shows it, or its herdr pane id, or
+    /// `<herdr session>/<pane id>` when several herdr sessions hold that pane id
     session: String,
     /// The task's title
     #[arg(long)]

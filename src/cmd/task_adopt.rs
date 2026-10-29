@@ -4,6 +4,7 @@
 //! added to a running session, so an adopted task reports through its own `flow task` calls
 //! and herdr's view of it; `flow watch` logs its turn ends from herdr's `working` to `idle`.
 
+use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -19,8 +20,8 @@ use crate::herdr::{Agent, Herdr};
 use crate::host;
 use crate::inventory;
 use crate::observe::{self, FollowList};
-use crate::paths::StateDir;
-use crate::runner::{self, Runner};
+use crate::paths::{STATE_ENV, StateDir};
+use crate::runner::{self, Runner, shell_quote};
 use crate::state::config::Host;
 use crate::state::events::Event;
 use crate::state::task::{
@@ -53,8 +54,9 @@ pub struct AdoptArgs {
 /// with a note when run outside the supervisor's session. The session is resolved as `flow
 /// follow` resolves it, and is removed from the follow list. Refuses a host that is gone, an
 /// agent that is not Claude Code or has no known working directory, and a pane an open task
-/// already runs in. When the prompt cannot be delivered the task stays, `blocked` with a
-/// supervisor hold naming why, and this exits 1.
+/// already runs in, all before writing anything. A failure once the task exists leaves it
+/// `blocked` with a supervisor hold naming the failure and exits 1. When only the prompt cannot
+/// be delivered, the adopted line is still printed.
 pub fn run(state: &StateDir, args: &AdoptArgs) -> anyhow::Result<ExitCode> {
     let state = &state
         .canonical()
@@ -87,7 +89,10 @@ pub fn run(state: &StateDir, args: &AdoptArgs) -> anyhow::Result<ExitCode> {
     let agent = super::sessions::resolve(&hands, &host.name, &args.session)?;
     refuse_unadoptable(&store, host, agent)?;
 
-    let flow_bin = std::env::current_exe().context("locating the flow binary")?;
+    let flow = flow_command(
+        state,
+        &std::env::current_exe().context("locating the flow binary")?,
+    )?;
     let rec = TaskRecord {
         id: ids::new_task_id(Timestamp::now(), &mut rand::rng()),
         parent: args.parent.clone(),
@@ -100,11 +105,75 @@ pub fn run(state: &StateDir, args: &AdoptArgs) -> anyhow::Result<ExitCode> {
         owner: OWNER.to_owned(),
         origin: Origin::Adopted,
     };
-    store.create_task(
-        rec.clone(),
-        &brief::render(&rec, &body, &args.criteria, &flow_bin),
-    )?;
+    let brief_text = brief::render(&rec, &body, &args.criteria, &flow);
     let id = &rec.id;
+
+    store.create_task(rec.clone(), &brief_text)?;
+    let taken = take_over(&store, state, host, agent, id).and_then(|()| {
+        let message = format!(
+            "You are now task {id}, run by a supervisor. Read {} and follow its Reporting \
+             section exactly; keep going with the work already under way.",
+            store.brief_path(id)?.display()
+        );
+        let herdr = Herdr::with_session(runner, &agent.session);
+        let prompted = herdr.prompt(host, &agent.pane_id, &message, &steer::DELIVERED);
+        Ok((message, prompted))
+    });
+    let code = match taken {
+        Ok((message, Ok(_))) => match store.append_event(
+            id,
+            &event(steer::EVENT_SOURCE, "steer", json!({ "text": message })),
+        ) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => return Err(fail(&store, id, err)),
+        },
+        Ok((_, Err(err))) => {
+            hold(
+                &store,
+                id,
+                "adopt.undelivered",
+                "adoption message not delivered",
+                &err,
+            );
+            eprintln!("{err:#}");
+            ExitCode::FAILURE
+        }
+        Err(err) => return Err(fail(&store, id, err)),
+    };
+    super::print(&format!(
+        "adopted {id} on {} ({})\n",
+        host.name, agent.pane_id
+    ))?;
+    if !supervisor::is_supervisor_session() {
+        super::print(HAND_ADOPT_NOTE)?;
+    }
+    Ok(code)
+}
+
+/// `env FLOW_STATE=<state root> <flow_bin>`, shell-quoted: the session was not started by flow,
+/// so its environment may name no state directory, or another one.
+fn flow_command(state: &StateDir, flow_bin: &Path) -> anyhow::Result<String> {
+    let utf8 = |path: &Path| {
+        path.to_str()
+            .map(shell_quote)
+            .with_context(|| format!("path is not UTF-8: {}", path.display()))
+    };
+    Ok(format!(
+        "env {STATE_ENV}={} {}",
+        utf8(state.root())?,
+        utf8(flow_bin)?
+    ))
+}
+
+/// Records task `id` as running in `agent`'s pane, logs the adoption, and drops the pane from
+/// the follow list.
+fn take_over(
+    store: &Store,
+    state: &StateDir,
+    host: &Host,
+    agent: &Agent,
+    id: &str,
+) -> anyhow::Result<()> {
     store.set_status(id, |status| {
         status.state = State::Working;
         status.herdr = Some(HerdrTarget {
@@ -132,37 +201,14 @@ pub fn run(state: &StateDir, args: &AdoptArgs) -> anyhow::Result<ExitCode> {
     FollowList::update(state, |list| {
         list.follow
             .retain(|entry| !entry.is(&host.name, &agent.session, &agent.pane_id));
-    })?;
+    })
+}
 
-    let message = format!(
-        "You are now task {id}, run by a supervisor. Read {} and follow its Reporting section \
-         exactly; keep going with the work already under way.",
-        store.brief_path(id)?.display()
-    );
-    let herdr = Herdr::with_session(runner, &agent.session);
-    let delivered = herdr.prompt(host, &agent.pane_id, &message, &steer::DELIVERED);
-    let code = match delivered {
-        Ok(_) => {
-            store.append_event(
-                id,
-                &event(steer::EVENT_SOURCE, "steer", json!({ "text": message })),
-            )?;
-            ExitCode::SUCCESS
-        }
-        Err(err) => {
-            hold_undelivered(&store, id, &err)?;
-            eprintln!("{err:#}");
-            ExitCode::FAILURE
-        }
-    };
-    super::print(&format!(
-        "adopted {id} on {} ({})\n",
-        host.name, agent.pane_id
-    ))?;
-    if !supervisor::is_supervisor_session() {
-        super::print(HAND_ADOPT_NOTE)?;
-    }
-    Ok(code)
+/// Holds task `id` for the supervisor after `err` stopped the adoption part way, and returns
+/// `err` naming the task.
+fn fail(store: &Store, id: &str, err: anyhow::Error) -> anyhow::Error {
+    hold(store, id, "adopt.failed", "adoption failed", &err);
+    err.context(format!("adopting the session as task {id}"))
 }
 
 /// Fails with `Refused` for an agent that is not Claude Code, whose working directory herdr
@@ -212,25 +258,26 @@ fn claude_session(agent: &Agent) -> Option<ClaudeSession> {
     })
 }
 
-/// Logs that the adoption message was not delivered and holds the task for the supervisor.
-fn hold_undelivered(store: &Store, id: &str, err: &anyhow::Error) -> anyhow::Result<()> {
+/// Logs `err` as a `kind` event on task `id` and holds the task `blocked` on the supervisor
+/// with `<what>: <err>`, so a half-adopted task explains itself. A failure to record it is
+/// reported on stderr.
+fn hold(store: &Store, id: &str, kind: &str, what: &str, err: &anyhow::Error) {
     let message = format!("{err:#}");
-    store.append_event(
-        id,
-        &event(
-            EVENT_SOURCE,
-            "adopt.undelivered",
-            json!({ "error": message }),
-        ),
-    )?;
-    store.set_status(id, |status| {
-        status.state = State::Blocked;
-        status.hold = Some(Hold {
-            on: HoldOn::Supervisor,
-            what: format!("adoption message not delivered: {message}"),
-            since: Timestamp::now(),
+    let recorded = store
+        .append_event(id, &event(EVENT_SOURCE, kind, json!({ "error": message })))
+        .and_then(|()| {
+            store.set_status(id, |status| {
+                status.state = State::Blocked;
+                status.hold = Some(Hold {
+                    on: HoldOn::Supervisor,
+                    what: format!("{what}: {message}"),
+                    since: Timestamp::now(),
+                });
+            })
         });
-    })
+    if let Err(record_err) = recorded {
+        eprintln!("could not mark task {id} blocked: {record_err:#}");
+    }
 }
 
 fn event(source: &str, kind: &str, data: serde_json::Value) -> Event {
@@ -244,7 +291,7 @@ fn event(source: &str, kind: &str, data: serde_json::Value) -> Event {
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     use super::*;
     use crate::herdr::AgentStatus;

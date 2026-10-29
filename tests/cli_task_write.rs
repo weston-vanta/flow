@@ -581,7 +581,7 @@ fn close_of_an_adopted_task_leaves_its_workspace_to_its_owner() {
     assert_eq!(
         ev.data,
         json!({
-            "host": "host-a", "workspace_id": "w2", "pane_id": "w2:p1",
+            "host": "host-a", "session": "default", "workspace_id": "w2", "pane_id": "w2:p1",
             "forced": false, "workspace_left": true,
         })
     );

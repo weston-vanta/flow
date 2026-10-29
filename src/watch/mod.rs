@@ -742,11 +742,12 @@ impl<'a> Watcher<'a> {
         observed
     }
 
-    /// Keeps one wait per open task with a herdr target, in the herdr session the target names,
-    /// and one per observed session or followed pane that is no open task's target, dropping
-    /// waits whose task closed or whose target moved. An adopted session's pane is therefore
-    /// waited on as its task's only. An observed session's wait starts afresh when it is
-    /// followed or unfollowed, since that changes what it ends on.
+    /// Keeps one wait per open task with a herdr target, in the herdr session the target names, and
+    /// one per observed session or followed pane that is no task's target, dropping waits whose
+    /// task closed or whose target moved. An adopted session's pane is therefore waited on as its
+    /// task's only, and not at all once the task is done or orphaned until `flow task close` clears
+    /// its target, as `flow sessions` shows it as the task's until then. An observed session's wait
+    /// starts afresh when it is followed or unfollowed, since that changes what it ends on.
     fn reconcile_waits(&mut self, tasks: &[(TaskRecord, Status)], follow: &[Followed]) {
         let mut wanted: BTreeMap<String, WaitSpec> = BTreeMap::new();
         for (rec, status) in tasks {
@@ -767,7 +768,9 @@ impl<'a> Watcher<'a> {
             );
         }
         let tasked = |host: &str, session: &str, pane_id: &str| {
-            observe::open_task_in_pane(tasks, host, session, pane_id).is_some()
+            observe::tasks_in_pane(tasks, host, session, pane_id)
+                .next()
+                .is_some()
         };
         for hand in &self.hands {
             if tasked(&hand.host, &hand.session, &hand.pane_id) {
@@ -1516,6 +1519,42 @@ default_branch = "main"
                 .windows(2)
                 .any(|pair| pair == ["--session", "default"]),
             "{calls:?}"
+        );
+    }
+
+    #[test]
+    fn a_done_adopted_pane_still_targeted_is_not_observed() {
+        let fx = Fixture::new();
+        fx.hand();
+        fx.adopted_task();
+        Store::open(&fx.state)
+            .set_status(TASK, |status| status.state = State::Done)
+            .unwrap();
+        let runner = fake(Vec::new());
+        let mut watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+
+        assert_eq!(watcher.cycle().unwrap(), None);
+
+        assert!(watcher.waits.is_empty());
+        assert!(runner.calls().is_empty());
+    }
+
+    #[test]
+    fn a_flow_session_task_does_not_hide_a_hand_session_in_the_same_pane_id() {
+        let fx = Fixture::new();
+        fx.hand();
+        fx.task(true);
+        let runner = fake(vec![Scripted {
+            repeat: true,
+            ..on("host-a", &["agent", "wait"], WORKING)
+        }]);
+        let mut watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+
+        assert_eq!(watcher.cycle().unwrap(), None);
+
+        assert_eq!(
+            watcher.waits.keys().collect::<Vec<_>>(),
+            ["aaaaaaab", "host-a/default/w1:p1"]
         );
     }
 

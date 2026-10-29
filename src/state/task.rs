@@ -39,6 +39,15 @@ pub enum Origin {
     Adopted,
 }
 
+impl fmt::Display for Origin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Origin::Dispatched => "dispatched",
+            Origin::Adopted => "adopted",
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Harness {
@@ -229,6 +238,16 @@ mod tests {
         assert_eq!(target.session, herdr::SESSION);
         let adopted: Origin = serde_json::from_str(r#""adopted""#).unwrap();
         assert_eq!(adopted, Origin::Adopted);
+    }
+
+    #[test]
+    fn origin_displays_as_serialized() {
+        for origin in [Origin::Dispatched, Origin::Adopted] {
+            assert_eq!(
+                serde_json::to_string(&origin).unwrap(),
+                format!("\"{origin}\"")
+            );
+        }
     }
 
     #[test]

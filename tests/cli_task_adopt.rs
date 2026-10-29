@@ -319,8 +319,15 @@ fn adopt_takes_over_a_hand_session_as_a_task() {
         !brief.contains("Work only inside this directory"),
         "{brief}"
     );
+    let state = fs::canonicalize(&fx.state).unwrap();
+    let pinned = format!("`env FLOW_STATE='{}' '", state.display());
+    assert!(brief.contains(&pinned), "{brief}");
     assert!(
-        brief.contains(&format!("task status {id} working")),
+        brief.contains(&format!("/flow' task status {id} working --message")),
+        "{brief}"
+    );
+    assert!(
+        brief.contains("The conversation so far is the context"),
         "{brief}"
     );
     assert!(
@@ -367,16 +374,16 @@ fn adopt_takes_over_a_hand_session_as_a_task() {
 }
 
 #[test]
-fn adopt_reads_a_brief_file_and_defaults_the_body() {
+fn adopt_without_a_brief_continues_the_work_under_way() {
     let fx = Fixture::new();
-    fx.task_in(SESSION, "w5:p2");
+    fx.task_in(SESSION, "w5:p9");
 
     stdout_of(
         fx.flow(&adopting(
             &[hand("w5:p2", "Fix links")],
             on("host-b", PROMPTED),
         ))
-        .args(adopt_args("w5:p2", &["--parent", DISPATCHED])),
+        .args(adopt_args("Fix links", &["--parent", DISPATCHED])),
     );
 
     let (record, status) = fx.only_adopted();
@@ -390,23 +397,51 @@ fn adopt_reads_a_brief_file_and_defaults_the_body() {
         ),
         "{brief}"
     );
+}
 
+#[test]
+fn adopt_reads_the_ask_from_a_brief_file() {
+    let fx = Fixture::new();
     let file = fx.dir.path().join("ask.md");
     fs::write(&file, "Finish the links from the file.\n").unwrap();
-    let file = file.to_str().unwrap();
+
     stdout_of(
-        fx.flow(&adopting(&[hand("w5:p3", "Other")], on("host-b", PROMPTED)))
-            .args(adopt_args("Other", &["--brief-file", file])),
+        fx.flow(&adopting(
+            &[hand("w5:p2", "Fix links")],
+            on("host-b", PROMPTED),
+        ))
+        .args(adopt_args(
+            "Fix links",
+            &["--brief-file", file.to_str().unwrap()],
+        )),
     );
-    let newest = fx
-        .adopted()
-        .into_iter()
-        .find(|(record, _)| record.parent.is_none())
-        .unwrap();
-    let brief = fx.store().brief(&newest.0.id).unwrap();
+
+    let (record, _) = fx.only_adopted();
+    let brief = fx.store().brief(&record.id).unwrap();
     assert!(
         brief.contains("\nFinish the links from the file.\n"),
         "{brief}"
+    );
+}
+
+#[test]
+fn adopt_takes_a_hand_session_whose_pane_id_a_flow_worker_also_has() {
+    let fx = Fixture::new();
+    fx.task_in(SESSION, "w5:p2");
+
+    stdout_of(
+        fx.flow(&adopting(
+            &[hand("w5:p2", "Fix links")],
+            on("host-b", PROMPTED),
+        ))
+        .args(adopt_args("w5:p2", &[])),
+    );
+
+    let (_, status) = fx.only_adopted();
+    let target = status.herdr.unwrap();
+    assert_eq!(
+        (target.session.as_str(), target.pane_id.as_str()),
+        ("default", "w5:p2")
     );
 }
 
@@ -528,6 +563,41 @@ fn adopt_whose_message_is_refused_holds_the_task_and_exits_1() {
     let events = fx.events(&record.id);
     assert!(events.iter().any(|ev| ev.kind == "adopted"));
     assert!(!events.iter().any(|ev| ev.kind == "steer"));
+}
+
+#[test]
+fn adopt_failing_part_way_holds_the_task_and_prompts_nothing() {
+    let fx = Fixture::new();
+    fs::create_dir_all(fx.state.join("supervisor")).unwrap();
+    fs::write(fx.state.join("supervisor/follow.json"), "{\"follow\": ").unwrap();
+
+    let out = fx
+        .flow(&adopting(
+            &[hand("w5:p2", "Fix links")],
+            on("host-b", PROMPTED),
+        ))
+        .args(adopt_args("Fix links", &[]))
+        .assert()
+        .code(1)
+        .get_output()
+        .clone();
+
+    let (record, status) = fx.only_adopted();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.starts_with(&format!("adopting the session as task {}: ", record.id)),
+        "{stderr}"
+    );
+    assert!(out.stdout.is_empty());
+    assert_eq!(status.state, State::Blocked);
+    let hold = status.hold.unwrap();
+    assert_eq!(hold.on, HoldOn::Supervisor);
+    assert!(hold.what.starts_with("adoption failed: "), "{}", hold.what);
+    assert!(hold.what.contains("follow.json"), "{}", hold.what);
+    assert!(status.herdr.is_some());
+    let events = fx.events(&record.id);
+    assert!(events.iter().any(|ev| ev.kind == "adopt.failed"));
+    assert_eq!(fx.calls().len(), 3, "no prompt after the failure");
 }
 
 #[test]

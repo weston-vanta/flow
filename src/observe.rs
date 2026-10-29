@@ -1,10 +1,10 @@
 //! Observed sessions, the ones the user started by hand in herdr: each herdr agent is matched to
 //! the task whose herdr target is its pane, an adopted session's included, or shown as observed,
-//! with the Claude Code session it runs and that session's latest summary, read from Claude Code's session registry and
-//! transcripts. Reading is all flow does there; it never writes Claude Code's state. Any
-//! observed session turning `blocked` wakes the supervisor; the follow list,
-//! `state/supervisor/follow.json`, names the followed ones, whose other state changes should
-//! wake it too.
+//! with the Claude Code session it runs and that session's latest summary, read from Claude Code's
+//! session registry and transcripts. Reading is all flow does there; it never writes Claude Code's
+//! state. Any observed session turning `blocked` wakes the supervisor; the follow list,
+//! `state/supervisor/follow.json`, names the followed ones, whose other state changes should wake
+//! it too.
 //!
 //! herdr can report an agent's Claude Code session id, which names its registry session
 //! exactly. An agent it reports none for is matched by cwd, and only when no other such agent
@@ -372,15 +372,25 @@ fn task_in_pane<'a>(
     agent: &Agent,
     tasks: &'a [(TaskRecord, Status)],
 ) -> Option<&'a (TaskRecord, Status)> {
-    tasks
-        .iter()
-        .filter(|(_, status)| {
-            status
-                .herdr
-                .as_ref()
-                .is_some_and(|target| target.is(host, &agent.session, &agent.pane_id))
-        })
+    tasks_in_pane(tasks, host, &agent.session, &agent.pane_id)
         .max_by_key(|(record, status)| (status.state.is_open(), record.created))
+}
+
+/// The tasks, open or not, whose herdr target is the pane `pane_id` in herdr session `session`
+/// on `host`. `flow task close` clears a target, so a task here that is not open has not been
+/// closed yet.
+pub fn tasks_in_pane<'a>(
+    tasks: &'a [(TaskRecord, Status)],
+    host: &str,
+    session: &str,
+    pane_id: &str,
+) -> impl Iterator<Item = &'a (TaskRecord, Status)> {
+    tasks.iter().filter(move |(_, status)| {
+        status
+            .herdr
+            .as_ref()
+            .is_some_and(|target| target.is(host, session, pane_id))
+    })
 }
 
 /// The open task whose herdr target is the pane `pane_id` in herdr session `session` on `host`.
@@ -390,15 +400,8 @@ pub fn open_task_in_pane<'a>(
     session: &str,
     pane_id: &str,
 ) -> Option<&'a TaskRecord> {
-    tasks
-        .iter()
-        .find(|(_, status)| {
-            status.state.is_open()
-                && status
-                    .herdr
-                    .as_ref()
-                    .is_some_and(|target| target.is(host, session, pane_id))
-        })
+    tasks_in_pane(tasks, host, session, pane_id)
+        .find(|(_, status)| status.state.is_open())
         .map(|(record, _)| record)
 }
 

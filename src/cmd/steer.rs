@@ -22,9 +22,9 @@ pub(super) const EVENT_SOURCE: &str = "supervisor";
 /// the worker's turn to end could hold the supervisor for hours.
 pub(super) const DELIVERED: [AgentStatus; 2] = [AgentStatus::Working, AgentStatus::Blocked];
 
-/// Prompts the worker in the task's herdr pane, in the herdr session it lives in, with `text`, appends a `steer` event, moves a
-/// `needs-decision` or `blocked` task back to `working`, and prints
-/// `steered <id> (<pane>): <status>`.
+/// Prompts the worker in the task's herdr pane, in the herdr session it lives in, with `text`,
+/// appends a `steer` event, moves a `needs-decision` or `blocked` task back to `working`, and
+/// prints `steered <id> (<pane>): <status>`.
 pub fn run(state: &StateDir, id: &str, text: &str) -> anyhow::Result<()> {
     let store = Store::open(state);
     let (_, status) = store.task(id)?;

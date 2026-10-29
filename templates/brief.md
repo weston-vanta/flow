@@ -1,6 +1,6 @@
 # Task {{id}}: {{title}}
 
-You are a worker session run by a supervisor. This brief is your whole assignment.
+{{role}}
 
 ## Working directory
 
@@ -30,4 +30,4 @@ Report through these exact commands, run from your shell.
 - When every completion criterion is met, write a short Markdown report to a file, then:
   `{{flow}} task done {{id}} --report <path>`
 
-You never address the user directly: everything goes to the supervisor through these commands.
+{{contact}}

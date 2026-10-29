@@ -148,7 +148,7 @@ pub fn run(state: &StateDir, args: &DispatchArgs) -> anyhow::Result<ExitCode> {
     };
     store.create_task(
         rec.clone(),
-        &brief::render(&rec, &body, &args.criteria, &flow_bin),
+        &brief::render(&rec, &body, &args.criteria, &flow_bin.display().to_string()),
     )?;
     let started = create_work_dir(&dir, &rec.cwd)
         .and_then(|()| start_worker(&store, state.root(), &herdr, host, &rec, &flow_bin));

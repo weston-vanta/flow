@@ -76,7 +76,7 @@ flow task adopt <host> <session> --title "<short title>" --criteria "- <criterio
 ```
 
 `<session>` is its title as `flow sessions` shows it, or its pane id when several share the
-title. Leave out the brief when the session should simply carry on with what it is doing; the
+title, or `<herdr session>/<pane id>` when flow says several herdr sessions hold that pane. Leave out the brief when the session should simply carry on with what it is doing; the
 criteria still say where to stop. flow writes the task and its brief, stops following the
 session, and prompts it to read the brief. It prints `adopted <task-id> on <host> (<pane>)`.
 From then on it is a task like any other, except that `flow task close` leaves its pane open
