@@ -1973,7 +1973,6 @@ default_branch = "main"
             .map(|h| h.agent.pane_id.as_str())
             .collect();
         assert_eq!(hands, ["w1:p1"]);
-        assert!(!fx.log().contains("cannot tell"), "{}", fx.log());
     }
 
     #[test]

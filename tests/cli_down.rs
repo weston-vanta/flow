@@ -133,7 +133,6 @@ impl Fixture {
         cmd.env("FLOW_STATE", &self.state)
             .env("ONA_ID", "env-0001")
             .env("FLOW_FAKE_RUNNER", self.script_path())
-            .env_remove("FLOW_FAKE_TTY")
             .env_remove("FLOW_SUPERVISOR");
         cmd
     }
@@ -348,8 +347,24 @@ fn down_keeps_the_lock_when_the_supervisors_host_cannot_be_reached() {
         .clone();
 
     let stderr = String::from_utf8(out.stderr).unwrap();
-    assert!(stderr.contains("host unreachable: host-b"), "{stderr}");
-    assert!(stderr.contains("nothing stopped"), "{stderr}");
+    assert!(
+        stderr.starts_with(
+            "closing the supervisor's pane on host-b; nothing stopped, and the lock is kept: \
+             host unreachable: host-b"
+        ),
+        "{stderr}"
+    );
+    assert!(
+        stderr.ends_with(
+            "\nthe supervisor may still run on host-b, so flow keeps its lock until it can stop \
+             it there. Either restore ssh access to host-b from this machine (`gitpod login`, \
+             then `gitpod environment ssh-config`) and run `flow down` again, or stop host-b's \
+             environment in Ona and run `flow inventory --refresh`, which marks host-b gone; \
+             then `flow down` clears the lock without ssh and `flow up` starts a supervisor \
+             here.\n"
+        ),
+        "{stderr}"
+    );
     assert_eq!(fs::read_to_string(fx.lock_path()).unwrap(), before);
 }
 

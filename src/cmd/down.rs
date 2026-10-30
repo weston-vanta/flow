@@ -4,7 +4,9 @@
 
 use std::sync::Arc;
 
-use crate::herdr::Herdr;
+use anyhow::anyhow;
+
+use crate::herdr::{self, Herdr};
 use crate::inventory;
 use crate::paths::StateDir;
 use crate::runner::{self, Runner};
@@ -15,7 +17,7 @@ use crate::supervisor::{self, Lock};
 use crate::watch::lock as watch_lock;
 
 /// Stops the supervisor `state/supervisor/lock.json` records. Fails, changing nothing, when the
-/// supervisor's host cannot be reached.
+/// supervisor's host cannot be reached, naming the ways out.
 pub fn run(state: &StateDir) -> anyhow::Result<()> {
     let Some(lock) = supervisor::load(state)? else {
         return super::print("no supervisor recorded; nothing to stop\n");
@@ -84,10 +86,23 @@ fn close_supervisor(
     tasks: &[(TaskRecord, Status)],
 ) -> anyhow::Result<()> {
     let unreachable = |err: anyhow::Error| {
-        err.context(format!(
+        let kept = format!(
             "closing the supervisor's pane on {}; nothing stopped, and the lock is kept",
             host.name
-        ))
+        );
+        if !herdr::is_unreachable(&err) {
+            return err.context(kept);
+        }
+        // An unreachable host is not a stopped one: the supervisor may still run there.
+        anyhow!(
+            "{kept}: {err:#}\nthe supervisor may still run on {host}, so flow keeps its lock \
+             until it can stop it there. Either restore ssh access to {host} from this machine \
+             (`gitpod login`, then `gitpod environment ssh-config`) and run `flow down` again, \
+             or stop {host}'s environment in Ona and run `flow inventory --refresh`, which marks \
+             {host} gone; then `flow down` clears the lock without ssh and `flow up` starts a \
+             supervisor here.",
+            host = host.name
+        )
     };
     let nowhere = || {
         super::print(&format!(

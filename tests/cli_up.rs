@@ -88,7 +88,6 @@ impl Fixture {
             .env("HERDR_PANE_ID", "w9:p9")
             .env("XDG_CONFIG_HOME", &config_home)
             .env("HERDR_SOCKET_PATH", config_home.join("herdr/herdr.sock"))
-            .env_remove("FLOW_FAKE_TTY")
             .env_remove(supervisor::SUPERVISOR_ENV);
         cmd
     }
@@ -343,8 +342,8 @@ fn up_warns_when_herdr_reports_no_session_for_the_new_supervisor() {
     assert!(
         stderr.contains(
             "herdr reports no Claude Code session for the supervisor in pane w3:p1 on host-a; \
-             without one flow cannot tell it from another agent, so check its Claude Code \
-             integration (`herdr integration install claude`)\n"
+             until it does, flow knows the supervisor only by that pane and its flow-supervisor \
+             label, so check its Claude Code integration (`herdr integration install claude`)\n"
         ),
         "{stderr}"
     );

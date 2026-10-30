@@ -252,8 +252,8 @@ fn record_session(
         }
         None => eprintln!(
             "herdr reports no Claude Code session for the supervisor in pane {pane_id} on {}; \
-             without one flow cannot tell it from another agent, so check its Claude Code \
-             integration (`herdr integration install claude`)",
+             until it does, flow knows the supervisor only by that pane and its {SUPERVISOR_NAME} \
+             label, so check its Claude Code integration (`herdr integration install claude`)",
             here.name
         ),
     }
