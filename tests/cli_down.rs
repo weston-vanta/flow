@@ -359,13 +359,35 @@ fn down_keeps_the_lock_when_the_supervisors_host_cannot_be_reached() {
             "\nthe supervisor may still run on host-b, so flow keeps its lock until it can stop \
              it there. Either restore ssh access to host-b from this machine (`gitpod login`, \
              then `gitpod environment ssh-config`) and run `flow down` again, or stop host-b's \
-             environment in Ona and run `flow inventory --refresh`, which marks host-b gone; \
-             then `flow down` clears the lock without ssh and `flow up` starts a supervisor \
+             environment in Ona and run `flow inventory --refresh`, which records it stopped; \
+             then `flow down` marks the supervisor stopped without ssh and `flow up` starts one \
              here.\n"
         ),
         "{stderr}"
     );
     assert_eq!(fs::read_to_string(fx.lock_path()).unwrap(), before);
+}
+
+#[test]
+fn down_marks_the_supervisor_stopped_without_ssh_when_ona_lists_its_host_stopped() {
+    let fx = Fixture::new();
+    let path = fx.state.join("hosts/env-0002.json");
+    let mut record: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    record["ona_phase"] = json!("ENVIRONMENT_PHASE_STOPPED");
+    fs::write(&path, record.to_string()).unwrap();
+    fx.write_lock("env-0002", "host-b", "default");
+
+    let stdout = stdout_of(fx.flow(&[]).arg("down"));
+
+    assert_eq!(
+        stdout,
+        format!(
+            "the supervisor's pane w1:p1 on host-b is already gone: host-b is not running\n\
+             {KEPT}{NOTE}"
+        )
+    );
+    assert!(fx.argvs().is_empty());
+    fx.assert_stopped();
 }
 
 #[test]

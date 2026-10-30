@@ -98,9 +98,9 @@ fn close_supervisor(
             "{kept}: {err:#}\nthe supervisor may still run on {host}, so flow keeps its lock \
              until it can stop it there. Either restore ssh access to {host} from this machine \
              (`gitpod login`, then `gitpod environment ssh-config`) and run `flow down` again, \
-             or stop {host}'s environment in Ona and run `flow inventory --refresh`, which marks \
-             {host} gone; then `flow down` clears the lock without ssh and `flow up` starts a \
-             supervisor here.",
+             or stop {host}'s environment in Ona and run `flow inventory --refresh`, which records \
+             it stopped; then `flow down` marks the supervisor stopped without ssh and `flow up` \
+             starts one here.",
             host = host.name
         )
     };
