@@ -829,6 +829,39 @@ fn dispatch_records_an_unexpected_block_without_sending_keys() {
 }
 
 #[test]
+fn dispatch_closes_the_tab_it_opened_when_labelling_it_fails() {
+    let fx = Fixture::new();
+    let script = vec![
+        ok(SERVER_RUNNING),
+        ok(NO_AGENTS),
+        ok(NO_WORKSPACES),
+        ok(WORKSPACE_CREATE),
+        failed(r#"{"error":{"code":"internal","message":"rename failed"},"id":"cli:tab:rename"}"#),
+        ok(include_str!("fixtures/herdr/tab_close.json")),
+    ];
+
+    let out = fx
+        .flow(&script)
+        .args(dispatch_args(&["--dir", WORKTREE]))
+        .assert()
+        .code(1)
+        .get_output()
+        .clone();
+
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(stderr.contains("rename failed"), "{stderr}");
+    let calls = fx.calls();
+    assert_eq!(
+        *calls.last().unwrap(),
+        ["herdr", "--session", "default", "tab", "close", TAB]
+    );
+    assert!(herdr_calls(&calls, &["pane", "run"]).is_empty());
+    let (_, status) = fx.store().task(&fx.only_task()).unwrap();
+    assert_eq!(status.state, State::Blocked);
+    assert_eq!(status.herdr, None);
+}
+
+#[test]
 fn dispatch_marks_task_blocked_when_launch_fails() {
     let fx = Fixture::new();
     let script = vec![

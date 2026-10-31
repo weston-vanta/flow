@@ -401,7 +401,16 @@ fn open_tab(herdr: &Herdr, host: &Host, rec: &TaskRecord) -> anyhow::Result<NewT
         return herdr.create_tab(host, &flow.workspace_id, &rec.cwd, &label);
     }
     let tab = herdr.create_workspace(host, &rec.cwd, herdr::FLOW_WORKSPACE)?;
-    herdr.rename_tab(host, &tab.tab_id, &label)?;
+    if let Err(err) = herdr.rename_tab(host, &tab.tab_id, &label) {
+        // Unlabelled, the tab would stay in the `flow` workspace with nothing tracking it.
+        if let Err(close_err) = herdr.close_tab(host, &tab.tab_id) {
+            eprintln!(
+                "could not close tab {} on {}: {close_err:#}",
+                tab.tab_id, host.name
+            );
+        }
+        return Err(err);
+    }
     Ok(tab)
 }
 

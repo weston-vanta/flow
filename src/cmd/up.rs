@@ -124,16 +124,17 @@ fn start_here(state: &StateDir, here: &Host, pane: InvokingPane) -> anyhow::Resu
     exec(&launch_argv(state_root.root(), resume.as_deref())?)
 }
 
-/// `session` when Claude Code keeps its transcript, else `None` after dropping it from the lock.
+/// `session` when Claude Code keeps a non-empty transcript of it, else `None` after dropping it
+/// from the lock: an empty one, as a crash can leave, would fail every resume the same way.
 fn resumable(state: &StateDir, session: &str) -> anyhow::Result<Option<String>> {
     let transcript =
         observe::transcript_in(&observe::claude_home()?, Path::new(SUPERVISOR_CWD), session);
-    if transcript.exists() {
+    if std::fs::metadata(&transcript).is_ok_and(|meta| meta.len() > 0) {
         return Ok(Some(session.to_owned()));
     }
     eprintln!(
-        "no transcript of supervisor session {session} at {}; starting a fresh supervisor \
-         session",
+        "no transcript of supervisor session {session} to resume at {}; starting a fresh \
+         supervisor session",
         transcript.display()
     );
     supervisor::set_session(state, None)?;

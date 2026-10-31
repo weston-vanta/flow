@@ -39,8 +39,8 @@
 //! Whether a session is followed is read every cycle. A listing that finds an observed session in
 //! a pane neither the run's previous listing nor the saved one held wakes it once, as
 //! `observed-new`; the saved panes are replaced each listing, keeping those of hosts it did not
-//! hear from, so a session back after a listing without it wakes again. The seed records the
-//! cached inventory's observed sessions, so the first listing wakes for none of those.
+//! hear from, so a session back after a listing without it wakes again. With none saved, as after
+//! a seed or `flow up`, a listing records the observed sessions it finds without waking.
 //!
 //! A run with nothing to watch, no open task, followed session or hand session, ends after its
 //! first cycle rather than waiting for the heartbeat. A cycle that could not read the tasks or
@@ -1216,22 +1216,12 @@ fn load_watch_state(state: &StateDir) -> anyhow::Result<WatchState> {
     })
 }
 
-/// A watch state with every closed task read as it is now, and the observed sessions in the
-/// cached inventory recorded; open tasks are left unread, so a run replays their logs.
+/// A watch state with every closed task read as it is now and no observed panes recorded; open
+/// tasks are left unread, so a run replays their logs.
 fn seeded_state(state: &StateDir) -> anyhow::Result<WatchState> {
     let store = Store::open(state);
-    let tasks = store.list_tasks()?;
-    let hands = hand_sessions(state)?;
-    let mut memory = WatchState {
-        observed_panes: Some(
-            observed_hands(&hands, &tasks)
-                .into_iter()
-                .map(|(key, _)| key)
-                .collect(),
-        ),
-        ..WatchState::default()
-    };
-    for (rec, status) in tasks {
+    let mut memory = WatchState::default();
+    for (rec, status) in store.list_tasks()? {
         if status.state.is_open() {
             continue;
         }
@@ -1244,16 +1234,32 @@ fn seeded_state(state: &StateDir) -> anyhow::Result<WatchState> {
     Ok(memory)
 }
 
-/// Writes `seeded_state` to `watch-state.json` unless the file exists. `flow up` calls it when
-/// it starts a supervisor.
+/// Writes `seeded_state` to `watch-state.json` unless the file exists, and otherwise forgets its
+/// observed panes, so the first listing after a start records the observed sessions without
+/// waking: the supervisor's start procedure asks about each of them. A file that does not parse
+/// is left for the next run to reseed. `flow up` calls it when it starts a supervisor.
 pub fn seed(state: &StateDir) -> anyhow::Result<()> {
-    if state.root().join(WATCH_STATE_FILE).exists() {
-        return Ok(());
+    let path = state.root().join(WATCH_STATE_FILE);
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            let supervisor = state.root().join(SUPERVISOR_DIR);
+            std::fs::create_dir_all(&supervisor)
+                .with_context(|| format!("creating {}", supervisor.display()))?;
+            return write_watch_state(state, &seeded_state(state)?);
+        }
+        Err(err) => return Err(err).with_context(|| format!("reading {}", path.display())),
+    };
+    match serde_json::from_slice::<WatchState>(&bytes) {
+        Ok(memory) if memory.observed_panes.is_some() => write_watch_state(
+            state,
+            &WatchState {
+                observed_panes: None,
+                ..memory
+            },
+        ),
+        _ => Ok(()),
     }
-    let supervisor = state.root().join(SUPERVISOR_DIR);
-    std::fs::create_dir_all(&supervisor)
-        .with_context(|| format!("creating {}", supervisor.display()))?;
-    write_watch_state(state, &seeded_state(state)?)
 }
 
 #[cfg(test)]
@@ -1466,6 +1472,17 @@ default_branch = "main"
             };
             supervisor::take(&self.state, "env-0001", target).unwrap();
             supervisor::set_session(&self.state, Some("s-sup")).unwrap();
+        }
+
+        /// Saves a watch state whose last listing found the observed sessions in `panes`, keyed
+        /// `<host>/<session>/<pane>`.
+        fn observed_before(&self, panes: &[&str]) {
+            std::fs::create_dir_all(self.state.root().join(SUPERVISOR_DIR)).unwrap();
+            let memory = WatchState {
+                observed_panes: Some(panes.iter().map(|pane| (*pane).to_owned()).collect()),
+                ..WatchState::default()
+            };
+            write_watch_state(&self.state, &memory).unwrap();
         }
 
         fn log(&self) -> String {
@@ -1772,6 +1789,7 @@ default_branch = "main"
     fn an_open_task_whose_target_a_listing_retires_wakes_once() {
         let fx = Fixture::new();
         fx.task(true);
+        fx.observed_before(&[]);
         let runner = listing_idless_in_task_pane(on(
             "host-a",
             &["--session", "flow", "tab", "list"],
@@ -2407,7 +2425,7 @@ default_branch = "main"
     }
 
     #[test]
-    fn the_first_listing_after_the_seed_wakes_for_no_session_the_seed_recorded() {
+    fn the_first_listing_after_the_seed_records_the_observed_sessions_without_waking() {
         let fx = Fixture::new();
         fx.hand();
         seed(&fx.state).unwrap();
@@ -2421,9 +2439,27 @@ default_branch = "main"
     }
 
     #[test]
+    fn the_seed_forgets_the_observed_panes_of_an_existing_state_and_keeps_the_rest() {
+        let fx = Fixture::new();
+        fx.observed_before(&["host-a/default/w1:p1"]);
+        let mut before = load_watch_state(&fx.state).unwrap();
+        before.observed_panes = None;
+
+        seed(&fx.state).unwrap();
+
+        assert_eq!(load_watch_state(&fx.state).unwrap(), before);
+        assert_eq!(
+            run_listing(&fx, &listing_default(DEFAULT_AGENTS)),
+            None,
+            "the first listing after a start records the sessions as they are"
+        );
+    }
+
+    #[test]
     fn an_observed_session_a_listing_finds_later_wakes_once() {
         let fx = Fixture::new();
         seed(&fx.state).unwrap();
+        assert_eq!(run_listing(&fx, &listing_default(NO_AGENTS)), None);
         let runner = listing_default(DEFAULT_AGENTS);
 
         assert_eq!(
@@ -2674,6 +2710,7 @@ default_branch = "main"
     fn hand_only_run_lists_hosts_again_each_heartbeat_interval() {
         let fx = Fixture::new();
         fx.hand();
+        fx.observed_before(&["host-a/default/w1:p1"]);
         let both = r#"{"id":"cli:agent:list","result":{"agents":[{"agent":"claude","agent_status":"idle","cwd":"/work/repo","pane_id":"w1:p1","terminal_title_stripped":"Tidy docs","workspace_id":"w1"},{"agent":"claude","agent_status":"working","cwd":"/work/app","pane_id":"w1:p2","terminal_title_stripped":"Fix links","workspace_id":"w1"}],"type":"agent_list"}}"#;
         let mut script = hand_listing(both);
         script.push(Scripted {

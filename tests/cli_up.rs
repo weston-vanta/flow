@@ -327,26 +327,33 @@ fn up_resumes_the_recorded_session_while_its_transcript_exists() {
 }
 
 #[test]
-fn up_starts_a_fresh_session_when_the_recorded_one_has_no_transcript() {
-    let fx = Fixture::new();
-    fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
+fn up_starts_a_fresh_session_when_the_recorded_one_has_no_transcript_or_an_empty_one() {
+    for empty in [false, true] {
+        let fx = Fixture::new();
+        fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
+        let transcript = fx
+            .dir
+            .path()
+            .join("claude/projects/-workspaces-flow/s9.jsonl");
+        if empty {
+            fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+            fs::write(&transcript, "").unwrap();
+        }
 
-    let (stdout, stderr) = output_of(fx.flow(&[ok(NO_AGENTS)]).arg("up"));
+        let (stdout, stderr) = output_of(fx.flow(&[ok(NO_AGENTS)]).arg("up"));
 
-    assert_eq!(stdout, fx.exec_line(""));
-    let transcript = fx
-        .dir
-        .path()
-        .join("claude/projects/-workspaces-flow/s9.jsonl");
-    assert_eq!(
-        stderr,
-        format!(
-            "no transcript of supervisor session s9 at {}; starting a fresh supervisor \
-             session\nstarting a fresh supervisor in pane {HERE_PANE} on host-a\n",
-            transcript.display()
-        )
-    );
-    assert_eq!(fx.lock().unwrap().claude_session, None);
+        assert_eq!(stdout, fx.exec_line(""), "empty: {empty}");
+        assert_eq!(
+            stderr,
+            format!(
+                "no transcript of supervisor session s9 to resume at {}; starting a fresh \
+                 supervisor session\nstarting a fresh supervisor in pane {HERE_PANE} on host-a\n",
+                transcript.display()
+            ),
+            "empty: {empty}"
+        );
+        assert_eq!(fx.lock().unwrap().claude_session, None, "empty: {empty}");
+    }
 }
 
 #[test]
@@ -471,6 +478,45 @@ fn up_reads_a_lock_an_earlier_version_marked_stopped() {
 
     assert_eq!(stdout, fx.exec_line("--resume s9 "));
     assert!(!fx.lock_text().contains("stopped"), "{}", fx.lock_text());
+}
+
+#[test]
+fn the_first_watch_after_up_takes_the_observed_sessions_as_they_are() {
+    let fx = Fixture::new();
+    let dir = fx.state.join("supervisor");
+    fs::create_dir_all(&dir).unwrap();
+    let saved = json!({"seen": {}, "observed_panes": ["host-a/default/w1:p1"]});
+    fs::write(dir.join("watch-state.json"), saved.to_string()).unwrap();
+    output_of(fx.flow(&[]).arg("up"));
+    let started_meanwhile = json!({"id": "cli:agent:list", "result": {"type": "agent_list",
+        "agents": [
+            {"agent": "claude", "agent_status": "idle", "cwd": "/work/a", "pane_id": "w1:p1",
+             "terminal_title_stripped": "Tidy docs", "workspace_id": "w1"},
+            {"agent": "claude", "agent_status": "idle", "cwd": "/work/b", "pane_id": "w1:p2",
+             "terminal_title_stripped": "Fix links", "workspace_id": "w1"}]}});
+    let script = [
+        json!({"host": "host-a", "argv": ["agent", "list"], "repeat": true, "status": 0,
+            "stdout": started_meanwhile.to_string()}),
+        json!({"host": "host-b", "argv": ["agent", "list"], "repeat": true, "status": 0,
+            "stdout": NO_AGENTS}),
+        json!({"argv": ["agent", "wait"], "repeat": true, "status": 0,
+            "stdout": AGENT_GET.replace(r#""agent_status":"working""#, r#""agent_status":"idle""#)}),
+    ];
+
+    let out = fx
+        .flow(&script)
+        .env(supervisor::SUPERVISOR_ENV, "1")
+        .env("FLOW_WATCH_POLL_MS", "50")
+        .args(["watch", "--once"])
+        .assert()
+        .get_output()
+        .clone();
+
+    assert_eq!(
+        (out.status.code(), String::from_utf8(out.stdout).unwrap()),
+        (Some(0), String::new()),
+        "the start procedure asked about the session started meanwhile; the watch does not"
+    );
 }
 
 #[test]

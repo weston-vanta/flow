@@ -60,7 +60,9 @@ flow up
 ```
 
 The supervisor runs in that pane: `flow up` replaces itself with Claude Code there. Exit it as
-you would any Claude Code session; the next `flow up` resumes its conversation.
+you would any Claude Code session; the next `flow up` resumes its conversation. Removing
+`claude_session` from `state/supervisor/lock.json` makes the next `flow up` start the
+supervisor fresh.
 
 `flow` uses `$FLOW_STATE` as the state directory when set, otherwise `state/` at the root of
 its clone.
@@ -102,7 +104,7 @@ given. Commands that take `--json` print raw JSON instead of the compact view.
 Operator:
 
 - `flow init [--force]`: write `state/config.toml` from what this machine can tell, then refresh the inventory; `--force` replaces an existing file.
-- `flow up`: from a shell pane inside herdr, run the supervisor in that pane; anywhere else it exits 1. It asks only this host's herdr: when the lock records the supervisor on this host and herdr reports an agent there with the lock's Claude Code session, it prints `the supervisor is running in pane <id> (workspace <label>)` and exits 0. Otherwise it records this host, this pane and its herdr session in the lock, keeping the Claude Code session to resume, and replaces itself with Claude Code in this pane, resuming that session while Claude Code keeps its transcript and starting a fresh one otherwise. When the lock names another host that is not gone, it first prints `the previous supervisor was recorded on <host> since <time> ago; if it is still running there, exit it`. Starting one first writes `state/supervisor/watch-state.json`, with every closed task marked read and the observed sessions in the cached inventory recorded, when that file does not exist, so the first `flow watch` replays only open tasks and announces no session already there.
+- `flow up`: from a shell pane inside herdr, run the supervisor in that pane; anywhere else it exits 1. It asks only this host's herdr: when the lock records the supervisor on this host and herdr reports an agent there with the lock's Claude Code session, it prints `the supervisor is running in pane <id> (workspace <label>)` and exits 0. Otherwise it records this host, this pane and its herdr session in the lock, keeping the Claude Code session to resume, and replaces itself with Claude Code in this pane, resuming that session while Claude Code keeps a non-empty transcript of it and starting a fresh one otherwise. When the lock names another host that is not gone, it first prints `the previous supervisor was recorded on <host> since <time> ago; if it is still running there, exit it`. Starting one first writes `state/supervisor/watch-state.json` with every closed task marked read when that file does not exist, so the first `flow watch` replays only open tasks, and otherwise forgets the observed sessions it records, so the first `flow watch` announces none of the sessions the supervisor's start procedure asks about.
 - `flow status [--all] [--json]`: open tasks, their holds, pending dispatch requests from workers (`req-id  from-task  host  title`), and observed sessions; `--all` includes done and orphaned tasks.
 - `flow inventory [--refresh] [--json]`: worktrees, agents, and PRs per host; `--refresh` first discovers hosts from Ona (or the static list), probes each running one, and lists open PRs. `--json` gives each host its ssh alias, whether it is the host flow runs on (`local`), its Ona phase, when it was last seen, and whether it is reachable or gone.
 - `flow run <host> -- <argv>...`: run a command on a host, passing its output and exit code through.
