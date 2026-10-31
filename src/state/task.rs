@@ -146,6 +146,9 @@ pub struct Decision {
 pub struct HerdrTarget {
     pub host: String,
     pub workspace_id: String,
+    /// The tab holding the pane; empty in records written before flow kept it.
+    #[serde(default)]
+    pub tab_id: String,
     pub pane_id: String,
     pub agent: String,
     /// The herdr session the pane lives in: flow's own, as configured when the worker was

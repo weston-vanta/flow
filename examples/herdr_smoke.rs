@@ -42,7 +42,8 @@ fn main() -> anyhow::Result<()> {
     println!("server: running in session {SESSION}");
     let outcome = herdr
         .create_workspace(&host, cwd.path(), "flow-smoke")
-        .and_then(|(workspace_id, pane_id)| {
+        .and_then(|tab| {
+            let (workspace_id, pane_id) = (tab.workspace_id, tab.pane_id);
             println!(
                 "workspace: {workspace_id} pane: {pane_id} cwd: {}",
                 cwd.path().display()

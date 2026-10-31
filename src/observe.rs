@@ -504,13 +504,14 @@ mod tests {
         Agent {
             pane_id: pane_id.to_owned(),
             workspace_id: pane_id.split(':').next().unwrap().to_owned(),
+            tab_id: String::new(),
             agent: "claude".to_owned(),
             status: AgentStatus::Idle,
             cwd: PathBuf::from(cwd),
             title: String::new(),
             session: session.to_owned(),
             agent_session_id: None,
-            workspace_label: None,
+            tab_label: None,
         }
     }
 
@@ -545,6 +546,7 @@ mod tests {
         status.herdr = Some(HerdrTarget {
             host: host.to_owned(),
             workspace_id: "w1".to_owned(),
+            tab_id: String::new(),
             pane_id: pane_id.to_owned(),
             agent: "claude".to_owned(),
             session: "flow".to_owned(),
@@ -755,6 +757,7 @@ mod tests {
             herdr: HerdrTarget {
                 host: "host-a".to_owned(),
                 workspace_id: "w1".to_owned(),
+                tab_id: String::new(),
                 pane_id: pane_id.to_owned(),
                 agent: "claude".to_owned(),
                 session: "default".to_owned(),

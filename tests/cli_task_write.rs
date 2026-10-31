@@ -470,17 +470,17 @@ fn write_commands_reject_unknown_task() {
     assert!(String::from_utf8(out).unwrap().contains("no such task"));
 }
 
-const WORKSPACE_CLOSED: &str = r#"{"id":"cli:workspace:close","result":{"type":"ok"}}"#;
-/// The label dispatch gives the task's workspace: its title, then its id.
+const TAB_CLOSED: &str = include_str!("fixtures/herdr/tab_close.json");
+/// The label dispatch gives the task's tab: its title, then its id.
 const TASK_LABEL: &str = "Add retry to the example client · aaaaaaab";
 
-/// `workspace list` answering with `w1`, a hand workspace, and `w2` labelled `label`.
-fn workspaces_with_w2(label: &str) -> Value {
-    let list = json!({"id": "cli:workspace:list", "result": {"type": "workspace_list", "workspaces": [
-        {"workspace_id": "w1", "label": "notes", "number": 1, "pane_count": 1, "tab_count": 1},
-        {"workspace_id": "w2", "label": label, "number": 2, "pane_count": 1, "tab_count": 1},
+/// `tab list` answering with `w2:t1`, a hand tab, and the task's `w2:t2` labelled `label`.
+fn tabs_with_w2_t2(label: &str) -> Value {
+    let list = json!({"id": "cli:tab:list", "result": {"type": "tab_list", "tabs": [
+        {"tab_id": "w2:t1", "workspace_id": "w2", "label": "notes", "number": 1},
+        {"tab_id": "w2:t2", "workspace_id": "w2", "label": label, "number": 2},
     ]}});
-    json!({"argv": ["workspace", "list"], "status": 0, "stdout": list.to_string(), "stderr": ""})
+    json!({"argv": ["tab", "list"], "status": 0, "stdout": list.to_string(), "stderr": ""})
 }
 
 /// `agent list` answering with one agent per `(pane_id, Claude Code session)`.
@@ -489,9 +489,10 @@ fn agents(agents: &[(&str, &str)]) -> Value {
     let agents: Vec<Value> = agents
         .iter()
         .map(|(pane_id, session)| {
-            let mut agent = json!({"pane_id": pane_id,
-                "workspace_id": pane_id.split(':').next().unwrap(),
-                "agent": "claude", "agent_status": "idle"});
+            let workspace_id = pane_id.split(':').next().unwrap();
+            let tab_id = format!("{workspace_id}:t{}", &pane_id[pane_id.len() - 1..]);
+            let mut agent = json!({"pane_id": pane_id, "workspace_id": workspace_id,
+                "tab_id": tab_id, "agent": "claude", "agent_status": "idle"});
             if !session.is_empty() {
                 agent["agent_session"] = json!({"kind": "id", "value": session});
             }
@@ -503,14 +504,14 @@ fn agents(agents: &[(&str, &str)]) -> Value {
 }
 
 fn closed() -> Value {
-    json!({"argv": ["workspace", "close"], "status": 0, "stdout": WORKSPACE_CLOSED, "stderr": ""})
+    json!({"argv": ["tab", "close"], "status": 0, "stdout": TAB_CLOSED, "stderr": ""})
 }
 
-/// The calls that prove `w2` is the task's and close it.
-fn task_workspace_closes() -> Vec<Value> {
+/// The calls that prove `w2:t2` is the task's and close it.
+fn task_tab_closes() -> Vec<Value> {
     vec![
-        workspaces_with_w2(TASK_LABEL),
-        agents(&[("w1:p1", "s-hand"), ("w2:p1", "s-worker")]),
+        tabs_with_w2_t2(TASK_LABEL),
+        agents(&[("w1:p1", "s-hand"), ("w2:p2", "s-worker")]),
         closed(),
     ]
 }
@@ -522,7 +523,7 @@ fn herdr_argvs(script_path: &Path) -> Vec<Value> {
         .collect()
 }
 
-/// `setup()` with the task `state`, its worker in workspace `w2` on `host-a` with Claude Code
+/// `setup()` with the task `state`, its worker in tab `w2:t2` on `host-a` with Claude Code
 /// session `s-worker`, the host's cached record, and a fake runner answering `script`; returns
 /// the runner's script path.
 fn setup_close(
@@ -536,7 +537,8 @@ fn setup_close(
             status.herdr = Some(flow::state::task::HerdrTarget {
                 host: "host-a".to_owned(),
                 workspace_id: "w2".to_owned(),
-                pane_id: "w2:p1".to_owned(),
+                tab_id: "w2:t2".to_owned(),
+                pane_id: "w2:p2".to_owned(),
                 agent: "claude".to_owned(),
                 session: "default".to_owned(),
             });
@@ -570,8 +572,8 @@ fn runner_calls(script_path: &Path) -> Vec<Value> {
 }
 
 #[test]
-fn close_closes_a_done_task_workspace_and_keeps_the_record() {
-    let (_repo, state, store, script) = setup_close(State::Done, &task_workspace_closes());
+fn close_closes_a_done_tasks_tab_and_keeps_the_record() {
+    let (_repo, state, store, script) = setup_close(State::Done, &task_tab_closes());
     let (rec_before, _) = store.task(TASK).unwrap();
 
     let out = stdout(
@@ -580,7 +582,7 @@ fn close_closes_a_done_task_workspace_and_keeps_the_record() {
             .args(["task", "close", TASK]),
     );
 
-    assert_eq!(out, format!("closed {TASK} (workspace w2 on host-a)\n"));
+    assert_eq!(out, format!("closed {TASK} (tab w2:t2 on host-a)\n"));
     let calls = runner_calls(&script);
     assert!(
         calls.iter().all(|call| call["host"] == "host-a"),
@@ -589,9 +591,9 @@ fn close_closes_a_done_task_workspace_and_keeps_the_record() {
     assert_eq!(
         herdr_argvs(&script),
         [
-            json!(["herdr", "--session", "default", "workspace", "list"]),
+            json!(["herdr", "--session", "default", "tab", "list"]),
             json!(["herdr", "--session", "default", "agent", "list"]),
-            json!(["herdr", "--session", "default", "workspace", "close", "w2"]),
+            json!(["herdr", "--session", "default", "tab", "close", "w2:t2"]),
         ]
     );
     let (rec, status) = store.task(TASK).unwrap();
@@ -604,14 +606,14 @@ fn close_closes_a_done_task_workspace_and_keeps_the_record() {
     assert_eq!(
         ev.data,
         json!({
-            "host": "host-a", "workspace_id": "w2", "pane_id": "w2:p1",
+            "host": "host-a", "workspace_id": "w2", "tab_id": "w2:t2", "pane_id": "w2:p2",
             "forced": false, "already_gone": false,
         })
     );
 }
 
 #[test]
-fn close_of_an_adopted_task_leaves_its_workspace_to_its_owner() {
+fn close_of_an_adopted_task_leaves_its_tab_to_its_owner() {
     let (_repo, state, store, script) = setup_close(State::Done, &[]);
     let dir = store.task_dir(TASK).unwrap();
     let mut rec: Value = read_json(&dir.join("task.json"));
@@ -640,26 +642,26 @@ fn close_of_an_adopted_task_leaves_its_workspace_to_its_owner() {
     assert_eq!(
         ev.data,
         json!({
-            "host": "host-a", "session": "default", "workspace_id": "w2", "pane_id": "w2:p1",
-            "forced": false, "workspace_left": true,
+            "host": "host-a", "session": "default", "workspace_id": "w2", "tab_id": "w2:t2",
+            "pane_id": "w2:p2", "forced": false, "workspace_left": true,
         })
     );
 }
 
 #[test]
-fn close_of_a_workspace_already_gone_still_retires_the_pane() {
-    let unlisted = json!({"id": "cli:workspace:list", "result": {"type": "workspace_list",
-        "workspaces": [{"workspace_id": "w1", "label": "notes"}]}});
+fn close_of_a_tab_already_gone_still_retires_the_pane() {
+    let unlisted = json!({"id": "cli:tab:list", "result": {"type": "tab_list",
+        "tabs": [{"tab_id": "w2:t1", "workspace_id": "w2", "label": "notes"}]}});
     let not_running = json!({
         "status": 1,
         "stdout": "",
-        "stderr": r#"{"error":{"code":"server_not_running","message":"no herdr server"},"id":"cli:workspace:list"}"#,
+        "stderr": r#"{"error":{"code":"server_not_running","message":"no herdr server"},"id":"cli:tab:list"}"#,
     });
     let closed_meanwhile = json!({
-        "argv": ["workspace", "close"],
+        "argv": ["tab", "close"],
         "status": 1,
         "stdout": "",
-        "stderr": r#"{"error":{"code":"workspace_not_found","message":"workspace w2 not found"},"id":"cli:workspace:close"}"#,
+        "stderr": include_str!("fixtures/herdr/tab_close_not_found.json"),
     });
     for (script, calls) in [
         (
@@ -668,11 +670,7 @@ fn close_of_a_workspace_already_gone_still_retires_the_pane() {
         ),
         (vec![not_running], 1),
         (
-            vec![
-                workspaces_with_w2(TASK_LABEL),
-                agents(&[]),
-                closed_meanwhile,
-            ],
+            vec![tabs_with_w2_t2(TASK_LABEL), agents(&[]), closed_meanwhile],
             3,
         ),
     ] {
@@ -684,7 +682,7 @@ fn close_of_a_workspace_already_gone_still_retires_the_pane() {
                 .args(["task", "close", TASK]),
         );
 
-        assert_eq!(out, format!("closed {TASK} (workspace already gone)\n"));
+        assert_eq!(out, format!("closed {TASK} (tab already gone)\n"));
         assert_eq!(runner_calls(&script).len(), calls);
         let (_, status) = store.task(TASK).unwrap();
         assert_eq!(status.herdr, None);
@@ -695,14 +693,14 @@ fn close_of_a_workspace_already_gone_still_retires_the_pane() {
 }
 
 #[test]
-fn close_retires_the_target_of_a_workspace_id_listed_under_another_label() {
+fn close_retires_the_target_of_a_tab_id_listed_under_another_label() {
     for label in [
         "notes",
         "Add retry to the example client",
         "Other task · aaaaaaac",
     ] {
         let (_repo, state, store, script) =
-            setup_close(State::Done, &[workspaces_with_w2(label), closed()]);
+            setup_close(State::Done, &[tabs_with_w2_t2(label), closed()]);
 
         let out = stdout(
             flow(&state)
@@ -713,7 +711,7 @@ fn close_retires_the_target_of_a_workspace_id_listed_under_another_label() {
         assert_eq!(
             out,
             format!(
-                "closed {TASK} (herdr reused workspace w2 on host-a, now labelled \"{label}\"; \
+                "closed {TASK} (herdr reused tab w2:t2 on host-a, now labelled \"{label}\"; \
                  closed nothing)\n"
             )
         );
@@ -734,8 +732,8 @@ fn close_retires_the_target_of_a_workspace_id_listed_under_another_label() {
 #[test]
 fn close_refuses_when_another_agent_runs_in_the_task_pane() {
     let script = [
-        workspaces_with_w2(TASK_LABEL),
-        agents(&[("w2:p1", "s-hand")]),
+        tabs_with_w2_t2(TASK_LABEL),
+        agents(&[("w2:p2", "s-hand")]),
         closed(),
     ];
     let (_repo, state, store, script) = setup_close(State::Done, &script);
@@ -751,7 +749,7 @@ fn close_refuses_when_another_agent_runs_in_the_task_pane() {
     assert_eq!(
         String::from_utf8(out.stderr).unwrap(),
         format!(
-            "task {TASK}'s pane w2:p1 on host-a runs another agent than the task's worker; herdr \
+            "task {TASK}'s pane w2:p2 on host-a runs another agent than the task's worker; herdr \
              reuses pane ids, so flow closed nothing\n"
         )
     );
@@ -760,10 +758,10 @@ fn close_refuses_when_another_agent_runs_in_the_task_pane() {
 }
 
 #[test]
-fn close_closes_a_done_tasks_workspace_whose_worker_reports_no_session() {
+fn close_closes_a_done_tasks_tab_whose_worker_reports_no_session() {
     let script = [
-        workspaces_with_w2(TASK_LABEL),
-        agents(&[("w2:p1", "")]),
+        tabs_with_w2_t2(TASK_LABEL),
+        agents(&[("w2:p2", "")]),
         closed(),
     ];
     let (_repo, state, store, script) = setup_close(State::Done, &script);
@@ -774,13 +772,13 @@ fn close_closes_a_done_tasks_workspace_whose_worker_reports_no_session() {
             .args(["task", "close", TASK]),
     );
 
-    assert_eq!(out, format!("closed {TASK} (workspace w2 on host-a)\n"));
+    assert_eq!(out, format!("closed {TASK} (tab w2:t2 on host-a)\n"));
     assert_eq!(store.task(TASK).unwrap().1.herdr, None);
 }
 
 #[test]
-fn close_closes_a_workspace_whose_task_pane_holds_no_agent() {
-    let script = [workspaces_with_w2(TASK_LABEL), agents(&[]), closed()];
+fn close_closes_a_tab_whose_task_pane_holds_no_agent() {
+    let script = [tabs_with_w2_t2(TASK_LABEL), agents(&[]), closed()];
     let (_repo, state, store, script) = setup_close(State::Done, &script);
 
     let out = stdout(
@@ -789,7 +787,7 @@ fn close_closes_a_workspace_whose_task_pane_holds_no_agent() {
             .args(["task", "close", TASK]),
     );
 
-    assert_eq!(out, format!("closed {TASK} (workspace w2 on host-a)\n"));
+    assert_eq!(out, format!("closed {TASK} (tab w2:t2 on host-a)\n"));
     assert_eq!(store.task(TASK).unwrap().1.herdr, None);
 }
 
@@ -801,7 +799,7 @@ fn close_refuses_an_open_task_unless_forced() {
         State::Blocked,
         State::NeedsDecision,
     ] {
-        let (_repo, state, store, script) = setup_close(open, &task_workspace_closes());
+        let (_repo, state, store, script) = setup_close(open, &task_tab_closes());
 
         flow(&state)
             .env("FLOW_FAKE_RUNNER", &script)
@@ -830,7 +828,7 @@ fn close_refuses_an_open_task_unless_forced() {
 
 #[test]
 fn close_of_an_orphaned_task_needs_no_force() {
-    let (_repo, state, store, script) = setup_close(State::Orphaned, &task_workspace_closes());
+    let (_repo, state, store, script) = setup_close(State::Orphaned, &task_tab_closes());
 
     flow(&state)
         .env("FLOW_FAKE_RUNNER", &script)
@@ -842,7 +840,7 @@ fn close_of_an_orphaned_task_needs_no_force() {
 }
 
 #[test]
-fn close_refuses_a_task_without_a_workspace() {
+fn close_refuses_a_task_without_a_tab() {
     let (_repo, state, store) = setup();
     store
         .set_status(TASK, |status| status.state = State::Done)
@@ -852,5 +850,5 @@ fn close_refuses_a_task_without_a_workspace() {
         .args(["task", "close", TASK])
         .assert()
         .code(2)
-        .stderr(format!("task {TASK} has no herdr workspace to close\n"));
+        .stderr(format!("task {TASK} has no herdr tab to close\n"));
 }

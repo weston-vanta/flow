@@ -38,10 +38,10 @@ pub enum AgentStart {
 pub fn await_start(
     herdr: &Herdr,
     host: &Host,
-    workspace_id: &str,
+    tab_id: &str,
     pane_id: &str,
 ) -> anyhow::Result<AgentStart> {
-    await_start_with(herdr, host, workspace_id, pane_id, &Timing::from_env()?)
+    await_start_with(herdr, host, tab_id, pane_id, &Timing::from_env()?)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -69,7 +69,7 @@ impl Timing {
 fn await_start_with(
     herdr: &Herdr,
     host: &Host,
-    workspace_id: &str,
+    tab_id: &str,
     pane_id: &str,
     timing: &Timing,
 ) -> anyhow::Result<AgentStart> {
@@ -85,7 +85,7 @@ fn await_start_with(
                 };
                 bail!(
                     "agent in pane {pane_id} on {} did not start within {} s{silent}; \
-                     workspace {workspace_id} is left open for inspection",
+                     tab {tab_id} is left open for inspection",
                     host.name,
                     timing.timeout.as_secs()
                 )
@@ -295,7 +295,7 @@ mod tests {
         ]));
         let herdr = Herdr::with_session(fake.clone(), "flow");
 
-        let start = await_start_with(&herdr, &host(), "w3", PANE, &fast()).unwrap();
+        let start = await_start_with(&herdr, &host(), "w3:t1", PANE, &fast()).unwrap();
 
         assert!(matches!(start, AgentStart::Running), "{start:?}");
         let calls = fake.calls();
@@ -323,11 +323,11 @@ mod tests {
         let timing = fast();
 
         let started = std::time::Instant::now();
-        let err = await_start_with(&herdr, &host(), "w3", PANE, &timing).unwrap_err();
+        let err = await_start_with(&herdr, &host(), "w3:t1", PANE, &timing).unwrap_err();
 
         let err = format!("{err:#}");
         assert!(err.contains("did not start within"), "{err}");
-        assert!(err.contains("workspace w3 is left open"), "{err}");
+        assert!(err.contains("tab w3:t1 is left open"), "{err}");
         assert!(
             started.elapsed() >= timing.timeout,
             "{:?}",
@@ -347,7 +347,7 @@ mod tests {
         }]));
         let herdr = Herdr::with_session(fake.clone(), "flow");
 
-        let err = await_start_with(&herdr, &host(), "w3", PANE, &fast()).unwrap_err();
+        let err = await_start_with(&herdr, &host(), "w3:t1", PANE, &fast()).unwrap_err();
 
         assert!(format!("{err:#}").contains("invalid_target"), "{err:#}");
         assert_eq!(fake.calls().len(), 1);
@@ -362,7 +362,7 @@ mod tests {
         let fake = Arc::new(FakeRunner::new(vec![silent, wait_reports("idle")]));
         let herdr = Herdr::with_session(fake.clone(), "flow");
 
-        let start = await_start_with(&herdr, &host(), "w3", PANE, &fast()).unwrap();
+        let start = await_start_with(&herdr, &host(), "w3:t1", PANE, &fast()).unwrap();
 
         assert!(matches!(start, AgentStart::Running), "{start:?}");
         assert_eq!(wait_timeouts(&fake).len(), 2);
@@ -377,14 +377,14 @@ mod tests {
         }]));
         let herdr = Herdr::with_session(fake.clone(), "flow");
 
-        let err = await_start_with(&herdr, &host(), "w3", PANE, &fast()).unwrap_err();
+        let err = await_start_with(&herdr, &host(), "w3:t1", PANE, &fast()).unwrap_err();
 
         let err = format!("{err:#}");
         assert!(
             err.contains("did not start within 0 s; herdr gave no answer to at least one wait;"),
             "{err}"
         );
-        assert!(err.contains("workspace w3 is left open"), "{err}");
+        assert!(err.contains("tab w3:t1 is left open"), "{err}");
     }
 
     #[test]
@@ -396,7 +396,7 @@ mod tests {
         }]));
         let herdr = Herdr::with_session(fake.clone(), "flow");
 
-        let err = await_start_with(&herdr, &host(), "w3", PANE, &fast()).unwrap_err();
+        let err = await_start_with(&herdr, &host(), "w3:t1", PANE, &fast()).unwrap_err();
 
         assert!(format!("{err:#}").contains("socket closed"), "{err:#}");
         assert_eq!(fake.calls().len(), 1);

@@ -186,6 +186,7 @@ impl Fixture {
                 status.herdr = Some(HerdrTarget {
                     host: "host-b".to_owned(),
                     workspace_id: "w5".to_owned(),
+                    tab_id: String::new(),
                     pane_id: pane_id.to_owned(),
                     agent: "claude".to_owned(),
                     session: session.to_owned(),
@@ -204,6 +205,7 @@ fn hand(pane_id: &str, title: &str) -> Value {
     json!({
         "agent": "claude", "agent_status": "idle", "cwd": "/work/other",
         "pane_id": pane_id, "terminal_title_stripped": title, "workspace_id": "w5",
+        "tab_id": "w5:t2",
     })
 }
 
@@ -312,6 +314,7 @@ fn adopt_takes_over_a_hand_session_as_a_task() {
         Some(HerdrTarget {
             host: "host-b".to_owned(),
             workspace_id: "w5".to_owned(),
+            tab_id: "w5:t2".to_owned(),
             pane_id: "w5:p2".to_owned(),
             agent: "claude".to_owned(),
             session: "default".to_owned(),
@@ -518,8 +521,9 @@ fn adopt_refuses_a_pane_an_open_task_runs_in() {
     let fx = Fixture::new();
     fx.task_in("default", "w5:p2");
     let mut script = host_b_lists(&[hand("w5:p2", "Fix links")]);
-    let labelled = json!({"id": "cli:workspace:list", "result": {"type": "workspace_list",
-        "workspaces": [{"workspace_id": "w5", "label": format!("Build feature · {DISPATCHED}")}]}});
+    let labelled = json!({"id": "cli:tab:list", "result": {"type": "tab_list",
+        "tabs": [{"tab_id": "w5:t2", "workspace_id": "w5",
+            "label": format!("Build feature · {DISPATCHED}")}]}});
     script.push(on("host-b", &labelled.to_string()));
 
     fx.flow(&script)

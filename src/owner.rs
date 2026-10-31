@@ -1,7 +1,7 @@
 //! Who a herdr agent belongs to: the supervisor, a task's worker, or nobody flow manages. herdr
 //! reuses pane and workspace ids after a server restart, so the Claude Code session id herdr
-//! reports decides. A pane decides only for an agent herdr reports no id for: a task's pane under
-//! the workspace label naming the task, or under any label for a task adopted from a session that
+//! reports decides. A pane decides only for an agent herdr reports no id for: a task's pane in a
+//! tab labelled with the task's id, or under any label for a task adopted from a session that
 //! reported no id; else the lock's pane, which `flow up` ran in, holds the supervisor.
 
 use jiff::Timestamp;
@@ -69,14 +69,13 @@ fn in_pane(host: &str, agent: &Agent, target: &HerdrTarget) -> bool {
     target.is(host, &agent.session, &agent.pane_id)
 }
 
-/// Whether an agent with no id in `task`'s pane is the task's only under a workspace label
-/// naming it: the task was dispatched, or adopted from a session that reported an id.
+/// Whether an agent with no id in `task`'s pane is the task's only under a tab label naming it: the task was dispatched, or adopted from a session that reported an id.
 fn label_decides((record, status): &(TaskRecord, Status)) -> bool {
     record.origin == Origin::Dispatched || status.claude_session.is_some()
 }
 
 /// Whether `task` records `agent`'s pane as its target and, where `label_decides`, the agent's
-/// workspace label names the task.
+/// tab label names the task.
 fn claims(host: &str, agent: &Agent, task: &(TaskRecord, Status)) -> bool {
     let (record, status) = task;
     status
@@ -85,12 +84,12 @@ fn claims(host: &str, agent: &Agent, task: &(TaskRecord, Status)) -> bool {
         .is_some_and(|target| in_pane(host, agent, target))
         && (!label_decides(task)
             || agent
-                .workspace_label
+                .tab_label
                 .as_deref()
                 .is_some_and(|label| herdr::label_names_task(label, &record.id)))
 }
 
-/// Whether `agent`'s workspace label can decide its owner: herdr reports no id for it, and a task
+/// Whether `agent`'s tab label can decide its owner: herdr reports no id for it, and a task
 /// whose label decides records its pane.
 pub fn needs_label(host: &str, agent: &Agent, tasks: &[(TaskRecord, Status)]) -> bool {
     agent.agent_session_id.is_none()
@@ -104,8 +103,8 @@ pub fn needs_label(host: &str, agent: &Agent, tasks: &[(TaskRecord, Status)]) ->
         })
 }
 
-/// Labels `agents`, listed in `herdr`'s session on `host`, with one workspace listing when any
-/// of them `needs_label`.
+/// Labels `agents`, listed in `herdr`'s session on `host`, with one tab listing when any of them
+/// `needs_label`.
 pub fn label_where_needed(
     herdr: &Herdr,
     host: &Host,
@@ -116,14 +115,14 @@ pub fn label_where_needed(
         .iter()
         .any(|agent| needs_label(&host.name, agent, tasks))
     {
-        let workspaces = herdr.workspaces_if_running(host)?.unwrap_or_default();
-        herdr::label_agents(&workspaces, agents);
+        let tabs = herdr.tabs_if_running(host)?.unwrap_or_default();
+        herdr::label_agents(&tabs, agents);
     }
     Ok(())
 }
 
 /// The tasks among `tasks` whose recorded pane on `host` holds one of `agents` with no id under
-/// a workspace label naming another, where the label decides, with the target and why: herdr
+/// a tab label naming another, where the label decides, with the target and why: herdr
 /// reused the pane.
 pub fn reused_targets(
     host: &str,
@@ -135,7 +134,7 @@ pub fn reused_targets(
         .iter()
         .filter(|agent| agent.agent_session_id.is_none())
     {
-        let Some(label) = agent.workspace_label.as_deref() else {
+        let Some(label) = agent.tab_label.as_deref() else {
             continue;
         };
         for task @ (record, status) in tasks {
@@ -148,9 +147,9 @@ pub fn reused_targets(
             };
             if label_decides(task) && !herdr::label_names_task(label, &record.id) {
                 let why = format!(
-                    "herdr reused pane {} on {host}: its workspace {} is labelled \"{label}\", \
-                     not task {}'s",
-                    agent.pane_id, agent.workspace_id, record.id
+                    "herdr reused pane {} on {host}: its tab {} is labelled \"{label}\", not \
+                     task {}'s",
+                    agent.pane_id, agent.tab_id, record.id
                 );
                 reused.push((record.id.clone(), target.clone(), why));
             }
@@ -159,7 +158,7 @@ pub fn reused_targets(
     reused
 }
 
-/// Clears task `id`'s herdr target if it is still `target`, as for a workspace already gone, and
+/// Clears task `id`'s herdr target if it is still `target`, as for a tab already gone, and
 /// logs `why` as a `target.retired` event; `false` when the target had changed.
 pub fn retire_target(
     store: &Store,
@@ -206,6 +205,7 @@ mod tests {
         HerdrTarget {
             host: "host-a".to_owned(),
             workspace_id: "w1".to_owned(),
+            tab_id: String::new(),
             pane_id: pane_id.to_owned(),
             agent: "claude".to_owned(),
             session: "default".to_owned(),
@@ -216,19 +216,20 @@ mod tests {
         Agent {
             pane_id: pane_id.to_owned(),
             workspace_id: "w1".to_owned(),
+            tab_id: String::new(),
             agent: "claude".to_owned(),
             status: AgentStatus::Idle,
             cwd: PathBuf::from("/work/repo"),
             title: String::new(),
             session: "default".to_owned(),
             agent_session_id: session_id.map(str::to_owned),
-            workspace_label: Some("a task · aaaaaaab".to_owned()),
+            tab_label: Some("a task · aaaaaaab".to_owned()),
         }
     }
 
     fn labelled(label: Option<&str>, agent: Agent) -> Agent {
         Agent {
-            workspace_label: label.map(str::to_owned),
+            tab_label: label.map(str::to_owned),
             ..agent
         }
     }
@@ -368,14 +369,14 @@ mod tests {
                 is_task("aaaaaaab"),
             ),
             (
-                "no id under a workspace label naming another",
+                "no id under a tab label naming another",
                 labelled(Some("Notes"), agent("w1:p2", None)),
                 None,
                 vec![done(Some("w1:p2"), Some("s-w"))],
                 Owner::Observed,
             ),
             (
-                "no id under a workspace label flow did not look up",
+                "no id under a tab label flow did not look up",
                 labelled(None, agent("w1:p2", None)),
                 None,
                 vec![working(Some("w1:p2"), None)],

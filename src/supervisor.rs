@@ -127,6 +127,7 @@ mod tests {
             herdr: HerdrTarget {
                 host: "host-b".to_owned(),
                 workspace_id: "w1".to_owned(),
+                tab_id: String::new(),
                 pane_id: "w1:p1".to_owned(),
                 agent: "claude".to_owned(),
                 session: "default".to_owned(),

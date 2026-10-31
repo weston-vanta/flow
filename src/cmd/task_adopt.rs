@@ -181,6 +181,7 @@ fn take_over(
         status.herdr = Some(HerdrTarget {
             host: host.name.clone(),
             workspace_id: agent.workspace_id.clone(),
+            tab_id: agent.tab_id.clone(),
             pane_id: agent.pane_id.clone(),
             agent: agent.agent.clone(),
             session: agent.session.clone(),
@@ -292,13 +293,14 @@ mod tests {
         Agent {
             pane_id: "w5:p2".to_owned(),
             workspace_id: "w5".to_owned(),
+            tab_id: String::new(),
             agent: kind.to_owned(),
             status: AgentStatus::Idle,
             cwd: PathBuf::from(cwd),
             title: "Fix links".to_owned(),
             session: "default".to_owned(),
             agent_session_id: session_id.map(str::to_owned),
-            workspace_label: None,
+            tab_label: None,
         }
     }
 

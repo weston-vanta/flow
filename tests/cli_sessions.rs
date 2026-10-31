@@ -121,6 +121,7 @@ impl Fixture {
                 status.herdr = Some(HerdrTarget {
                     host: "host-a".to_owned(),
                     workspace_id: "w1".to_owned(),
+                    tab_id: String::new(),
                     pane_id: "w1:p1".to_owned(),
                     agent: "claude".to_owned(),
                     session: SESSION.to_owned(),
@@ -814,6 +815,7 @@ impl Fixture {
         let target = |pane_id: &str| HerdrTarget {
             host: "host-a".to_owned(),
             workspace_id: pane_id.split(':').next().unwrap().to_owned(),
+            tab_id: String::new(),
             pane_id: pane_id.to_owned(),
             agent: "claude".to_owned(),
             session: "default".to_owned(),
@@ -988,17 +990,18 @@ fn an_agent_with_no_session_in_the_supervisors_pane_is_the_supervisor() {
 }
 
 /// One agent herdr reports no session id for, in task `TASK_ID`'s recorded pane `w2:p1` of the
-/// `default` session, and the workspace list labelling `w2` as `label`.
+/// `default` session, and the tab list labelling its tab `w2:t1` as `label`.
 fn idless_in_task_pane(label: &str) -> [Value; 3] {
     let agents = json!({"id": "cli:agent:list", "result": {"type": "agent_list", "agents": [
         {"agent": "claude", "agent_status": "idle", "cwd": "/work/repo.wt/feature",
-         "pane_id": "w2:p1", "terminal_title_stripped": "Notes", "workspace_id": "w2"}]}});
-    let workspaces = json!({"id": "cli:workspace:list", "result": {"type": "workspace_list",
-        "workspaces": [{"workspace_id": "w2", "label": label}]}});
+         "pane_id": "w2:p1", "tab_id": "w2:t1", "terminal_title_stripped": "Notes",
+         "workspace_id": "w2"}]}});
+    let tabs = json!({"id": "cli:tab:list", "result": {"type": "tab_list",
+        "tabs": [{"tab_id": "w2:t1", "workspace_id": "w2", "label": label}]}});
     [
         on("host-a", SERVER_RUNNING),
         on("host-a", &agents.to_string()),
-        on("host-a", &workspaces.to_string()),
+        on("host-a", &tabs.to_string()),
     ]
 }
 
@@ -1013,7 +1016,7 @@ fn owners(json_out: &str) -> Vec<Value> {
 }
 
 #[test]
-fn an_agent_without_an_id_under_a_workspace_label_naming_another_retires_the_target() {
+fn an_agent_without_an_id_under_a_tab_label_naming_another_retires_the_target() {
     let fx = Fixture::new();
     fx.single_host();
     fx.sharing_default();
@@ -1038,7 +1041,7 @@ fn an_agent_without_an_id_under_a_workspace_label_naming_another_retires_the_tar
     assert_eq!(retired.kind, "target.retired");
     assert_eq!(
         retired.data["reason"],
-        "herdr reused pane w2:p1 on host-a: its workspace w2 is labelled \"My notes\", not task \
+        "herdr reused pane w2:p1 on host-a: its tab w2:t1 is labelled \"My notes\", not task \
          aaaaaaab's"
     );
     fx.flow(&[])
@@ -1049,7 +1052,7 @@ fn an_agent_without_an_id_under_a_workspace_label_naming_another_retires_the_tar
 }
 
 #[test]
-fn an_agent_without_an_id_under_its_tasks_workspace_label_is_the_tasks() {
+fn an_agent_without_an_id_under_its_tasks_tab_label_is_the_tasks() {
     let fx = Fixture::new();
     fx.single_host();
     fx.sharing_default();

@@ -1,5 +1,5 @@
-//! `flow dispatch`: creates a task and starts its worker in a herdr pane on the chosen host, in
-//! an existing directory, a new worktree of a configured repo, or the task's own work directory;
+//! `flow dispatch`: creates a task and starts its worker in a tab of its own in the `flow` herdr
+//! workspace on the chosen host, in an existing directory, a new worktree of a configured repo, or the task's own work directory;
 //! from a brief given here or from a pending dispatch request, which it consumes.
 
 use std::path::{Path, PathBuf};
@@ -14,7 +14,7 @@ use serde_json::json;
 use super::Refused;
 use crate::harness::handshake::{self, AgentStart};
 use crate::harness::{ClaudeAdapter, HarnessAdapter, brief};
-use crate::herdr::{self, Agent, Herdr};
+use crate::herdr::{self, Agent, Herdr, NewTab};
 use crate::host;
 use crate::inventory;
 use crate::paths::{STATE_ENV, StateDir};
@@ -328,7 +328,7 @@ fn refuse_shared_dir(agents: &[Agent], host: &Host, dir: &Path) -> anyhow::Resul
     .into())
 }
 
-/// Opens a workspace for the task, records it as the task's herdr target, and launches the
+/// Opens a tab for the task, records its pane as the task's herdr target, and launches the
 /// worker there as `env FLOW_STATE=<state_root> [<harness env>] <harness argv>`: herdr hands
 /// panes the environment of whoever started its server, which may hold another FLOW_STATE.
 /// Returns the worker's pane and how it started.
@@ -354,13 +354,17 @@ fn start_worker(
     );
     argv.extend(launch.argv);
 
-    let label = herdr::task_workspace_label(&rec.title, &rec.id);
-    let (workspace_id, pane_id) = herdr.create_workspace(host, &rec.cwd, &label)?;
+    let NewTab {
+        workspace_id,
+        tab_id,
+        pane_id,
+    } = open_tab(herdr, host, rec)?;
     store.set_status(&rec.id, |status| {
         status.state = State::Working;
         status.herdr = Some(HerdrTarget {
             host: host.name.clone(),
             workspace_id: workspace_id.clone(),
+            tab_id: tab_id.clone(),
             pane_id: pane_id.clone(),
             agent: adapter.kind().to_owned(),
             session: herdr.session().to_owned(),
@@ -370,10 +374,10 @@ fn start_worker(
         store,
         &rec.id,
         "worker.started",
-        json!({"pane_id": pane_id, "workspace_id": workspace_id, "argv": argv}),
+        json!({"pane_id": pane_id, "tab_id": tab_id, "workspace_id": workspace_id, "argv": argv}),
     )?;
     herdr.pane_run(host, &pane_id, &argv)?;
-    let start = handshake::await_start(herdr, host, &workspace_id, &pane_id)?;
+    let start = handshake::await_start(herdr, host, &tab_id, &pane_id)?;
     if let AgentStart::BlockedAtStart { pane_text } = &start {
         append_event(
             store,
@@ -383,6 +387,22 @@ fn start_worker(
         )?;
     }
     Ok((pane_id, start))
+}
+
+/// Opens task `rec`'s tab, labelled with its title and id, in the `flow` workspace on `host`,
+/// creating that workspace when herdr lists none, in which case its first tab becomes the task's.
+fn open_tab(herdr: &Herdr, host: &Host, rec: &TaskRecord) -> anyhow::Result<NewTab> {
+    let label = herdr::task_tab_label(&rec.title, &rec.id);
+    let flow = herdr
+        .workspaces(host)?
+        .into_iter()
+        .find(|workspace| workspace.label == herdr::FLOW_WORKSPACE);
+    if let Some(flow) = flow {
+        return herdr.create_tab(host, &flow.workspace_id, &rec.cwd, &label);
+    }
+    let tab = herdr.create_workspace(host, &rec.cwd, herdr::FLOW_WORKSPACE)?;
+    herdr.rename_tab(host, &tab.tab_id, &label)?;
+    Ok(tab)
 }
 
 /// Logs the failure and holds the task for the supervisor, so a half-started task is visible.

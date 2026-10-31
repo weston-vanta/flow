@@ -22,6 +22,10 @@ const AGENT_LIST: &str = include_str!("fixtures/herdr/agent_list.json");
 const AGENT_GET: &str = include_str!("fixtures/herdr/agent_get.json");
 const AGENT_WAIT_TIMEOUT: &str = include_str!("fixtures/herdr/agent_wait_timeout.json");
 const WORKSPACE_CREATE: &str = include_str!("fixtures/herdr/workspace_create.json");
+const TAB_CREATE: &str = include_str!("fixtures/herdr/tab_create.json");
+const TAB_RENAME: &str = include_str!("fixtures/herdr/tab_rename.json");
+const NO_WORKSPACES: &str =
+    r#"{"id":"cli:workspace:list","result":{"type":"workspace_list","workspaces":[]}}"#;
 const NO_AGENTS: &str = r#"{"id":"cli:agent:list","result":{"agents":[],"type":"agent_list"}}"#;
 const PANE_RUN_OK: &str = r#"{"id":"cli:pane:run","result":{"type":"ok"}}"#;
 const SERVER_RUNNING: &str = "status: running\nversion: 0.9.5\nendpoint_compatible: yes\n\
@@ -30,8 +34,9 @@ const SERVER_RUNNING: &str = "status: running\nversion: 0.9.5\nendpoint_compatib
 
 /// The directory a scripted `workspace create` reports, and the one most tests dispatch into.
 const WORKTREE: &str = "/workspaces/acme-worktrees/search-index";
-/// The pane and workspace a scripted `workspace create` returns.
+/// The pane, tab and workspace a scripted `workspace create` returns.
 const PANE: &str = "w3:p1";
+const TAB: &str = "w3:t1";
 const WORKSPACE: &str = "w3";
 
 /// What `flow dispatch` adds when run outside the supervisor's session.
@@ -237,7 +242,9 @@ fn starts_working(before: Vec<Value>) -> Vec<Value> {
     script.extend([
         ok(SERVER_RUNNING),
         ok(NO_AGENTS),
+        ok(NO_WORKSPACES),
         ok(WORKSPACE_CREATE),
+        ok(TAB_RENAME),
         ok(PANE_RUN_OK),
         wait_reports("working"),
     ]);
@@ -318,7 +325,9 @@ fn dispatch_allows_shared_dir_when_asked() {
     let shared = "/workspaces/acme-worktrees/login-form";
     let script = [
         ok(SERVER_RUNNING),
+        ok(NO_WORKSPACES),
         ok(WORKSPACE_CREATE),
+        ok(TAB_RENAME),
         ok(PANE_RUN_OK),
         wait_reports("idle"),
     ];
@@ -396,8 +405,20 @@ fn dispatch_creates_task_and_starts_agent() {
             "--cwd",
             WORKTREE,
             "--label",
-            format!("Rebuild the search index · {id}").as_str(),
+            "flow",
             "--no-focus"
+        ]
+    );
+    assert_eq!(
+        *herdr_calls(&calls, &["tab", "rename"])[0],
+        [
+            "herdr",
+            "--session",
+            "default",
+            "tab",
+            "rename",
+            TAB,
+            format!("Rebuild the search index · {id}").as_str(),
         ]
     );
     let runs = herdr_calls(&calls, &["pane", "run"]);
@@ -447,6 +468,7 @@ fn dispatch_creates_task_and_starts_agent() {
         Some(HerdrTarget {
             host: "host-a".to_owned(),
             workspace_id: WORKSPACE.to_owned(),
+            tab_id: TAB.to_owned(),
             pane_id: PANE.to_owned(),
             agent: "claude".to_owned(),
             session: "default".to_owned(),
@@ -473,6 +495,7 @@ fn dispatch_creates_task_and_starts_agent() {
         .expect("worker.started event");
     assert_eq!(started.data["pane_id"], PANE);
     assert_eq!(started.data["workspace_id"], WORKSPACE);
+    assert_eq!(started.data["tab_id"], TAB);
     assert_eq!(started.data["argv"][0], "env");
     assert_eq!(
         started.data["argv"][1],
@@ -493,6 +516,68 @@ fn dispatch_creates_task_and_starts_agent() {
     assert!(
         status_out.starts_with(&format!("{id}  working  host-a  {PANE}  ")),
         "{status_out}"
+    );
+}
+
+#[test]
+fn dispatch_opens_a_tab_in_the_hosts_flow_workspace_when_there_is_one() {
+    let fx = Fixture::new();
+    let workspaces = json!({"id": "cli:workspace:list", "result": {"type": "workspace_list",
+        "workspaces": [{"workspace_id": "w2", "label": "Notes"},
+                       {"workspace_id": "w1", "label": "flow"}]}});
+    let script = [
+        ok(SERVER_RUNNING),
+        ok(NO_AGENTS),
+        ok(&workspaces.to_string()),
+        ok(TAB_CREATE),
+        ok(PANE_RUN_OK),
+        wait_reports("working"),
+    ];
+
+    let out = fx
+        .flow(&script)
+        .args(dispatch_args(&["--dir", WORKTREE]))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let id = fx.only_task();
+    assert!(
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .starts_with(&format!("dispatched {id} on host-a (w1:p2)\n")),
+    );
+    let calls = fx.calls();
+    assert!(herdr_calls(&calls, &["workspace", "create"]).is_empty());
+    assert!(herdr_calls(&calls, &["tab", "rename"]).is_empty());
+    assert_eq!(
+        *herdr_calls(&calls, &["tab", "create"])[0],
+        [
+            "herdr",
+            "--session",
+            "default",
+            "tab",
+            "create",
+            "--workspace",
+            "w1",
+            "--cwd",
+            WORKTREE,
+            "--label",
+            format!("Rebuild the search index · {id}").as_str(),
+            "--no-focus"
+        ]
+    );
+    assert_eq!(herdr_calls(&calls, &["pane", "run"])[0][5], "w1:p2");
+    let (_, status) = fx.store().task(&id).unwrap();
+    let target = status.herdr.unwrap();
+    assert_eq!(
+        (
+            target.workspace_id.as_str(),
+            target.tab_id.as_str(),
+            target.pane_id.as_str()
+        ),
+        ("w1", "w1:t2", "w1:p2")
     );
 }
 
@@ -557,7 +642,9 @@ fn dispatch_answers_the_trust_dialog() {
     let script = vec![
         ok(SERVER_RUNNING),
         ok(NO_AGENTS),
+        ok(NO_WORKSPACES),
         ok(WORKSPACE_CREATE),
+        ok(TAB_RENAME),
         ok(PANE_RUN_OK),
         wait_reports("blocked"),
         ok(TRUST_DIALOG),
@@ -598,7 +685,9 @@ fn dispatch_says_once_that_it_is_waiting_for_a_slow_worker() {
     let mut script = vec![
         ok(SERVER_RUNNING),
         ok(NO_AGENTS),
+        ok(NO_WORKSPACES),
         ok(WORKSPACE_CREATE),
+        ok(TAB_RENAME),
         ok(PANE_RUN_OK),
     ];
     // About 4 s of polling at 400 ms, past the 3 s after which the wait is announced.
@@ -632,7 +721,9 @@ fn dispatch_waits_until_herdr_sees_the_worker() {
     let script = vec![
         ok(SERVER_RUNNING),
         ok(NO_AGENTS),
+        ok(NO_WORKSPACES),
         ok(WORKSPACE_CREATE),
+        ok(TAB_RENAME),
         ok(PANE_RUN_OK),
         failed(not_found),
         failed(not_found),
@@ -670,7 +761,9 @@ fn dispatch_retries_a_wait_that_gives_no_answer() {
     let script = vec![
         ok(SERVER_RUNNING),
         ok(NO_AGENTS),
+        ok(NO_WORKSPACES),
         ok(WORKSPACE_CREATE),
+        ok(TAB_RENAME),
         ok(PANE_RUN_OK),
         failed(""),
         failed(""),
@@ -710,7 +803,9 @@ fn dispatch_records_an_unexpected_block_without_sending_keys() {
     let script = vec![
         ok(SERVER_RUNNING),
         ok(NO_AGENTS),
+        ok(NO_WORKSPACES),
         ok(WORKSPACE_CREATE),
+        ok(TAB_RENAME),
         ok(PANE_RUN_OK),
         wait_reports("blocked"),
         ok(pane_text),
@@ -739,7 +834,9 @@ fn dispatch_marks_task_blocked_when_launch_fails() {
     let script = vec![
         ok(SERVER_RUNNING),
         ok(NO_AGENTS),
+        ok(NO_WORKSPACES),
         ok(WORKSPACE_CREATE),
+        ok(TAB_RENAME),
         failed(
             r#"{"error":{"code":"pane_not_found","message":"no such pane"},"id":"cli:pane:run"}"#,
         ),
@@ -784,7 +881,9 @@ fn dispatch_fails_naming_the_pane_when_the_worker_never_starts() {
     let script = vec![
         ok(SERVER_RUNNING),
         ok(NO_AGENTS),
+        ok(NO_WORKSPACES),
         ok(WORKSPACE_CREATE),
+        ok(TAB_RENAME),
         ok(PANE_RUN_OK),
         failed(AGENT_WAIT_TIMEOUT),
     ];
@@ -1163,7 +1262,9 @@ fn dispatch_from_a_request_leaves_it_pending_when_the_start_fails() {
     let script = vec![
         ok(SERVER_RUNNING),
         ok(NO_AGENTS),
+        ok(NO_WORKSPACES),
         ok(WORKSPACE_CREATE),
+        ok(TAB_RENAME),
         ok(PANE_RUN_OK),
         failed(AGENT_WAIT_TIMEOUT),
     ];

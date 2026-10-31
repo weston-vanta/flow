@@ -34,6 +34,8 @@ const TIMEOUT_CODE: &str = "timeout";
 const AGENT_NOT_FOUND_CODE: &str = "agent_not_found";
 /// The `error.code` herdr reports when a target workspace does not exist.
 const WORKSPACE_NOT_FOUND_CODE: &str = "workspace_not_found";
+/// The `error.code` herdr reports when a target tab does not exist.
+const TAB_NOT_FOUND_CODE: &str = "tab_not_found";
 /// The `error.code` herdr reports when no server runs for the session.
 const SERVER_NOT_RUNNING_CODE: &str = "server_not_running";
 /// Not a herdr code: `call_or_code` returns it for a non-zero exit with nothing on stdout or
@@ -77,6 +79,9 @@ impl AgentStatus {
 pub struct Agent {
     pub pane_id: String,
     pub workspace_id: String,
+    /// Empty in inventories cached before flow read it.
+    #[serde(default)]
+    pub tab_id: String,
     /// The agent kind, such as `claude`; empty when herdr has not identified it.
     pub agent: String,
     pub status: AgentStatus,
@@ -89,10 +94,10 @@ pub struct Agent {
     /// The id of the agent's own session, such as Claude Code's session id, as herdr reports
     /// it; `None` when herdr has not reported one.
     pub agent_session_id: Option<String>,
-    /// The label of the agent's workspace, looked up only where it decides the agent's owner
-    /// (see `owner::needs_label`).
+    /// The label of the agent's tab, looked up only where it decides the agent's owner (see
+    /// `owner::needs_label`).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub workspace_label: Option<String>,
+    pub tab_label: Option<String>,
 }
 
 // Response shapes, pinned against `herdr api schema --json` at protocol 22. Every CLI command
@@ -118,12 +123,15 @@ struct AgentResult {
     agent: AgentInfo,
 }
 
-/// `AgentInfo`: `pane_id`, `workspace_id` and `agent_status` are required; `agent`, `cwd`,
-/// `terminal_title`, `terminal_title_stripped` and `agent_session` are nullable.
+/// `AgentInfo`: `pane_id`, `workspace_id`, `tab_id` and `agent_status` are required; `agent`,
+/// `cwd`, `terminal_title`, `terminal_title_stripped` and `agent_session` are nullable. A missing
+/// `tab_id` reads as empty, which names no tab.
 #[derive(Deserialize)]
 struct AgentInfo {
     pane_id: String,
     workspace_id: String,
+    #[serde(default)]
+    tab_id: String,
     agent_status: AgentStatus,
     agent: Option<String>,
     cwd: Option<PathBuf>,
@@ -158,6 +166,7 @@ impl AgentInfo {
         Agent {
             pane_id: self.pane_id,
             workspace_id: self.workspace_id,
+            tab_id: self.tab_id,
             agent: self.agent.unwrap_or_default(),
             status: self.agent_status,
             cwd: self.cwd.unwrap_or_default(),
@@ -167,18 +176,17 @@ impl AgentInfo {
                 .unwrap_or_default(),
             session: session.to_owned(),
             agent_session_id: self.agent_session.and_then(AgentSessionInfo::id),
-            workspace_label: None,
+            tab_label: None,
         }
     }
 }
 
-/// `workspace create` → `workspace_created`, whose required fields include
-/// `workspace: WorkspaceInfo` (required `workspace_id`) and `root_pane: PaneInfo` (required
-/// `pane_id`). The root pane is the workspace's only pane at creation. `workspace get` returns
-/// a `WorkspaceInfo`, which carries no pane ids, so the create response is the one source.
+/// `workspace create` → `workspace_created` and `tab create` → `tab_created`, whose required
+/// fields include `tab: TabInfo` and `root_pane: PaneInfo` (required `pane_id`); a workspace's
+/// `TabInfo` names it. The root pane is the tab's only pane at creation.
 #[derive(Deserialize)]
-struct WorkspaceCreated {
-    workspace: WorkspaceIds,
+struct TabCreated {
+    tab: Tab,
     root_pane: PaneIds,
 }
 
@@ -196,43 +204,70 @@ pub struct Workspace {
     pub label: String,
 }
 
-impl Workspace {
-    /// Whether the label names task `id`: `<title> · <id>`, as dispatch labels a task's
-    /// workspace.
-    pub fn names_task(&self, id: &str) -> bool {
-        label_names_task(&self.label, id)
+/// `tab list` → `tab_list`; `tab rename` → `tab_info`, carrying one `tab`.
+#[derive(Deserialize)]
+struct TabList {
+    tabs: Vec<Tab>,
+}
+
+#[derive(Deserialize)]
+struct TabResult {
+    #[expect(dead_code, reason = "declared so a response without it fails to parse")]
+    tab: Tab,
+}
+
+/// A herdr tab: its id, its workspace's, and its label (`TabInfo`, all required).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Tab {
+    pub tab_id: String,
+    pub workspace_id: String,
+    pub label: String,
+}
+
+/// A tab just created, with its only pane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewTab {
+    pub workspace_id: String,
+    pub tab_id: String,
+    pub pane_id: String,
+}
+
+impl From<TabCreated> for NewTab {
+    fn from(created: TabCreated) -> NewTab {
+        NewTab {
+            workspace_id: created.tab.workspace_id,
+            tab_id: created.tab.tab_id,
+            pane_id: created.root_pane.pane_id,
+        }
     }
 }
 
-/// Whether workspace label `label` names task `id`: `<title> · <id>`.
+/// The label of the workspace on each host that holds a tab per task.
+pub const FLOW_WORKSPACE: &str = "flow";
+
+/// Whether tab label `label` names task `id`: `<title> · <id>`.
 pub fn label_names_task(label: &str, id: &str) -> bool {
     label
         .strip_suffix(id)
         .is_some_and(|title| title.ends_with(TASK_LABEL_SEPARATOR))
 }
 
-/// Sets each of `agents`' workspace label from `workspaces`.
-pub fn label_agents(workspaces: &[Workspace], agents: &mut [Agent]) {
+/// Sets each of `agents`' tab label from `tabs`.
+pub fn label_agents(tabs: &[Tab], agents: &mut [Agent]) {
     for agent in agents {
-        agent.workspace_label = workspaces
+        agent.tab_label = tabs
             .iter()
-            .find(|workspace| workspace.workspace_id == agent.workspace_id)
-            .map(|workspace| workspace.label.clone());
+            .find(|tab| tab.tab_id == agent.tab_id)
+            .map(|tab| tab.label.clone());
     }
 }
 
 const TASK_LABEL_SEPARATOR: &str = " · ";
 
-/// The label of task `id`'s workspace: its title, readable in herdr's sidebar, then its id, which
-/// `flow task close` checks before closing the workspace, since herdr reuses workspace ids. herdr
-/// keeps a label across a server restart, unlike workspace metadata.
-pub fn task_workspace_label(title: &str, id: &str) -> String {
+/// The label of task `id`'s tab: its title, readable in herdr, then its id, which `flow task
+/// close` checks before closing the tab, since herdr reuses tab ids.
+pub fn task_tab_label(title: &str, id: &str) -> String {
     format!("{title}{TASK_LABEL_SEPARATOR}{id}")
-}
-
-#[derive(Deserialize)]
-struct WorkspaceIds {
-    workspace_id: String,
 }
 
 #[derive(Deserialize)]
@@ -258,7 +293,7 @@ struct ErrorBody {
     code: String,
 }
 
-/// `workspace close` → `ok`.
+/// `workspace close`, `tab close` → `ok`.
 #[derive(Deserialize)]
 struct Ack {}
 
@@ -385,18 +420,11 @@ impl Herdr {
             .collect()
     }
 
-    /// Creates a workspace rooted at `cwd` without moving the user's focus, and returns its
-    /// `(workspace_id, pane_id)` where the pane is the workspace's first and only pane.
-    pub fn create_workspace(
-        &self,
-        host: &Host,
-        cwd: &Path,
-        label: &str,
-    ) -> anyhow::Result<(String, String)> {
-        let cwd = cwd
-            .to_str()
-            .ok_or_else(|| anyhow!("workspace cwd {} is not UTF-8", cwd.display()))?;
-        let created: WorkspaceCreated = self.call_json(
+    /// Creates a workspace labelled `label` rooted at `cwd` without moving the user's focus, and
+    /// returns its first tab and that tab's only pane.
+    pub fn create_workspace(&self, host: &Host, cwd: &Path, label: &str) -> anyhow::Result<NewTab> {
+        let cwd = utf8_path(cwd)?;
+        let created: TabCreated = self.call_json(
             host,
             &self.argv(&[
                 "workspace",
@@ -408,7 +436,62 @@ impl Herdr {
                 "--no-focus",
             ]),
         )?;
-        Ok((created.workspace.workspace_id, created.root_pane.pane_id))
+        Ok(created.into())
+    }
+
+    /// Creates a tab labelled `label` in `workspace_id`, rooted at `cwd`, without moving the
+    /// user's focus, and returns it with its only pane.
+    pub fn create_tab(
+        &self,
+        host: &Host,
+        workspace_id: &str,
+        cwd: &Path,
+        label: &str,
+    ) -> anyhow::Result<NewTab> {
+        let cwd = utf8_path(cwd)?;
+        let created: TabCreated = self.call_json(
+            host,
+            &self.argv(&[
+                "tab",
+                "create",
+                "--workspace",
+                workspace_id,
+                "--cwd",
+                cwd,
+                "--label",
+                label,
+                "--no-focus",
+            ]),
+        )?;
+        Ok(created.into())
+    }
+
+    /// Labels `tab_id` `label`.
+    pub fn rename_tab(&self, host: &Host, tab_id: &str, label: &str) -> anyhow::Result<()> {
+        self.call_json::<TabResult>(host, &self.argv(&["tab", "rename", tab_id, label]))?;
+        Ok(())
+    }
+
+    /// The tabs of every workspace in this session on `host`, or `None` when no server runs for
+    /// the session.
+    pub fn tabs_if_running(&self, host: &Host) -> anyhow::Result<Option<Vec<Tab>>> {
+        let argv = self.argv(&["tab", "list"]);
+        let Some(output) = self.call_unless(host, &argv, SERVER_NOT_RUNNING_CODE)? else {
+            return Ok(None);
+        };
+        let list: TabList = parse_result(host, &argv, &output)?;
+        Ok(Some(list.tabs))
+    }
+
+    /// Closes `tab_id`; `false` when herdr no longer knows it. herdr closes a workspace with its
+    /// last tab.
+    pub fn close_tab(&self, host: &Host, tab_id: &str) -> anyhow::Result<bool> {
+        let argv = self.argv(&["tab", "close", tab_id]);
+        let Some(output) = self.call_unless(host, &argv, TAB_NOT_FOUND_CODE)? else {
+            return Ok(false);
+        };
+        parse_result::<Ack>(host, &argv, &output)?;
+        Ok(true)
     }
 
     /// The workspaces in this session on `host`.
@@ -734,6 +817,7 @@ pub fn remove_machine_argv(id: &str) -> Vec<String> {
 const ENV_MARKER: &str = "HERDR_ENV";
 const PANE_ID_ENV: &str = "HERDR_PANE_ID";
 const WORKSPACE_ID_ENV: &str = "HERDR_WORKSPACE_ID";
+const TAB_ID_ENV: &str = "HERDR_TAB_ID";
 /// The socket of the herdr server whose pane this is.
 const SOCKET_ENV: &str = "HERDR_SOCKET_PATH";
 const SOCKET_FILE: &str = "herdr.sock";
@@ -743,6 +827,8 @@ const SOCKET_FILE: &str = "herdr.sock";
 pub struct InvokingPane {
     pub session: String,
     pub workspace_id: String,
+    /// Empty when herdr does not name it.
+    pub tab_id: String,
     pub pane_id: String,
 }
 
@@ -775,6 +861,7 @@ pub fn invoking_pane() -> anyhow::Result<Option<InvokingPane>> {
     Ok(Some(InvokingPane {
         session,
         workspace_id,
+        tab_id: set(TAB_ID_ENV).unwrap_or_default(),
         pane_id,
     }))
 }
@@ -886,6 +973,11 @@ fn error_code(stderr: &str) -> Option<String> {
     })
 }
 
+fn utf8_path(path: &Path) -> anyhow::Result<&str> {
+    path.to_str()
+        .ok_or_else(|| anyhow!("path {} is not UTF-8", path.display()))
+}
+
 /// `word` as typed into an interactive shell: bare when it has no characters any shell treats
 /// specially, single-quoted otherwise.
 fn shell_word(word: &str) -> Cow<'_, str> {
@@ -925,6 +1017,12 @@ mod tests {
     const AGENT_LIST_SERVER_NOT_RUNNING: &str =
         include_str!("../tests/fixtures/herdr/agent_list_server_not_running.json");
     const WORKSPACE_CREATE: &str = include_str!("../tests/fixtures/herdr/workspace_create.json");
+    const TAB_CREATE: &str = include_str!("../tests/fixtures/herdr/tab_create.json");
+    const TAB_RENAME: &str = include_str!("../tests/fixtures/herdr/tab_rename.json");
+    const TAB_LIST: &str = include_str!("../tests/fixtures/herdr/tab_list.json");
+    const TAB_CLOSE: &str = include_str!("../tests/fixtures/herdr/tab_close.json");
+    const TAB_CLOSE_NOT_FOUND: &str =
+        include_str!("../tests/fixtures/herdr/tab_close_not_found.json");
     const AGENT_WAIT_TIMEOUT: &str =
         include_str!("../tests/fixtures/herdr/agent_wait_timeout.json");
     const PANE_WAIT_OUTPUT_MATCHED: &str =
@@ -990,24 +1088,26 @@ mod tests {
                 Agent {
                     pane_id: "w1:p1".to_owned(),
                     workspace_id: "w1".to_owned(),
+                    tab_id: "w1:t1".to_owned(),
                     agent: "claude".to_owned(),
                     status: AgentStatus::Idle,
                     cwd: PathBuf::from("/workspaces/acme-worktrees/login-form"),
                     title: "Refactor login form".to_owned(),
                     session: "flow".to_owned(),
                     agent_session_id: None,
-                    workspace_label: None,
+                    tab_label: None,
                 },
                 Agent {
                     pane_id: "w2:p1".to_owned(),
                     workspace_id: "w2".to_owned(),
+                    tab_id: "w2:t1".to_owned(),
                     agent: "claude".to_owned(),
                     status: AgentStatus::Working,
                     cwd: PathBuf::from("/workspaces/acme-worktrees/cache-fix"),
                     title: "Fix cache eviction".to_owned(),
                     session: "flow".to_owned(),
                     agent_session_id: Some("00000000-0000-4000-8000-0000000000a2".to_owned()),
-                    workspace_label: None,
+                    tab_label: None,
                 },
             ]
         );
@@ -1340,14 +1440,10 @@ mod tests {
     }
 
     #[test]
-    fn a_task_workspace_label_names_the_task_by_its_id_suffix() {
-        let labelled = |label: &str| Workspace {
-            workspace_id: "w2".to_owned(),
-            label: label.to_owned(),
-        };
-        let label = task_workspace_label("Fix the login form", "aaaaaaab");
+    fn a_task_tab_label_names_the_task_by_its_id_suffix() {
+        let label = task_tab_label("Fix the login form", "aaaaaaab");
         assert_eq!(label, "Fix the login form · aaaaaaab");
-        assert!(labelled(&label).names_task("aaaaaaab"));
+        assert!(label_names_task(&label, "aaaaaaab"));
         for other in [
             "aaaaaaab",
             "Fix the login form",
@@ -1355,8 +1451,118 @@ mod tests {
             "Fix the login form aaaaaaab",
             "xaaaaaaab",
         ] {
-            assert!(!labelled(other).names_task("aaaaaaab"), "{other}");
+            assert!(!label_names_task(other, "aaaaaaab"), "{other}");
         }
+    }
+
+    #[test]
+    fn tabs_list_every_workspaces_tabs_and_label_agents_by_tab() {
+        let (herdr, fake) = herdr(vec![ok(TAB_LIST), failed(AGENT_LIST_SERVER_NOT_RUNNING)]);
+        let tabs = herdr.tabs_if_running(&host()).unwrap().unwrap();
+        assert_eq!(
+            tabs,
+            [
+                Tab {
+                    tab_id: "w1:t1".to_owned(),
+                    workspace_id: "w1".to_owned(),
+                    label: "Fix cache eviction · aaaaaaab".to_owned(),
+                },
+                Tab {
+                    tab_id: "w1:t2".to_owned(),
+                    workspace_id: "w1".to_owned(),
+                    label: "Refactor login form · aaaaaaac".to_owned(),
+                },
+            ]
+        );
+        assert_eq!(herdr.tabs_if_running(&host()).unwrap(), None);
+        assert_eq!(
+            argvs(&fake)[0],
+            words(&["herdr", "--session", "flow", "tab", "list"])
+        );
+
+        let (listing, _) = super::tests::herdr(vec![ok(AGENT_LIST)]);
+        let mut agents = listing.agents(&host()).unwrap();
+        label_agents(&tabs, &mut agents);
+        assert_eq!(
+            agents[0].tab_label.as_deref(),
+            Some("Fix cache eviction · aaaaaaab")
+        );
+        assert_eq!(agents[1].tab_id, "w2:t1");
+        assert_eq!(agents[1].tab_label, None);
+    }
+
+    #[test]
+    fn create_tab_returns_the_tab_and_its_pane() {
+        let (herdr, fake) = herdr(vec![ok(TAB_CREATE)]);
+        let tab = herdr
+            .create_tab(
+                &host(),
+                "w1",
+                Path::new("/workspaces/acme-worktrees/login-form"),
+                "Refactor login form · aaaaaaac",
+            )
+            .unwrap();
+        assert_eq!(
+            tab,
+            NewTab {
+                workspace_id: "w1".to_owned(),
+                tab_id: "w1:t2".to_owned(),
+                pane_id: "w1:p2".to_owned(),
+            }
+        );
+        assert_eq!(
+            argvs(&fake),
+            [words(&[
+                "herdr",
+                "--session",
+                "flow",
+                "tab",
+                "create",
+                "--workspace",
+                "w1",
+                "--cwd",
+                "/workspaces/acme-worktrees/login-form",
+                "--label",
+                "Refactor login form · aaaaaaac",
+                "--no-focus",
+            ])]
+        );
+    }
+
+    #[test]
+    fn rename_tab_passes_the_label_as_one_word() {
+        let (herdr, fake) = herdr(vec![ok(TAB_RENAME)]);
+        herdr
+            .rename_tab(&host(), "w1:t1", "Fix cache eviction · aaaaaaab")
+            .unwrap();
+        assert_eq!(
+            argvs(&fake),
+            [words(&[
+                "herdr",
+                "--session",
+                "flow",
+                "tab",
+                "rename",
+                "w1:t1",
+                "Fix cache eviction · aaaaaaab",
+            ])]
+        );
+    }
+
+    #[test]
+    fn close_tab_reports_a_tab_already_gone() {
+        let (herdr, fake) = herdr(vec![
+            ok(TAB_CLOSE),
+            failed(TAB_CLOSE_NOT_FOUND),
+            failed("boom"),
+        ]);
+        assert!(herdr.close_tab(&host(), "w1:t2").unwrap());
+        assert!(!herdr.close_tab(&host(), "w9:t9").unwrap());
+        assert!(herdr.close_tab(&host(), "w9:t9").is_err());
+        assert_eq!(
+            argvs(&fake)[0],
+            words(&["herdr", "--session", "flow", "tab", "close", "w1:t2"])
+        );
     }
 
     #[test]
@@ -1394,7 +1600,7 @@ mod tests {
     }
 
     #[test]
-    fn create_workspace_returns_workspace_and_root_pane() {
+    fn create_workspace_returns_its_first_tab_and_root_pane() {
         let (herdr, fake) = herdr(vec![ok(WORKSPACE_CREATE)]);
         let ids = herdr
             .create_workspace(
@@ -1403,7 +1609,14 @@ mod tests {
                 "search-index",
             )
             .unwrap();
-        assert_eq!(ids, ("w3".to_owned(), "w3:p1".to_owned()));
+        assert_eq!(
+            ids,
+            NewTab {
+                workspace_id: "w3".to_owned(),
+                tab_id: "w3:t1".to_owned(),
+                pane_id: "w3:p1".to_owned(),
+            }
+        );
         assert_eq!(
             argvs(&fake),
             [words(&[

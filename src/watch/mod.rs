@@ -176,11 +176,11 @@ impl HandSession {
     }
 
     /// Whether `owner`, not the task whose pane this is, rests on evidence: another owner, a
-    /// reported id, or a workspace label that was looked up. An unknown label proves nothing.
+    /// reported id, or a tab label that was looked up. An unknown label proves nothing.
     fn shows_reuse(&self, owner: &Owner) -> bool {
         *owner != Owner::Observed
             || self.agent.agent_session_id.is_some()
-            || self.agent.workspace_label.is_some()
+            || self.agent.tab_label.is_some()
     }
 
     fn is_in(&self, host: &str, session: &str, pane_id: &str) -> bool {
@@ -1174,7 +1174,7 @@ path = "/work/repo"
 default_branch = "main"
 "#;
     const TASK: &str = "aaaaaaab";
-    /// The workspace label dispatch gives `TASK`'s workspace.
+    /// The tab label dispatch gives `TASK`'s tab.
     const TASK_LABEL: &str = "Build feature · aaaaaaab";
     const IDLE: &str = r#"{"id":"cli:agent:wait","result":{"agent":{"agent":"claude","agent_status":"idle","pane_id":"w1:p1","workspace_id":"w1"},"type":"agent_info"}}"#;
     const BLOCKED: &str = r#"{"id":"cli:agent:wait","result":{"agent":{"agent":"claude","agent_status":"blocked","pane_id":"w1:p1","workspace_id":"w1"},"type":"agent_info"}}"#;
@@ -1182,7 +1182,7 @@ default_branch = "main"
     const DONE: &str = r#"{"id":"cli:agent:wait","result":{"agent":{"agent":"claude","agent_status":"done","pane_id":"w1:p1","workspace_id":"w1"},"type":"agent_info"}}"#;
     const NOT_FOUND: &str = r#"{"error":{"code":"agent_not_found","message":"agent target w1:p1 not found"},"id":"cli:agent:wait"}"#;
     const NO_AGENTS: &str = r#"{"id":"cli:agent:list","result":{"agents":[],"type":"agent_list"}}"#;
-    const DEFAULT_AGENTS: &str = r#"{"id":"cli:agent:list","result":{"agents":[{"agent":"claude","agent_status":"idle","cwd":"/work/repo","pane_id":"w1:p1","terminal_title":"✳ Tidy docs","terminal_title_stripped":"Tidy docs","workspace_id":"w1"}],"type":"agent_list"}}"#;
+    const DEFAULT_AGENTS: &str = r#"{"id":"cli:agent:list","result":{"agents":[{"agent":"claude","agent_status":"idle","cwd":"/work/repo","pane_id":"w1:p1","tab_id":"w1:t1","terminal_title":"✳ Tidy docs","terminal_title_stripped":"Tidy docs","workspace_id":"w1"}],"type":"agent_list"}}"#;
     const TIDY_DOCS_BLOCKED: &str = r#"observed-blocked: host-a w1:p1 "Tidy docs""#;
 
     struct Fixture {
@@ -1229,6 +1229,7 @@ default_branch = "main"
                     status.herdr = with_pane.then(|| HerdrTarget {
                         host: "host-a".to_owned(),
                         workspace_id: "w1".to_owned(),
+                        tab_id: String::new(),
                         pane_id: "w1:p1".to_owned(),
                         agent: "claude".to_owned(),
                         session: "flow".to_owned(),
@@ -1260,6 +1261,7 @@ default_branch = "main"
                     status.herdr = Some(HerdrTarget {
                         host: "host-a".to_owned(),
                         workspace_id: "w1".to_owned(),
+                        tab_id: String::new(),
                         pane_id: "w1:p1".to_owned(),
                         agent: "claude".to_owned(),
                         session: "default".to_owned(),
@@ -1288,23 +1290,24 @@ default_branch = "main"
             inv.agents.push(herdr::Agent {
                 pane_id: pane_id.to_owned(),
                 workspace_id: pane_id.split(':').next().unwrap().to_owned(),
+                tab_id: String::new(),
                 agent: "claude".to_owned(),
                 status: herdr::AgentStatus::Idle,
                 cwd: PathBuf::from("/work/repo"),
                 title: title.to_owned(),
                 session: session.to_owned(),
                 agent_session_id: None,
-                workspace_label: None,
+                tab_label: None,
             });
             inventory::save(&self.state, &inv).unwrap();
         }
 
-        /// Records the cached agent in pane `pane_id` on `env_id` under workspace label `label`,
+        /// Records the cached agent in pane `pane_id` on `env_id` under tab label `label`,
         /// as a listing that needed it would.
         fn labelled(&self, env_id: &str, pane_id: &str, label: &str) {
             let mut inv = inventory::load(&self.state, env_id).unwrap().unwrap();
             for agent in inv.agents.iter_mut().filter(|a| a.pane_id == pane_id) {
-                agent.workspace_label = Some(label.to_owned());
+                agent.tab_label = Some(label.to_owned());
             }
             inventory::save(&self.state, &inv).unwrap();
         }
@@ -1354,6 +1357,7 @@ default_branch = "main"
             let target = HerdrTarget {
                 host: "host-a".to_owned(),
                 workspace_id: "w1".to_owned(),
+                tab_id: String::new(),
                 pane_id: pane_id.to_owned(),
                 agent: "claude".to_owned(),
                 session: session.to_owned(),
@@ -1625,15 +1629,15 @@ default_branch = "main"
         assert!(runner.calls()[0].argv.contains(&"default".to_owned()));
     }
 
-    fn task_workspaces(label: &str) -> String {
+    fn task_tabs(label: &str) -> String {
         format!(
-            r#"{{"id":"cli:workspace:list","result":{{"type":"workspace_list","workspaces":[{{"workspace_id":"w1","label":"{label}"}}]}}}}"#
+            r#"{{"id":"cli:tab:list","result":{{"type":"tab_list","tabs":[{{"tab_id":"w1:t1","workspace_id":"w1","label":"{label}"}}]}}}}"#
         )
     }
 
     /// Listings of host-a in which `TASK`'s pane in `flow` holds an agent herdr reports no id
-    /// for, with `workspaces` answering its workspace list, and waits that see it working.
-    fn listing_idless_in_task_pane(workspaces: Scripted) -> Arc<FakeRunner> {
+    /// for, with `tabs` answering its tab list, and waits that see it working.
+    fn listing_idless_in_task_pane(tabs: Scripted) -> Arc<FakeRunner> {
         fake(vec![
             Scripted {
                 repeat: true,
@@ -1645,7 +1649,7 @@ default_branch = "main"
             },
             Scripted {
                 repeat: true,
-                ..workspaces
+                ..tabs
             },
             Scripted {
                 repeat: true,
@@ -1668,8 +1672,8 @@ default_branch = "main"
         fx.task(true);
         let runner = listing_idless_in_task_pane(on(
             "host-a",
-            &["--session", "flow", "workspace", "list"],
-            &task_workspaces("Notes"),
+            &["--session", "flow", "tab", "list"],
+            &task_tabs("Notes"),
         ));
         let lock = lock::acquire(&fx.state, std::process::id())
             .unwrap()
@@ -1696,8 +1700,8 @@ default_branch = "main"
         fx.task(true);
         let runner = listing_idless_in_task_pane(Scripted {
             status: 2,
-            stderr: "workspace list failed".to_owned(),
-            ..on("host-a", &["--session", "flow", "workspace", "list"], "")
+            stderr: "tab list failed".to_owned(),
+            ..on("host-a", &["--session", "flow", "tab", "list"], "")
         });
         let lock = lock::acquire(&fx.state, std::process::id())
             .unwrap()

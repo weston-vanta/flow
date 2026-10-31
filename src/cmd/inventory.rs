@@ -701,13 +701,14 @@ default_branch = "main"
         Agent {
             pane_id: "w1:p2".to_owned(),
             workspace_id: "w1".to_owned(),
+            tab_id: String::new(),
             agent: "claude".to_owned(),
             status,
             cwd: cwd.into(),
             title: title.to_owned(),
             session: session.to_owned(),
             agent_session_id: None,
-            workspace_label: None,
+            tab_label: None,
         }
     }
 

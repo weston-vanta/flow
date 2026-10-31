@@ -1,6 +1,6 @@
-//! `flow task close`: the supervisor retires a task's worker pane by closing its herdr workspace,
-//! only while herdr lists it under a label naming the task and its pane holds the task's worker
-//! or nothing; under another label herdr reused the id. An adopted task's workspace is left open.
+//! `flow task close`: the supervisor retires a task's worker pane by closing its herdr tab, only
+//! while herdr lists it under a label naming the task and its pane holds the task's worker or
+//! nothing; under another label herdr reused the id. An adopted task's tab is left open.
 
 use std::sync::Arc;
 
@@ -22,11 +22,11 @@ use crate::supervisor::{self, Lock};
 
 const EVENT_SOURCE: &str = "supervisor";
 
-/// Closes the herdr workspace of task `id`, appends a `close` event and clears the task's
-/// herdr target, then prints `closed <id> (workspace <ws> on <host>)`, or `closed <id>
-/// (workspace already gone)` when herdr no longer knows the workspace. An adopted task's
-/// workspace is left open, its event marked `workspace_left`, and it prints `closed <id> (pane
-/// left to its owner)`. A workspace herdr lists under another label is left open and the target
+/// Closes the herdr tab of task `id`, appends a `close` event and clears the task's herdr
+/// target, then prints `closed <id> (tab <tab> on <host>)`, or `closed <id> (tab already gone)`
+/// when herdr no longer knows the tab. herdr closes the `flow` workspace with its last tab. An
+/// adopted task's tab is left open, its event marked `workspace_left`, and it prints `closed <id>
+/// (pane left to its owner)`. A tab herdr lists under another label is left open and the target
 /// retired. Refuses a task still open (anything but `done` or `orphaned`) unless `force`, one
 /// with no herdr target, and one whose pane holds another agent.
 pub fn run(state: &StateDir, id: &str, force: bool) -> anyhow::Result<()> {
@@ -47,11 +47,12 @@ pub fn run(state: &StateDir, id: &str, force: bool) -> anyhow::Result<()> {
         .into());
     }
     let Some(target) = status.herdr else {
-        return Err(Refused(format!("task {id} has no herdr workspace to close")).into());
+        return Err(Refused(format!("task {id} has no herdr tab to close")).into());
     };
     let mut data = json!({
         "host": target.host,
         "workspace_id": target.workspace_id,
+        "tab_id": target.tab_id,
         "pane_id": target.pane_id,
         "forced": force,
     });
@@ -65,17 +66,14 @@ pub fn run(state: &StateDir, id: &str, force: bool) -> anyhow::Result<()> {
         let herdr = Herdr::with_session(Arc::from(runner::from_env()?), &target.session);
         let lock = supervisor::load(state)?;
         let tasks = store.list_tasks()?;
-        match close_task_workspace(&herdr, host, &target, id, lock.as_ref(), &tasks)? {
+        match close_task_tab(&herdr, host, &target, id, lock.as_ref(), &tasks)? {
             Closing::Closed => {
                 data["already_gone"] = Value::Bool(false);
-                format!(
-                    "closed {id} (workspace {} on {})\n",
-                    target.workspace_id, target.host
-                )
+                format!("closed {id} (tab {} on {})\n", target.tab_id, target.host)
             }
             Closing::Gone => {
                 data["already_gone"] = Value::Bool(true);
-                format!("closed {id} (workspace already gone)\n")
+                format!("closed {id} (tab already gone)\n")
             }
             Closing::Reused(why) => {
                 owner::retire_target(&store, id, &target, &why)?;
@@ -97,20 +95,20 @@ pub fn run(state: &StateDir, id: &str, force: bool) -> anyhow::Result<()> {
     super::print(&printed)
 }
 
-/// How closing a task's workspace ended.
+/// How closing a task's tab ended.
 #[derive(Debug, PartialEq, Eq)]
 enum Closing {
     Closed,
-    /// herdr no longer lists the workspace.
+    /// herdr no longer lists the tab.
     Gone,
-    /// herdr lists the workspace under another label, why: it reused the id.
+    /// herdr lists the tab under another label, why: it reused the id.
     Reused(String),
 }
 
-/// Closes `target`'s workspace once herdr lists it under a label naming task `id`, with the
-/// task's worker (see `owner::owner`, given `lock` and `tasks`) or no agent in the task's pane.
-/// Refuses, closing nothing, when another agent is there.
-fn close_task_workspace(
+/// Closes `target`'s tab once herdr lists it under a label naming task `id`, with the task's
+/// worker (see `owner::owner`, given `lock` and `tasks`) or no agent in the task's pane. Refuses,
+/// closing nothing, when another agent is there.
+fn close_task_tab(
     herdr: &Herdr,
     host: &Host,
     target: &HerdrTarget,
@@ -118,24 +116,21 @@ fn close_task_workspace(
     lock: Option<&Lock>,
     tasks: &[(TaskRecord, Status)],
 ) -> anyhow::Result<Closing> {
-    let Some(workspaces) = herdr.workspaces_if_running(host)? else {
+    let Some(tabs) = herdr.tabs_if_running(host)? else {
         return Ok(Closing::Gone);
     };
-    let Some(workspace) = workspaces
-        .iter()
-        .find(|workspace| workspace.workspace_id == target.workspace_id)
-    else {
+    let Some(tab) = tabs.iter().find(|tab| tab.tab_id == target.tab_id) else {
         return Ok(Closing::Gone);
     };
-    if !workspace.names_task(id) {
+    if !herdr::label_names_task(&tab.label, id) {
         return Ok(Closing::Reused(format!(
-            "herdr reused workspace {} on {}, now labelled \"{}\"",
-            target.workspace_id, host.name, workspace.label
+            "herdr reused tab {} on {}, now labelled \"{}\"",
+            target.tab_id, host.name, tab.label
         )));
     }
     let task = Owner::Task(id.to_owned());
     let mut agents = herdr.agents(host)?;
-    herdr::label_agents(&workspaces, &mut agents);
+    herdr::label_agents(&tabs, &mut agents);
     let other = agents.iter().any(|agent| {
         agent.pane_id == target.pane_id && owner::owner(&host.name, agent, lock, tasks) != task
     });
@@ -147,7 +142,7 @@ fn close_task_workspace(
         ))
         .into());
     }
-    Ok(if herdr.close_workspace(host, &target.workspace_id)? {
+    Ok(if herdr.close_tab(host, &target.tab_id)? {
         Closing::Closed
     } else {
         Closing::Gone

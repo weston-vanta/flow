@@ -369,8 +369,8 @@ pub enum TaskCommand {
     },
     /// Take over a session started by hand as a task, briefing it in place
     Adopt(AdoptCli),
-    /// Close the task's herdr workspace, keeping its record, working directory and branch; an
-    /// adopted task's workspace is left to its owner
+    /// Close the task's herdr tab, keeping its record, working directory and branch; an adopted
+    /// task's tab is left to its owner
     Close {
         id: String,
         /// Close it even while the task is still open: not done or orphaned

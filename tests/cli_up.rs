@@ -78,6 +78,7 @@ impl Fixture {
             .env("HERDR_ENV", "1")
             .env("HERDR_PANE_ID", HERE_PANE)
             .env("HERDR_WORKSPACE_ID", "w9")
+            .env("HERDR_TAB_ID", "w9:t1")
             .env("XDG_CONFIG_HOME", &config_home)
             .env("CLAUDE_CONFIG_DIR", self.dir.path().join("claude"))
             .env("HERDR_SOCKET_PATH", config_home.join("herdr/herdr.sock"))
@@ -214,12 +215,13 @@ fn refusal_of(cmd: &mut Command) -> String {
     String::from_utf8(out.stderr).unwrap()
 }
 
-/// The lock `flow up` takes for `HERE_PANE` in workspace `w9` of herdr session `session` on
+/// The lock `flow up` takes for `HERE_PANE` in tab `w9:t1` of herdr session `session` on
 /// `host-a`.
 fn here(session: &str) -> HerdrTarget {
     HerdrTarget {
         host: "host-a".to_owned(),
         workspace_id: "w9".to_owned(),
+        tab_id: "w9:t1".to_owned(),
         pane_id: HERE_PANE.to_owned(),
         agent: "claude".to_owned(),
         session: session.to_owned(),
@@ -525,6 +527,7 @@ fn create_task_with_pane(fx: &Fixture) -> Store {
             status.herdr = Some(HerdrTarget {
                 host: "host-b".to_owned(),
                 workspace_id: "w2".to_owned(),
+                tab_id: "w2:t1".to_owned(),
                 pane_id: "w2:p1".to_owned(),
                 agent: "claude".to_owned(),
                 session: "flow".to_owned(),
@@ -539,16 +542,18 @@ fn task_pane_agent(session: Option<&str>) -> Value {
     ok(
         &lock_pane_agent("/workspaces/example-repo.wt/retry", session)
             .replace(LIVE_PANE, "w2:p1")
-            .replace(r#""workspace_id":"w1""#, r#""workspace_id":"w2""#),
+            .replace(
+                r#""workspace_id":"w1""#,
+                r#""workspace_id":"w2","tab_id":"w2:t1""#,
+            ),
     )
 }
 
-/// herdr's workspace list with the task's workspace `w2` under the label dispatch gives it.
-fn task_workspace() -> Value {
-    let workspace = json!({"workspace_id": "w2",
+/// herdr's tab list with the task's tab `w2:t1` under the label dispatch gives it.
+fn task_tab() -> Value {
+    let tab = json!({"tab_id": "w2:t1", "workspace_id": "w2",
         "label": format!("Add retry to the example client · {TASK}")});
-    let list = json!({"id": "cli:workspace:list",
-        "result": {"type": "workspace_list", "workspaces": [workspace]}});
+    let list = json!({"id": "cli:tab:list", "result": {"type": "tab_list", "tabs": [tab]}});
     ok(&list.to_string())
 }
 
@@ -558,7 +563,7 @@ fn steer_prompts_pane_and_logs_event() {
     let store = create_task_with_pane(&fx);
     let prompted = AGENT_GET.replace("agent_info", "agent_prompted");
 
-    fx.flow(&[task_pane_agent(None), task_workspace(), ok(&prompted)])
+    fx.flow(&[task_pane_agent(None), task_tab(), ok(&prompted)])
         .args(["steer", TASK, "Use the existing retry helper."])
         .assert()
         .success();
@@ -566,10 +571,7 @@ fn steer_prompts_pane_and_logs_event() {
     let calls = fx.calls();
     assert_eq!(calls.len(), 3, "{calls:?}");
     assert_eq!(calls[0].1, ["herdr", "--session", "flow", "agent", "list"]);
-    assert_eq!(
-        calls[1].1,
-        ["herdr", "--session", "flow", "workspace", "list"]
-    );
+    assert_eq!(calls[1].1, ["herdr", "--session", "flow", "tab", "list"]);
     let (host, argv) = &calls[2];
     assert_eq!(host, "host-b");
     assert_eq!(
@@ -603,7 +605,7 @@ fn steer_prompts_an_adopted_task_in_its_own_herdr_session() {
         .unwrap();
     let prompted = AGENT_GET.replace("agent_info", "agent_prompted");
 
-    fx.flow(&[task_pane_agent(None), task_workspace(), ok(&prompted)])
+    fx.flow(&[task_pane_agent(None), task_tab(), ok(&prompted)])
         .args(["steer", TASK, "Use the existing retry helper."])
         .assert()
         .success();
@@ -685,7 +687,7 @@ fn steer_hands_an_escalated_task_back_to_its_worker() {
             })
             .unwrap();
 
-        fx.flow(&[task_pane_agent(None), task_workspace(), ok(&prompted)])
+        fx.flow(&[task_pane_agent(None), task_tab(), ok(&prompted)])
             .args(["steer", TASK, "Give up after five tries."])
             .assert()
             .success();

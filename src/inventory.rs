@@ -222,7 +222,7 @@ impl RepoProbe<'_> {
 /// all, and with another error when git cannot list the worktrees of a repo checked out there. A
 /// repo with no checkout on the host is recorded in `missing_repos`; the worktree tool and herdr
 /// failing are recorded on the inventory too. `prs` is left empty for `join_prs`. `tasks` decide
-/// which agents' workspace labels are looked up (see `owner::needs_label`).
+/// which agents' tab labels are looked up (see `owner::needs_label`).
 pub fn refresh(
     runner: &Arc<dyn Runner>,
     host: &Host,
@@ -359,7 +359,7 @@ pub fn herdr_agents(
             Ok(Some(mut found)) => {
                 answered = true;
                 let labelled = owner::label_where_needed(&herdr, host, &mut found, tasks)
-                    .with_context(|| format!("herdr session {session} workspaces"));
+                    .with_context(|| format!("herdr session {session} tabs"));
                 agents.extend(found);
                 if let Err(err) = labelled {
                     errors.push(format!("{err:#}"));

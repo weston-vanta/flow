@@ -92,6 +92,7 @@ fn start_here(state: &StateDir, here: &Host, pane: InvokingPane) -> anyhow::Resu
         HerdrTarget {
             host: here.name.clone(),
             workspace_id: pane.workspace_id,
+            tab_id: pane.tab_id,
             pane_id: pane.pane_id,
             agent: AGENT_KIND.to_owned(),
             session: pane.session,

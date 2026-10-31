@@ -114,6 +114,7 @@ impl Fixture {
                 status.herdr = pane_id.map(|pane_id| HerdrTarget {
                     host: host.to_owned(),
                     workspace_id: "w1".to_owned(),
+                    tab_id: String::new(),
                     pane_id: pane_id.to_owned(),
                     agent: "claude".to_owned(),
                     session: SESSION.to_owned(),

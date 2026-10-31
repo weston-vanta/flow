@@ -154,6 +154,7 @@ fn task_show_names_the_origin_and_the_herdr_session() {
             status.herdr = Some(HerdrTarget {
                 host: "host-a".to_owned(),
                 workspace_id: "w1".to_owned(),
+                tab_id: String::new(),
                 pane_id: "w1:p1".to_owned(),
                 agent: "claude".to_owned(),
                 session: "default".to_owned(),
