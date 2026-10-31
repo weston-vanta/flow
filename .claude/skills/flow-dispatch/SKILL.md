@@ -55,7 +55,9 @@ flow dispatch [--host <name>] --title "<short title>" \
 
 Add `--parent <task-id>` when splitting work off an existing task.
 
-It prints `dispatched <task-id> on <host> (<pane>)`. Then:
+It prints `dispatched <task-id> on <host> (<pane>)`. The worker runs in a tab of its own,
+labelled `<title> · <task-id>`, in the host's `flow` herdr workspace, which dispatch creates when
+the host has none; the user sees it under that host in their herdr window. Then:
 
 - A warning that the worker is blocked on something other than the trust dialog: check
   `flow task events <task-id>` (`worker.blocked_at_start` holds the pane text) and steer it or
@@ -81,6 +83,8 @@ Leave out the brief when the session should simply carry on with what it is doin
 still say where to stop. flow writes the task and its brief, stops following the session, and
 prompts it to read the brief. It prints `adopted <task-id> on <host> (<pane>)`. From then on it
 is a task like any other, except that `flow task close` leaves its pane open for the user.
+Adopting interrupts the session mid-turn and redirects it to the brief, so adopt only a session
+the user said yes to, as the session start and the `observed-new` wake offer.
 
 flow refuses a session that is not Claude Code, one herdr knows no working directory for, and
 one an open task already runs in. When it exits 1 after printing the adopted line, the session

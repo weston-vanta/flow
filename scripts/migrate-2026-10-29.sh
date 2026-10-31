@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Rewrites a flow state directory into the formats flow reads from 2026-10-29 on, which no
 # longer fill in what older records lack. Exit the supervisor first, so nothing writes state
-# while it runs; `flow down` cannot read a lock that still needs migrating. Safe to run again:
+# while it runs; `flow up` cannot read a lock that still needs migrating. Safe to run again:
 # a migrated directory changes nothing.
 #
 #   migrate-2026-10-29.sh [--dry-run] <state-dir>

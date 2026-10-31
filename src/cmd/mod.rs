@@ -10,7 +10,6 @@ pub mod run;
 pub mod sessions;
 pub mod status;
 pub mod steer;
-pub mod sync;
 pub mod task_adopt;
 pub mod task_close;
 pub mod task_events;
@@ -20,17 +19,15 @@ pub mod up;
 pub mod wake;
 pub mod watch;
 
-use std::io::{self, BufRead, IsTerminal, Write};
+use std::io::{self, Write};
 
 use jiff::Timestamp;
 use serde::Serialize;
 
 use crate::render;
-use crate::runner;
 use crate::state::task::{Status, TaskRecord};
 
 const NO_PANE: &str = "-";
-const FAKE_TTY_VAR: &str = crate::vars::FAKE_TTY;
 
 /// A request flow turns down as given, such as an unknown host or a directory another agent
 /// works in. The binary exits 2 for it, as for a usage error.
@@ -71,45 +68,6 @@ fn task_rows(tasks: &[(TaskRecord, Status)], now: Timestamp) -> Vec<Vec<String>>
             ]
         })
         .collect()
-}
-
-/// Whether someone is at a terminal to answer a question: stdin and stdout are both terminals,
-/// or the fake runner is told to treat them as such.
-fn interactive() -> bool {
-    (io::stdin().is_terminal() && io::stdout().is_terminal()) || fake_tty()
-}
-
-fn fake_tty() -> bool {
-    runner::fake_runner_active() && std::env::var_os(FAKE_TTY_VAR).is_some()
-}
-
-/// The answer to applying a plan already printed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Consent {
-    Given,
-    Declined,
-    /// Nobody is at a terminal to ask and `--yes` was not passed.
-    NoTerminal,
-}
-
-/// Asks `Proceed? [y/N]` after a blank line unless `yes`, reading the answer from stdin; only
-/// `y` or `yes` gives consent.
-fn confirm(yes: bool) -> anyhow::Result<Consent> {
-    if yes {
-        return Ok(Consent::Given);
-    }
-    if !interactive() {
-        return Ok(Consent::NoTerminal);
-    }
-    print("\nProceed? [y/N] ")?;
-    let mut answer = String::new();
-    io::stdin().lock().read_line(&mut answer)?;
-    let given = matches!(answer.trim().to_lowercase().as_str(), "y" | "yes");
-    Ok(if given {
-        Consent::Given
-    } else {
-        Consent::Declined
-    })
 }
 
 fn print_json(value: &impl Serialize) -> anyhow::Result<()> {

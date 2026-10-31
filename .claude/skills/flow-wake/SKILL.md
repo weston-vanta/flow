@@ -18,8 +18,8 @@ one reason; handle every row.
   report's path; read it. Check it against the brief's completion criteria. To look at the
   worker's files on another host, use `flow run <host> -- <argv>`, never plain `ssh`. Met: tell
   the user the outcome with links, then retire the worker's pane with `flow task close <id>`;
-  its worktree and branch stay. When it refuses because herdr lists that workspace under another
-  label, or another agent runs in the task's pane, the workspace is no longer the task's: leave
+  its worktree and branch stay. When it says herdr reused the tab and it closed nothing, or
+  refuses because another agent runs in the task's pane, the tab is no longer the task's: leave
   it, and tell the user. Not met: steer the worker to finish (`flow steer <id> "<what is missing>"`) and say so.
 - `needs-decision: <id>` or `blocked: <id>`: `flow task show <id>` shows the worker's question
   as the hold. Follow the `flow-escalate` skill.

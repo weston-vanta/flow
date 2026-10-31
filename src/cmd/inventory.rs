@@ -1,7 +1,6 @@
 //! `flow inventory`: worktrees, agents, PRs, and load per host, from the cache or refreshed.
 
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
 use std::sync::Arc;
 use std::thread;
 
@@ -62,29 +61,6 @@ pub fn run(state: &StateDir, refresh: bool, json: bool) -> anyhow::Result<()> {
         bail!("could not refresh {}", failed.join(", "));
     }
     Ok(())
-}
-
-/// Refreshes every host first when `refresh`, as `run` does, then syncs herdr's saved machines
-/// with the hosts as `flow inventory --sync`; see `sync::run`. A host that could not be
-/// refreshed fails the command once the sync is done.
-pub fn run_sync(
-    state: &StateDir,
-    refresh: bool,
-    json: bool,
-    yes: bool,
-) -> anyhow::Result<ExitCode> {
-    let config = Config::load(state)?;
-    let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
-    let failed = if refresh {
-        refresh_all(state, &config, &runner)?
-    } else {
-        Vec::new()
-    };
-    let code = super::sync::run(state, runner.as_ref(), json, yes)?;
-    if !failed.is_empty() {
-        bail!("could not refresh {}", failed.join(", "));
-    }
-    Ok(code)
 }
 
 /// The cached record as JSON, with `ssh_alias` resolved as flow reaches the host, `local` for

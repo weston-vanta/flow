@@ -59,16 +59,9 @@ pub enum Command {
         /// PRs before showing them
         #[arg(long)]
         refresh: bool,
-        /// Print raw JSON instead of the compact view; with --sync, the plan as JSON
+        /// Print raw JSON instead of the compact view
         #[arg(long)]
         json: bool,
-        /// Give every other live host a herdr saved machine on this machine, showing the herdr
-        /// session flow runs in, and remove gone hosts' ones; prints the plan and asks first
-        #[arg(long)]
-        sync: bool,
-        /// Apply the --sync plan without asking
-        #[arg(long, requires = "sync")]
-        yes: bool,
     },
     /// List herdr agents across hosts, with their tasks or as observed sessions
     Sessions {
@@ -437,13 +430,7 @@ pub fn run(cli: Cli, state: &StateDir, repo_root: &Path) -> anyhow::Result<ExitC
             Ok(())
         }
         Command::Dispatch(args) => return cmd::dispatch::run(state, &args.try_into()?),
-        Command::Inventory {
-            refresh,
-            json,
-            sync: true,
-            yes,
-        } => return cmd::inventory::run_sync(state, refresh, json, yes),
-        Command::Inventory { refresh, json, .. } => cmd::inventory::run(state, refresh, json),
+        Command::Inventory { refresh, json } => cmd::inventory::run(state, refresh, json),
         Command::Sessions { json, summaries } => cmd::sessions::run(state, json, summaries),
         Command::Follow { host, session } => cmd::sessions::run_follow(state, &host, &session),
         Command::Unfollow { host, session } => cmd::sessions::run_unfollow(state, &host, &session),

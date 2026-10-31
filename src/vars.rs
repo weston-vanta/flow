@@ -11,8 +11,6 @@ pub const SUPERVISOR: &str = "FLOW_SUPERVISOR";
 pub const FAKE_RUNNER: &str = "FLOW_FAKE_RUNNER";
 /// Names a JSON file read in place of running the Ona CLI.
 pub const FAKE_ONA: &str = "FLOW_FAKE_ONA";
-/// Under the fake runner, makes commands treat stdin and stdout as a terminal when set.
-pub const FAKE_TTY: &str = "FLOW_FAKE_TTY";
 /// Overrides how long a start handshake waits between asks while herdr does not see the agent
 /// yet, in milliseconds.
 pub const HANDSHAKE_POLL_MS: &str = "FLOW_HANDSHAKE_POLL_MS";
@@ -34,12 +32,11 @@ pub const WATCH_HAND_MAX_MS: &str = "FLOW_WATCH_HAND_MAX_MS";
 /// Overrides how long listing the hosts' agents may take in a watch run, in milliseconds.
 pub const WATCH_LIST_TIMEOUT_MS: &str = "FLOW_WATCH_LIST_TIMEOUT_MS";
 
-pub const ALL: [&str; 14] = [
+pub const ALL: [&str; 13] = [
     STATE,
     SUPERVISOR,
     FAKE_RUNNER,
     FAKE_ONA,
-    FAKE_TTY,
     HANDSHAKE_POLL_MS,
     HANDSHAKE_TIMEOUT_MS,
     GUARD_GRACE_MS,

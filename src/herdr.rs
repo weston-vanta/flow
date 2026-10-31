@@ -762,57 +762,6 @@ impl Herdr {
     }
 }
 
-/// A saved SSH machine in herdr's client configuration, as `herdr machine list --json` prints
-/// it: a profile that shows a remote herdr session's workspaces and agents in the local herdr
-/// window. Only the fields flow reads are declared.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct Machine {
-    /// The profile id `herdr machine remove` takes.
-    pub id: String,
-    pub label: String,
-    /// The ssh target herdr connects to.
-    pub target: String,
-    /// The remote herdr session it shows.
-    pub session: String,
-}
-
-/// The saved SSH machines in herdr's client configuration on `host`.
-pub fn machines(runner: &dyn Runner, host: &Host) -> anyhow::Result<Vec<Machine>> {
-    let argv = words(&["herdr", "machine", "list", "--json"]);
-    let output = runner.run(host, &argv, None)?;
-    let command = argv.join(" ");
-    if output.status != 0 {
-        bail!(
-            "`{command}` on {} exited {}: {}",
-            host.name,
-            output.status,
-            output.stderr.trim()
-        );
-    }
-    serde_json::from_str(&output.stdout)
-        .with_context(|| format!("parsing output of `{command}` on {}", host.name))
-}
-
-/// The argv that saves ssh target `target` as a machine labelled `label` showing the remote
-/// herdr session `session`.
-pub fn add_machine_argv(target: &str, label: &str, session: &str) -> Vec<String> {
-    words(&[
-        "herdr",
-        "machine",
-        "add",
-        target,
-        "--label",
-        label,
-        "--remote-session",
-        session,
-    ])
-}
-
-/// The argv that removes the saved machine with profile id `id`.
-pub fn remove_machine_argv(id: &str) -> Vec<String> {
-    words(&["herdr", "machine", "remove", id])
-}
-
 /// Set to `1` in every herdr pane.
 const ENV_MARKER: &str = "HERDR_ENV";
 const PANE_ID_ENV: &str = "HERDR_PANE_ID";
