@@ -345,8 +345,9 @@ and pane, keeping the Claude Code session to resume, removes any watch lock the 
 supervisor's watcher left, writes `watch-state.json` with every closed task marked read when
 there is none yet and otherwise forgets the observed sessions it records, so the first listing
 takes them as they are, and replaces itself with the harness, run from `/workspaces/flow`, with
-`--resume` of the recorded session while its transcript is non-empty and a first prompt to run the session start procedure (whose turn end arms `flow watch`). The
-supervisor's SessionStart hook records its session in the lock.
+`--resume` of the recorded session while its transcript is non-empty and a first prompt to run
+the session start procedure (whose turn end arms `flow watch`). The supervisor's SessionStart
+hook records its session in the lock.
 
 **Stop.** The user exits the supervisor in its pane, as any Claude Code session. Workers keep
 running, and the next `flow up` resumes the recorded session.
