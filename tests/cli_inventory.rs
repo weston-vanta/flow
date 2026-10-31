@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use assert_cmd::Command;
 use serde_json::{Value, json};
 
-/// Lists herdr's `default` session beside flow's own, `flow` once `write_stopped_lock` records it.
+/// Lists herdr's `default` session beside flow's own, `flow` once `write_lock` records it.
 const CONFIG: &str = r#"
 herdr_sessions = ["flow", "default"]
 
@@ -54,9 +54,9 @@ const SERVER_RUNNING: &str = "status: running\nversion: 0.9.5\nendpoint_compatib
 const AGENT_LIST: &str = r#"{"id":"cli:agent:list","result":{"agents":[{"agent":"claude","agent_status":"working","cwd":"/workspaces/acme-worktrees/feature-x","pane_id":"w4:p1","terminal_title":"✳ Build feature x","terminal_title_stripped":"Build feature x","workspace_id":"w4"}],"type":"agent_list"}}"#;
 
 const PR_LIST: &str = r#"[{"headRefName":"feature-x","number":12,"state":"OPEN","url":"https://github.com/example/acme/pull/12"},{"headRefName":"elsewhere","number":13,"state":"OPEN","url":"https://github.com/example/acme/pull/13"}]"#;
-/// Records a stopped supervisor that `flow up` ran in herdr session `session`, which makes it
+/// Records a supervisor that `flow up` ran in herdr session `session`, which makes it
 /// flow's own session.
-fn write_stopped_lock(state: &Path, session: &str) {
+fn write_lock(state: &Path, session: &str) {
     let dir = state.join("supervisor");
     fs::create_dir_all(&dir).unwrap();
     let lock = json!({
@@ -65,7 +65,6 @@ fn write_stopped_lock(state: &Path, session: &str) {
             "session": session},
         "claude_session": null,
         "since": "2026-10-26T12:00:00Z",
-        "stopped": "2026-10-26T13:00:00Z",
     });
     fs::write(dir.join("lock.json"), lock.to_string()).unwrap();
 }
@@ -81,7 +80,7 @@ impl Fixture {
         let state = dir.path().join("state");
         fs::create_dir(&state).unwrap();
         fs::write(state.join("config.toml"), CONFIG).unwrap();
-        write_stopped_lock(&state, "flow");
+        write_lock(&state, "flow");
         Fixture { dir, state }
     }
 

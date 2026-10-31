@@ -354,7 +354,6 @@ fn dispatch_starts_the_worker_in_the_herdr_session_the_lock_records() {
             "session": "flow"},
         "claude_session": null,
         "since": "2026-10-26T12:00:00Z",
-        "stopped": "2026-10-26T13:00:00Z",
     });
     fs::write(dir.join("lock.json"), lock.to_string()).unwrap();
 

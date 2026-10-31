@@ -1,6 +1,7 @@
 //! `flow dispatch`: creates a task and starts its worker in a tab of its own in the `flow` herdr
-//! workspace on the chosen host, in an existing directory, a new worktree of a configured repo, or the task's own work directory;
-//! from a brief given here or from a pending dispatch request, which it consumes.
+//! workspace on the chosen host, in an existing directory, a new worktree of a configured repo, or
+//! the task's own work directory; from a brief given here or from a pending dispatch request, which
+//! it consumes.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

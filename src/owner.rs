@@ -69,7 +69,8 @@ fn in_pane(host: &str, agent: &Agent, target: &HerdrTarget) -> bool {
     target.is(host, &agent.session, &agent.pane_id)
 }
 
-/// Whether an agent with no id in `task`'s pane is the task's only under a tab label naming it: the task was dispatched, or adopted from a session that reported an id.
+/// Whether an agent with no id in `task`'s pane is the task's only under a tab label naming it:
+/// the task was dispatched, or adopted from a session that reported an id.
 fn label_decides((record, status): &(TaskRecord, Status)) -> bool {
     record.origin == Origin::Dispatched || status.claude_session.is_some()
 }

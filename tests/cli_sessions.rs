@@ -8,7 +8,7 @@ use flow::state::task::{ClaudeSession, Harness, HerdrTarget, Origin, State, Task
 use jiff::Timestamp;
 use serde_json::{Value, json};
 
-/// Lists herdr's `default` session beside flow's own, `flow` once `write_stopped_lock` records it.
+/// Lists herdr's `default` session beside flow's own, `flow` once `write_lock` records it.
 const CONFIG: &str = r#"
 herdr_sessions = ["flow", "default"]
 
@@ -48,9 +48,9 @@ const DEFAULT_AGENTS: &str = r#"{"id":"cli:agent:list","result":{"agents":[{"age
 const HAND_SESSION_ID: &str = "00000000-0000-4000-8000-000000000001";
 const TASK_SESSION_ID: &str = "00000000-0000-4000-8000-000000000002";
 const TASK_ID: &str = "aaaaaaab";
-/// Records a stopped supervisor that `flow up` ran in herdr session `session`, which makes it
+/// Records a supervisor that `flow up` ran in herdr session `session`, which makes it
 /// flow's own session.
-fn write_stopped_lock(state: &Path, session: &str) {
+fn write_lock(state: &Path, session: &str) {
     let dir = state.join("supervisor");
     fs::create_dir_all(&dir).unwrap();
     let lock = json!({
@@ -59,7 +59,6 @@ fn write_stopped_lock(state: &Path, session: &str) {
             "session": session},
         "claude_session": null,
         "since": "2026-10-26T12:00:00Z",
-        "stopped": "2026-10-26T13:00:00Z",
     });
     fs::write(dir.join("lock.json"), lock.to_string()).unwrap();
 }
@@ -79,7 +78,7 @@ impl Fixture {
         fs::create_dir(&state).unwrap();
         fs::write(state.join("config.toml"), CONFIG).unwrap();
         write_hosts(&state);
-        write_stopped_lock(&state, SESSION);
+        write_lock(&state, SESSION);
 
         let claude_fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude");
         let home = dir.path().join("claude");
