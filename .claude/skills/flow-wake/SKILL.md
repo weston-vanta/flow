@@ -47,6 +47,12 @@ one reason; handle every row.
   Check `flow task events <id> --last 5` and `flow sessions`, then steer the worker with a
   short status question.
 - `request: <id>`: a dispatch request; follow the `flow-dispatch` skill.
+- `observed-new: <host> <pane> "<title>"`: a session the user started by hand appeared. Tell
+  the user which host and session it is and ask whether to adopt it, stating once that adopting
+  delivers a brief with flow's reporting protocol to that session as a prompt, which interrupts
+  an agent mid-turn and redirects it to the task you define, and that a session they are using
+  interactively is usually better left observed. Adopt it only on a yes (`flow-dispatch`
+  skill); otherwise leave it observed.
 - `observed-blocked: <host> <pane> "<title>"`: a session the user started by hand is stuck at a
   harness prompt (a permission or dialog). Tell the user which host and session it is and that
   they need to attend to it. Do not steer a hand session unless they ask you to.

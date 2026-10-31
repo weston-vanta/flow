@@ -36,7 +36,11 @@
 //! server, or that did not answer in time: those wait for the next listing. A host whose earlier
 //! listing has still not returned is not asked again in the same run. Any hand session turning
 //! `blocked` wakes the supervisor; the ones in the follow list also wake it on `idle` and `done`.
-//! Whether a session is followed is read every cycle.
+//! Whether a session is followed is read every cycle. A listing that finds an observed session in
+//! a pane neither the run's previous listing nor the saved one held wakes it once, as
+//! `observed-new`; the saved panes are replaced each listing, keeping those of hosts it did not
+//! hear from, so a session back after a listing without it wakes again. The seed records the
+//! cached inventory's observed sessions, so the first listing wakes for none of those.
 //!
 //! A run with nothing to watch, no open task, followed session or hand session, ends after its
 //! first cycle rather than waiting for the heartbeat. A cycle that could not read the tasks or
@@ -58,7 +62,7 @@ pub mod lock;
 mod panes;
 pub mod queue;
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
@@ -210,6 +214,36 @@ fn hand_sessions(state: &StateDir) -> anyhow::Result<Vec<HandSession>> {
         }
     }
     Ok(hands)
+}
+
+/// The observed sessions among `hands`, with their keys, leaving out those in an open task's pane
+/// with no evidence of whose they are (see `HandSession::shows_reuse`), as the waits do.
+fn observed_hands<'h>(
+    hands: &'h [HandSession],
+    tasks: &[(TaskRecord, Status)],
+) -> Vec<(String, &'h HandSession)> {
+    hands
+        .iter()
+        .filter(|hand| hand.listed == Owner::Observed)
+        .filter(|hand| {
+            hand.shows_reuse(&Owner::Observed)
+                || !tasks.iter().any(|(_, status)| {
+                    status.state.is_open()
+                        && status.herdr.as_ref().is_some_and(|target| {
+                            hand.is_in(&target.host, &target.session, &target.pane_id)
+                        })
+                })
+        })
+        .map(|hand| (hand_key(hand), hand))
+        .collect()
+}
+
+/// The key `Reported` and `WatchState::observed_panes` file a hand session's pane under.
+fn hand_key(hand: &HandSession) -> String {
+    format!(
+        "{}/{}/{}",
+        hand.host, hand.agent.session, hand.agent.pane_id
+    )
 }
 
 /// How a watch that fails after taking the lock retries.
@@ -387,6 +421,11 @@ struct WatchState {
     /// Per task, how far its files have been read.
     #[serde(default)]
     seen: BTreeMap<String, Seen>,
+    /// The observed sessions' panes, as `<host>/<session>/<pane>`, as of the last listing, less
+    /// those whose `ObservedNew` is still to be handled. `None` until a listing or the seed
+    /// records them, so the first listing then wakes for none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    observed_panes: Option<BTreeSet<String>>,
 }
 
 /// What handling an observation, absorbed or woken, moves forward.
@@ -401,6 +440,8 @@ enum Progress {
         task: String,
         last_event: Timestamp,
     },
+    /// An observed session's pane, once its `ObservedNew` is handled.
+    ObservedPane(String),
 }
 
 struct Watcher<'a> {
@@ -414,6 +455,8 @@ struct Watcher<'a> {
     saved: WatchState,
     /// The hand sessions as of the last listing.
     hands: Vec<HandSession>,
+    /// The observed sessions the listings found new, not yet handled, with their pane keys.
+    new_observed: Vec<(Observation, String)>,
     /// Whether the last cycle found anything to watch: an open task, a followed or hand
     /// session, or a task list or follow list it could not read.
     watching: bool,
@@ -452,6 +495,7 @@ impl<'a> Watcher<'a> {
             store: Store::open(state),
             hosts: inventory::hosts(state)?,
             hands,
+            new_observed: Vec::new(),
             runner,
             settings: settings.clone(),
             saved: memory.clone(),
@@ -510,6 +554,11 @@ impl<'a> Watcher<'a> {
         }
         observed.extend(self.poll_waits());
         observed.extend(self.quiet_tasks(&tasks));
+        observed.extend(
+            self.new_observed
+                .drain(..)
+                .map(|(obs, key)| (obs, Progress::ObservedPane(key))),
+        );
         if self
             .beating_since
             .is_some_and(|since| since.elapsed() >= self.settings.heartbeat)
@@ -571,6 +620,43 @@ impl<'a> Watcher<'a> {
             }
             Err(err) => self.log(&format!("{err:#}")),
         }
+        self.note_new_observed(&skipped);
+    }
+
+    /// Replaces the recorded observed panes with the ones the listing found, keeping those of the
+    /// `skipped` hosts it did not see, and queues an `ObservedNew` for each found pane that was not
+    /// recorded; it is recorded once handled. With nothing recorded yet, records the panes found.
+    fn note_new_observed(&mut self, skipped: &[String]) {
+        let tasks = self.store.list_tasks().unwrap_or_default();
+        let found = observed_hands(&self.hands, &tasks);
+        let Some(recorded) = self.memory.observed_panes.take() else {
+            self.memory.observed_panes = Some(found.into_iter().map(|(key, _)| key).collect());
+            return;
+        };
+        let mut kept: BTreeSet<String> = recorded
+            .iter()
+            .filter(|key| {
+                key.split_once('/')
+                    .is_some_and(|(host, _)| skipped.iter().any(|name| name == host))
+            })
+            .cloned()
+            .collect();
+        for (key, hand) in found {
+            if recorded.contains(&key) {
+                kept.insert(key);
+                continue;
+            }
+            let obs = Observation::ObservedNew {
+                host: hand.host.clone(),
+                session: hand.agent.session.clone(),
+                pane_id: hand.agent.pane_id.clone(),
+                title: hand.agent.title.clone(),
+            };
+            if !self.new_observed.iter().any(|(_, queued)| *queued == key) {
+                self.new_observed.push((obs, key));
+            }
+        }
+        self.memory.observed_panes = Some(kept);
     }
 
     /// Refreshes every live host's cached agents with one herdr listing each, the way
@@ -684,6 +770,12 @@ impl<'a> Watcher<'a> {
                 if woke {
                     self.memory.quiet_reported.insert(task, last_event);
                 }
+            }
+            Progress::ObservedPane(key) => {
+                self.memory
+                    .observed_panes
+                    .get_or_insert_default()
+                    .insert(key);
             }
         }
     }
@@ -1124,12 +1216,22 @@ fn load_watch_state(state: &StateDir) -> anyhow::Result<WatchState> {
     })
 }
 
-/// A watch state with every closed task read as it is now; open tasks are left unread, so a
-/// run replays their logs.
+/// A watch state with every closed task read as it is now, and the observed sessions in the
+/// cached inventory recorded; open tasks are left unread, so a run replays their logs.
 fn seeded_state(state: &StateDir) -> anyhow::Result<WatchState> {
     let store = Store::open(state);
-    let mut memory = WatchState::default();
-    for (rec, status) in store.list_tasks()? {
+    let tasks = store.list_tasks()?;
+    let hands = hand_sessions(state)?;
+    let mut memory = WatchState {
+        observed_panes: Some(
+            observed_hands(&hands, &tasks)
+                .into_iter()
+                .map(|(key, _)| key)
+                .collect(),
+        ),
+        ..WatchState::default()
+    };
+    for (rec, status) in tasks {
         if status.state.is_open() {
             continue;
         }
@@ -1691,6 +1793,13 @@ default_branch = "main"
             Some("agent-gone: aaaaaaab")
         );
         assert_eq!(Store::open(&fx.state).task(TASK).unwrap().1.herdr, None);
+        assert_eq!(
+            run(&fx.state, runner.clone(), &once, &lock)
+                .unwrap()
+                .as_deref(),
+            Some(r#"observed-new: host-a w1:p1 "Tidy docs""#),
+            "the agent in the reused pane is a session started by hand"
+        );
         assert_eq!(run(&fx.state, runner, &once, &lock).unwrap(), None);
     }
 
@@ -2259,6 +2368,100 @@ default_branch = "main"
         assert!(runner.calls().is_empty());
     }
 
+    /// Listings of host-a whose `default` session holds `agents` and whose `flow` session holds
+    /// none, and waits that see each agent working.
+    fn listing_default(agents: &str) -> Arc<FakeRunner> {
+        fake(vec![
+            Scripted {
+                repeat: true,
+                ..on("host-a", &["--session", "flow", "agent", "list"], NO_AGENTS)
+            },
+            Scripted {
+                repeat: true,
+                ..on("host-a", &["--session", "default", "agent", "list"], agents)
+            },
+            Scripted {
+                repeat: true,
+                ..on("host-a", &["agent", "wait"], WORKING)
+            },
+        ])
+    }
+
+    /// One run that starts with a listing.
+    fn run_listing(fx: &Fixture, runner: &Arc<FakeRunner>) -> Option<String> {
+        let lock = lock::acquire(&fx.state, std::process::id())
+            .unwrap()
+            .unwrap();
+        let once = Settings {
+            once: true,
+            list_agents: true,
+            ..settings(Duration::from_secs(3600))
+        };
+        let woke = run(&fx.state, runner.clone(), &once, &lock).unwrap();
+        drop(lock);
+        woke
+    }
+
+    fn observed_panes(fx: &Fixture) -> Option<BTreeSet<String>> {
+        load_watch_state(&fx.state).unwrap().observed_panes
+    }
+
+    #[test]
+    fn the_first_listing_after_the_seed_wakes_for_no_session_the_seed_recorded() {
+        let fx = Fixture::new();
+        fx.hand();
+        seed(&fx.state).unwrap();
+
+        assert_eq!(run_listing(&fx, &listing_default(DEFAULT_AGENTS)), None);
+
+        assert_eq!(
+            observed_panes(&fx),
+            Some(BTreeSet::from(["host-a/default/w1:p1".to_owned()]))
+        );
+    }
+
+    #[test]
+    fn an_observed_session_a_listing_finds_later_wakes_once() {
+        let fx = Fixture::new();
+        seed(&fx.state).unwrap();
+        let runner = listing_default(DEFAULT_AGENTS);
+
+        assert_eq!(
+            run_listing(&fx, &runner).as_deref(),
+            Some(r#"observed-new: host-a w1:p1 "Tidy docs""#)
+        );
+        assert_eq!(run_listing(&fx, &runner), None);
+    }
+
+    #[test]
+    fn an_observed_session_back_after_a_listing_without_it_wakes_again() {
+        let fx = Fixture::new();
+        fx.hand();
+        seed(&fx.state).unwrap();
+
+        assert_eq!(run_listing(&fx, &listing_default(NO_AGENTS)), None);
+        assert_eq!(observed_panes(&fx), Some(BTreeSet::new()));
+
+        assert_eq!(
+            run_listing(&fx, &listing_default(DEFAULT_AGENTS)).as_deref(),
+            Some(r#"observed-new: host-a w1:p1 "Tidy docs""#)
+        );
+    }
+
+    #[test]
+    fn a_saved_state_without_observed_panes_takes_the_first_listing_as_they_are() {
+        let fx = Fixture::new();
+        std::fs::create_dir_all(fx.state.root().join(SUPERVISOR_DIR)).unwrap();
+        std::fs::write(fx.state.root().join(WATCH_STATE_FILE), "{}").unwrap();
+
+        assert_eq!(run_listing(&fx, &listing_default(DEFAULT_AGENTS)), None);
+
+        assert_eq!(
+            observed_panes(&fx),
+            Some(BTreeSet::from(["host-a/default/w1:p1".to_owned()]))
+        );
+    }
+
     #[test]
     fn listing_never_starts_herdr_and_skips_a_host_without_a_server() {
         let fx = Fixture::new();
@@ -2305,6 +2508,15 @@ default_branch = "main"
         .unwrap();
         fx.agent("env-0002", "default", "w5:p1", "Upgrade toolchain");
         let host_b_before = inventory::load(&fx.state, "env-0002").unwrap();
+        let known = WatchState {
+            observed_panes: Some(BTreeSet::from([
+                "host-a/default/w1:p1".to_owned(),
+                "host-b/default/w5:p1".to_owned(),
+            ])),
+            ..WatchState::default()
+        };
+        std::fs::create_dir_all(fx.state.root().join(SUPERVISOR_DIR)).unwrap();
+        write_watch_state(&fx.state, &known).unwrap();
         let runner = fake(vec![
             host_b_unreachable(),
             on("host-a", &["--session", "flow", "agent", "list"], NO_AGENTS),
@@ -2354,6 +2566,11 @@ default_branch = "main"
             .filter(|call| call.host == "host-b")
             .count();
         assert_eq!(host_b_calls, 1, "{:?}", runner.calls());
+        assert_eq!(
+            load_watch_state(&fx.state).unwrap().observed_panes,
+            known.observed_panes,
+            "the unreached host's panes stay recorded"
+        );
     }
 
     #[test]
@@ -2479,8 +2696,12 @@ default_branch = "main"
                 "host-a/default/w1:p2 Fix links"
             ]
         );
-        assert_eq!(watcher.cycle().unwrap(), None);
+        assert_eq!(
+            watcher.cycle().unwrap().as_deref(),
+            Some(r#"observed-new: host-a w1:p2 "Fix links""#)
+        );
         assert!(watcher.waits.contains_key("host-a/default/w1:p2"));
+        assert_eq!(watcher.cycle().unwrap(), None);
 
         fx.task(true);
         assert_eq!(watcher.cycle().unwrap().as_deref(), Some("heartbeat"));

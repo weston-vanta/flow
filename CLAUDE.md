@@ -52,7 +52,13 @@ At the start of every session, fresh or resumed, before anything else:
    (`flow-dispatch` skill), observed sessions.
 3. `flow sessions --summaries`: herdr agents on every host, matched to tasks or to the
    supervisor, or shown as observed, with what each session is doing.
-4. If `state/operator.md` exists, read it. It holds operator-specific conventions (the
+4. Offer to adopt each observed session. State once, above the list: adopting delivers a brief
+   with flow's reporting protocol to that session as a prompt, which interrupts an agent
+   mid-turn and redirects it to the task you define; sessions they are using interactively are
+   usually better left observed. Then ask in one line per observed session whether to adopt it.
+   Ask about every observed session at every start, keeping no memory of earlier answers, and
+   adopt only those they say yes to (`flow-dispatch` skill).
+5. If `state/operator.md` exists, read it. It holds operator-specific conventions (the
    monorepo's workflow, preferred hosts) and is never committed.
 
 When state and this conversation disagree, trust state. Then tell the user briefly what

@@ -1,7 +1,7 @@
 //! What `flow watch` makes of what it sees: each observation either wakes the supervisor with a
 //! one-line reason or is absorbed. A hand session, an agent in neither a task's nor the
 //! supervisor's pane, wakes it when it turns `blocked`, and on every other change only when
-//! followed. `Reported` remembers what earlier wakes already said, so a condition that persists
+//! followed, and once when a listing first finds it. `Reported` remembers what earlier wakes already said, so a condition that persists
 //! wakes the supervisor once rather than on every turn end.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -55,6 +55,15 @@ pub enum Observation {
         /// herdr's title for the agent as of the cached inventory; empty when it has none.
         title: String,
         status: AgentStatus,
+    },
+    /// A listing found an observed session in a pane neither the run's previous listing nor the
+    /// last saved one held.
+    ObservedNew {
+        host: String,
+        session: String,
+        pane_id: String,
+        /// herdr's title for the agent; empty when it has none.
+        title: String,
     },
     /// `--heartbeat` seconds passed.
     Heartbeat,
@@ -134,6 +143,15 @@ pub fn classify(obs: &Observation, thresholds: &Thresholds) -> Verdict {
             }
             let title = if title.is_empty() { pane_id } else { title };
             format!("observed-{}: {host} {pane_id} \"{title}\"", status.as_str())
+        }
+        Observation::ObservedNew {
+            host,
+            pane_id,
+            title,
+            ..
+        } => {
+            let title = if title.is_empty() { pane_id } else { title };
+            format!("observed-new: {host} {pane_id} \"{title}\"")
         }
         Observation::Heartbeat => "heartbeat".to_owned(),
         Observation::WatchFailed { error } => format!("watch-failed: {error}"),
@@ -431,6 +449,31 @@ mod tests {
     #[test]
     fn classify_quiet_under_threshold_absorbs() {
         assert_eq!(verdict(quiet(1799, false)), Verdict::Absorb);
+    }
+
+    #[test]
+    fn classify_a_new_observed_session_wakes_naming_it() {
+        let new = |title: &str| Observation::ObservedNew {
+            host: "host-a".to_owned(),
+            session: "default".to_owned(),
+            pane_id: "w1:p1".to_owned(),
+            title: title.to_owned(),
+        };
+        assert_eq!(
+            verdict(new("Tidy docs")),
+            wake(r#"observed-new: host-a w1:p1 "Tidy docs""#)
+        );
+        assert_eq!(
+            verdict(new("")),
+            wake(r#"observed-new: host-a w1:p1 "w1:p1""#)
+        );
+        let mut reported = Reported::default();
+        let obs = new("Tidy docs");
+        assert_eq!(
+            reported.review(&obs, verdict(obs.clone())),
+            verdict(obs.clone())
+        );
+        assert_eq!(reported, Reported::default());
     }
 
     #[test]
