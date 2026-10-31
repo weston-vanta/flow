@@ -34,7 +34,6 @@ const TIMEOUT_CODE: &str = "timeout";
 const AGENT_NOT_FOUND_CODE: &str = "agent_not_found";
 /// The `error.code` herdr reports when a target workspace does not exist.
 const WORKSPACE_NOT_FOUND_CODE: &str = "workspace_not_found";
-const PANE_NOT_FOUND_CODE: &str = "pane_not_found";
 /// The `error.code` herdr reports when no server runs for the session.
 const SERVER_NOT_RUNNING_CODE: &str = "server_not_running";
 /// Not a herdr code: `call_or_code` returns it for a non-zero exit with nothing on stdout or
@@ -439,17 +438,6 @@ impl Herdr {
         Ok(true)
     }
 
-    /// Closes `pane_id`; `false` when herdr no longer knows it. herdr closes a workspace with
-    /// its last pane.
-    pub fn close_pane(&self, host: &Host, pane_id: &str) -> anyhow::Result<bool> {
-        let argv = self.argv(&["pane", "close", pane_id]);
-        let Some(output) = self.call_unless(host, &argv, PANE_NOT_FOUND_CODE)? else {
-            return Ok(false);
-        };
-        parse_result::<Ack>(host, &argv, &output)?;
-        Ok(true)
-    }
-
     /// Starts agent `kind` named `name` in `pane_id`, passing it `args`. herdr returns once the
     /// agent is ready for input, and fails if it exits or blocks during startup.
     pub fn start_agent(
@@ -607,16 +595,6 @@ impl Herdr {
         Ok(result.agent.agent_status)
     }
 
-    /// The last `lines` lines of the terminal in `pane_id`, whether or not herdr sees an agent
-    /// there.
-    pub fn pane_read(&self, host: &Host, pane_id: &str, lines: u32) -> anyhow::Result<String> {
-        let lines = lines.to_string();
-        let argv = self.argv(&[
-            "pane", "read", pane_id, "--lines", &lines, "--format", "text",
-        ]);
-        Ok(self.call(host, &argv)?.stdout)
-    }
-
     /// The last `lines` lines of the agent's screen in `pane_id`; fails with `agent_not_found`
     /// when herdr sees no agent there.
     pub fn read(&self, host: &Host, pane_id: &str, lines: u32) -> anyhow::Result<String> {
@@ -625,13 +603,6 @@ impl Herdr {
             "agent", "read", pane_id, "--lines", &lines, "--format", "text",
         ]);
         Ok(self.call(host, &argv)?.stdout)
-    }
-
-    /// Moves the user's herdr focus to the agent in `pane_id`; fails with `agent_not_found` when
-    /// herdr sees no agent there.
-    pub fn focus_agent(&self, host: &Host, pane_id: &str) -> anyhow::Result<()> {
-        self.call_json::<AgentResult>(host, &self.argv(&["agent", "focus", pane_id]))?;
-        Ok(())
     }
 
     /// `herdr --session <session> <args...>`.
@@ -762,18 +733,30 @@ pub fn remove_machine_argv(id: &str) -> Vec<String> {
 /// Set to `1` in every herdr pane.
 const ENV_MARKER: &str = "HERDR_ENV";
 const PANE_ID_ENV: &str = "HERDR_PANE_ID";
+const WORKSPACE_ID_ENV: &str = "HERDR_WORKSPACE_ID";
 /// The socket of the herdr server whose pane this is.
 const SOCKET_ENV: &str = "HERDR_SOCKET_PATH";
 const SOCKET_FILE: &str = "herdr.sock";
 
-/// The herdr session of the pane this process runs in, from `HERDR_SOCKET_PATH`; `None` outside
-/// a herdr pane. Fails when the socket is not where herdr puts a session's.
-pub fn invoking_session() -> anyhow::Result<Option<String>> {
-    let in_pane = std::env::var_os(ENV_MARKER).is_some_and(|marker| marker == "1")
-        && std::env::var_os(PANE_ID_ENV).is_some_and(|pane| !pane.is_empty());
-    if !in_pane {
+/// The herdr pane this process runs in, as herdr's variables in it name it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvokingPane {
+    pub session: String,
+    pub workspace_id: String,
+    pub pane_id: String,
+}
+
+/// The herdr pane this process runs in, its session read from `HERDR_SOCKET_PATH`; `None`
+/// outside a herdr pane. Fails when the socket is not where herdr puts a session's.
+pub fn invoking_pane() -> anyhow::Result<Option<InvokingPane>> {
+    let set = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
+    let (Some(_), Some(pane_id), Some(workspace_id)) = (
+        set(ENV_MARKER).filter(|marker| marker == "1"),
+        set(PANE_ID_ENV),
+        set(WORKSPACE_ID_ENV),
+    ) else {
         return Ok(None);
-    }
+    };
     let socket = std::env::var_os(SOCKET_ENV)
         .map(PathBuf::from)
         .ok_or_else(|| anyhow!("{SOCKET_ENV} is unset in this herdr pane"))?;
@@ -782,15 +765,18 @@ pub fn invoking_session() -> anyhow::Result<Option<String>> {
         None => PathBuf::from(std::env::var_os("HOME").context("HOME is unset")?).join(".config"),
     }
     .join("herdr");
-    session_of_socket(&socket, &config_dir)
-        .map(Some)
-        .ok_or_else(|| {
-            anyhow!(
-                "{SOCKET_ENV} {} is neither herdr's main socket nor a named session's under {}",
-                socket.display(),
-                config_dir.display()
-            )
-        })
+    let session = session_of_socket(&socket, &config_dir).ok_or_else(|| {
+        anyhow!(
+            "{SOCKET_ENV} {} is neither herdr's main socket nor a named session's under {}",
+            socket.display(),
+            config_dir.display()
+        )
+    })?;
+    Ok(Some(InvokingPane {
+        session,
+        workspace_id,
+        pane_id,
+    }))
 }
 
 /// The session whose server listens on `socket`: `default` for `<config_dir>/herdr.sock`,
@@ -1398,20 +1384,6 @@ mod tests {
     }
 
     #[test]
-    fn close_pane_reports_a_pane_already_gone() {
-        let closed = r#"{"id":"cli:pane:close","result":{"type":"ok"}}"#;
-        let missing = r#"{"error":{"code":"pane_not_found","message":"pane w1:p9 not found"},"id":"cli:pane:close"}"#;
-        let (herdr, fake) = herdr(vec![ok(closed), failed(missing), failed("boom")]);
-        assert!(herdr.close_pane(&host(), "w1:p2").unwrap());
-        assert!(!herdr.close_pane(&host(), "w1:p9").unwrap());
-        assert!(herdr.close_pane(&host(), "w1:p3").is_err());
-        assert_eq!(
-            argvs(&fake)[0],
-            words(&["herdr", "--session", "flow", "pane", "close", "w1:p2"])
-        );
-    }
-
-    #[test]
     fn close_workspace_reports_a_workspace_already_gone() {
         let closed = r#"{"id":"cli:workspace:close","result":{"type":"ok"}}"#;
         let missing = r#"{"error":{"code":"workspace_not_found","message":"workspace w9 not found"},"id":"cli:workspace:close"}"#;
@@ -1544,30 +1516,6 @@ mod tests {
     }
 
     #[test]
-    fn pane_read_reads_the_terminal_without_an_agent() {
-        let (herdr, fake) = herdr(vec![ok("$ claude --resume s9\nNo conversation found\n")]);
-        assert_eq!(
-            herdr.pane_read(&host(), "w2:p1", 40).unwrap(),
-            "$ claude --resume s9\nNo conversation found\n"
-        );
-        assert_eq!(
-            argvs(&fake),
-            [words(&[
-                "herdr",
-                "--session",
-                "flow",
-                "pane",
-                "read",
-                "w2:p1",
-                "--lines",
-                "40",
-                "--format",
-                "text",
-            ])]
-        );
-    }
-
-    #[test]
     fn every_call_passes_session_flow() {
         let (herdr, fake) = herdr(vec![
             ok(STATUS_NOT_RUNNING),
@@ -1583,7 +1531,6 @@ mod tests {
             ok(""),
             ok(PANE_WAIT_OUTPUT_MATCHED),
             ok(""),
-            ok(AGENT_GET),
         ]);
         let target = host();
         herdr.ensure_server(&target).unwrap();
@@ -1610,10 +1557,8 @@ mod tests {
             .pane_send_keys(&target, "w3:p1", &[KEY_ENTER])
             .unwrap();
 
-        herdr.focus_agent(&target, "w3:p1").unwrap();
-
         let calls = argvs(&fake);
-        assert_eq!(calls.len(), 14, "{calls:?}");
+        assert_eq!(calls.len(), 13, "{calls:?}");
         for argv in calls {
             assert!(
                 argv.windows(2).any(|pair| pair == ["--session", "flow"]),

@@ -127,10 +127,9 @@ pub enum Command {
         #[arg(allow_hyphen_values = true)]
         text: String,
     },
-    /// From a shell pane inside herdr, focus the supervisor, starting it here when none runs
+    /// From a shell pane inside herdr, run the supervisor in that pane unless it runs elsewhere
+    /// on this host
     Up,
-    /// Stop the supervisor, leaving workers and tasks running; `flow up` resumes it
-    Down,
 }
 
 impl Command {
@@ -456,7 +455,6 @@ pub fn run(cli: Cli, state: &StateDir, repo_root: &Path) -> anyhow::Result<ExitC
         Command::Guard => return cmd::guard::run(state),
         Command::Steer { id, text } => cmd::steer::run(state, &id, &text),
         Command::Up => cmd::up::run(state),
-        Command::Down => cmd::down::run(state),
     };
     done.map(|()| ExitCode::SUCCESS)
 }

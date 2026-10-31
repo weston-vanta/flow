@@ -39,9 +39,9 @@ pub fn run(state: &StateDir, id: &str, text: &str) -> anyhow::Result<()> {
     let host = host::find(&hosts, &target.host)?;
     let herdr = Herdr::with_session(Arc::from(runner::from_env()?), &target.session);
     let tasks = store.list_tasks()?;
-    let lock = supervisor::running(state)?;
+    let lock = supervisor::load(state)?;
     let mut agents = herdr.agents(host)?;
-    owner::label_where_needed(&herdr, host, &mut agents, lock.as_ref(), &tasks)?;
+    owner::label_where_needed(&herdr, host, &mut agents, &tasks)?;
     if owner::retire_reused(&store, &target.host, &agents, &tasks)?.contains(&id.to_owned()) {
         return Err(no_target(&store, id)?.into());
     }

@@ -22,7 +22,6 @@ use crate::state::Store;
 use crate::state::config::{Config, Host, Repo, WorktreeTool};
 use crate::state::fs::write_atomic;
 use crate::state::task::{Status, TaskRecord};
-use crate::supervisor::{self, Lock};
 use crate::worktree;
 
 /// The exit code ssh uses for its own failures, as opposed to the remote command's.
@@ -222,15 +221,13 @@ impl RepoProbe<'_> {
 /// none runs. Fails with `Unreachable` when ssh fails on the first call or no probe runs at
 /// all, and with another error when git cannot list the worktrees of a repo checked out there. A
 /// repo with no checkout on the host is recorded in `missing_repos`; the worktree tool and herdr
-/// failing are recorded on the inventory too. `prs` is left empty for `join_prs`. The running
-/// supervisor's `lock` and `tasks` decide which agents' workspace labels are looked up (see
-/// `owner::needs_label`).
+/// failing are recorded on the inventory too. `prs` is left empty for `join_prs`. `tasks` decide
+/// which agents' workspace labels are looked up (see `owner::needs_label`).
 pub fn refresh(
     runner: &Arc<dyn Runner>,
     host: &Host,
     config: &Config,
     own_session: &str,
-    lock: Option<&Lock>,
     tasks: &[(TaskRecord, Status)],
     now: Timestamp,
 ) -> anyhow::Result<HostInventory> {
@@ -316,7 +313,6 @@ pub fn refresh(
         host,
         &config.listed_sessions(own_session),
         FlowServer::Start(own_session),
-        lock,
         tasks,
     );
 
@@ -335,14 +331,12 @@ pub fn refresh(
 /// The agents in each of `sessions` on `host`, in session order. With `FlowServer::Start`, the
 /// server of the session it names is started when it is not running; any other session without
 /// a server has no agents. A session whose server cannot be asked is recorded in `error`, and
-/// asking stops at the first session ssh cannot reach. Agents are labelled as the running
-/// supervisor's `lock` and `tasks` need.
+/// asking stops at the first session ssh cannot reach. Agents are labelled as `tasks` need.
 pub fn herdr_agents(
     runner: &Arc<dyn Runner>,
     host: &Host,
     sessions: &[String],
     flow_server: FlowServer,
-    lock: Option<&Lock>,
     tasks: &[(TaskRecord, Status)],
 ) -> HerdrAgents {
     let mut agents = Vec::new();
@@ -364,7 +358,7 @@ pub fn herdr_agents(
         match found {
             Ok(Some(mut found)) => {
                 answered = true;
-                let labelled = owner::label_where_needed(&herdr, host, &mut found, lock, tasks)
+                let labelled = owner::label_where_needed(&herdr, host, &mut found, tasks)
                     .with_context(|| format!("herdr session {session} workspaces"));
                 agents.extend(found);
                 if let Err(err) = labelled {
@@ -421,8 +415,7 @@ pub fn list_agents(
     let cached = load(state, &host.env_id)?;
     let store = Store::open(state);
     let tasks = store.list_tasks().unwrap_or_default();
-    let lock = supervisor::running(state).unwrap_or_default();
-    let found = herdr_agents(runner, host, sessions, flow_server, lock.as_ref(), &tasks);
+    let found = herdr_agents(runner, host, sessions, flow_server, &tasks);
     let error = found.error.clone();
     let host_unreachable = found.unreachable;
     let no_server = !host_unreachable && !found.answered && error.is_none();
@@ -842,7 +835,6 @@ detached
             &host(),
             &config,
             "flow",
-            None,
             &[],
             Timestamp::UNIX_EPOCH,
         )
@@ -855,7 +847,6 @@ detached
             &host(),
             &sessions(),
             FlowServer::Start("flow"),
-            None,
             &[],
         )
     }

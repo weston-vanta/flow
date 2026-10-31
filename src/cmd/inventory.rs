@@ -170,7 +170,6 @@ fn refresh_all(
 ) -> anyhow::Result<Vec<String>> {
     let now = Timestamp::now();
     let tasks = &Store::open(state).list_tasks().unwrap_or_default();
-    let lock = &supervisor::running(state)?;
     let own = &supervisor::herdr_session(state)?;
     let discovered = discovery::discover(state, &config.hosts, now)?;
     if let Some(warning) = &discovered.warning {
@@ -187,8 +186,7 @@ fn refresh_all(
             .iter()
             .map(|(host, record)| {
                 scope.spawn(move || {
-                    let fresh =
-                        inventory::refresh(runner, host, config, own, lock.as_ref(), tasks, now);
+                    let fresh = inventory::refresh(runner, host, config, own, tasks, now);
                     (host, keep_discovered(host, record, fresh, now))
                 })
             })

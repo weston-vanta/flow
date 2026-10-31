@@ -761,7 +761,6 @@ mod tests {
             },
             claude_session: claude_session.map(str::to_owned),
             since: Timestamp::UNIX_EPOCH,
-            stopped: None,
         }
     }
 

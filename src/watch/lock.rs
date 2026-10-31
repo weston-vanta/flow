@@ -1,10 +1,9 @@
 //! The single-flight lock for `flow watch`: the directory `state/supervisor/watch.lock`, made
 //! with mkdir, holding `owner.json`. The holder touches the directory every poll cycle, so a
 //! lock whose holder vanished on another host goes stale by age. `flow up` clears it outright
-//! when it starts a supervisor because none was live, since only a live supervisor's watch
-//! holds it legitimately, and `flow down` clears it with the supervisor it stops. A holder
-//! whose lock was removed or taken over learns so at its next touch, and leaves the lock alone
-//! when it ends.
+//! when it starts a supervisor, since only a live supervisor's watch holds it legitimately. A
+//! holder whose lock was removed or taken over learns so at its next touch, and leaves the lock
+//! alone when it ends.
 
 use std::fs::{self, File};
 use std::io;
@@ -95,10 +94,9 @@ fn read_owner(path: &Path) -> anyhow::Result<Option<Owner>> {
     }
 }
 
-/// Removes the lock whoever holds it and returns whether there was one. For `flow up`, when no
-/// supervisor is live: waiting for a vanished holder's lock to go stale would leave the new
-/// supervisor unwatched for up to `STALE_AFTER`; and for `flow down`, which stops the supervisor
-/// the holder watches for.
+/// Removes the lock whoever holds it and returns whether there was one. For `flow up` starting a
+/// supervisor: waiting for a vanished holder's lock to go stale would leave the new supervisor
+/// unwatched for up to `STALE_AFTER`.
 pub fn clear(state: &StateDir) -> anyhow::Result<bool> {
     let dir = state.root().join(LOCK_DIR);
     match fs::remove_dir_all(&dir) {

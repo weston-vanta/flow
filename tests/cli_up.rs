@@ -37,24 +37,15 @@ fn write_hosts(state: &Path) {
 }
 
 const AGENT_GET: &str = include_str!("fixtures/herdr/agent_get.json");
-const AGENT_WAIT_TIMEOUT: &str = include_str!("fixtures/herdr/agent_wait_timeout.json");
-const WORKSPACE_CLOSED: &str = r#"{"id":"cli:workspace:close","result":{"type":"ok"}}"#;
-const WORKSPACE_CREATE: &str = include_str!("fixtures/herdr/workspace_create.json");
 const NO_AGENTS: &str = r#"{"id":"cli:agent:list","result":{"agents":[],"type":"agent_list"}}"#;
-const PANE_RUN_OK: &str = r#"{"id":"cli:pane:run","result":{"type":"ok"}}"#;
-const SERVER_RUNNING: &str = "status: running\nversion: 0.9.5\nendpoint_compatible: yes\n\
-     private_protocol: 22\nprivate_protocol_compatible: yes\n\
-     socket: /home/dev/.config/herdr/herdr.sock\n";
-/// A pane `agent_list.json` lists.
+/// A pane `agent_list.json` lists, and the one the locks written here record.
 const LIVE_PANE: &str = "w1:p1";
-/// The first prompt every supervisor start passes Claude Code, quoted as `pane run` types it.
-const START_PROMPT: &str = "'Run the session start procedure in CLAUDE.md.'";
-/// The pane a scripted `workspace create` returns.
-const NEW_PANE: &str = "w3:p1";
+/// The pane every `flow up` here is typed in, in workspace `w9`.
+const HERE_PANE: &str = "w9:p9";
+/// The first prompt every supervisor start passes Claude Code.
+const START_PROMPT: &str = "Run the session start procedure in CLAUDE.md.";
 const TASK: &str = "aaaaaaab";
 const SESSION_START: &str = r#"{"hook_event_name":"SessionStart","session_id":"s1","transcript_path":"/t/s1.jsonl","cwd":"/workspaces/flow","source":"startup"}"#;
-/// What every `flow up` that leaves a supervisor running prints.
-const UP: &str = "supervisor is in workspace flow-supervisor\n";
 
 struct Fixture {
     dir: tempfile::TempDir,
@@ -85,8 +76,10 @@ impl Fixture {
             .env("ONA_ID", "env-0001")
             .env("FLOW_FAKE_RUNNER", self.script_path())
             .env("HERDR_ENV", "1")
-            .env("HERDR_PANE_ID", "w9:p9")
+            .env("HERDR_PANE_ID", HERE_PANE)
+            .env("HERDR_WORKSPACE_ID", "w9")
             .env("XDG_CONFIG_HOME", &config_home)
+            .env("CLAUDE_CONFIG_DIR", self.dir.path().join("claude"))
             .env("HERDR_SOCKET_PATH", config_home.join("herdr/herdr.sock"))
             .env_remove(supervisor::SUPERVISOR_ENV);
         cmd
@@ -124,7 +117,7 @@ impl Fixture {
         StateDir::resolve(self.dir.path()).unwrap()
     }
 
-    /// A running supervisor's lock in workspace `w1` of herdr's `default` session.
+    /// A supervisor's lock in workspace `w1` of herdr's `default` session.
     fn write_lock(&self, env_id: &str, host: &str, pane: &str, session: Option<&str>) {
         let dir = self.state.join("supervisor");
         fs::create_dir_all(&dir).unwrap();
@@ -161,69 +154,41 @@ impl Fixture {
     fn lock_text(&self) -> String {
         fs::read_to_string(self.state.join("supervisor/lock.json")).unwrap()
     }
+
+    /// Writes the transcript Claude Code keeps for supervisor session `session`.
+    fn write_transcript(&self, session: &str) {
+        let dir = self.dir.path().join("claude/projects/-workspaces-flow");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(format!("{session}.jsonl")), "{}\n").unwrap();
+    }
+
+    /// The `exec:` line `flow up` prints in place of starting the supervisor under the fake
+    /// runner, with `extra` before the prompt.
+    fn exec_line(&self, extra: &str) -> String {
+        let state = fs::canonicalize(&self.state).unwrap();
+        format!(
+            "exec: env FLOW_SUPERVISOR=1 FLOW_STATE={} claude --name flow-supervisor {extra}{START_PROMPT}\n",
+            state.display()
+        )
+    }
 }
 
 fn ok(stdout: &str) -> Value {
     json!({"status": 0, "stdout": stdout, "stderr": ""})
 }
 
-fn failed(stderr: &str) -> Value {
-    json!({"status": 1, "stdout": "", "stderr": stderr})
-}
-
-/// Answers `agent focus` as herdr does once it focused the agent.
-fn focused() -> Value {
-    json!({"argv": ["agent", "focus"], "status": 0, "stdout": AGENT_GET, "stderr": ""})
-}
-
-/// The answers for a live supervisor: its agent in `LIVE_PANE`, herdr reporting the lock's
-/// Claude Code session `s9` for it, then the focus.
-fn supervisor_live() -> Vec<Value> {
-    vec![
-        focused(),
-        ok(&lock_pane_agent("/workspaces/flow", Some("s9"))),
-    ]
-}
-
-/// Answers every `agent read` as herdr does for a pane with no agent in it.
-fn agent_read_fails() -> Value {
-    json!({
-        "argv": ["agent", "read"], "repeat": true, "status": 1, "stdout": "",
-        "stderr": r#"{"error":{"code":"agent_not_found","message":"agent target w3:p1 not found"},"id":"cli:agent:read"}"#,
-    })
-}
-
-fn wait_reports(status: &str) -> Value {
-    ok(&AGENT_GET.replace(
-        r#""agent_status":"working""#,
-        &format!(r#""agent_status":"{status}""#),
-    ))
-}
-
-/// Runner answers for a fresh supervisor start that comes up idle, herdr reporting Claude Code
-/// session `s1` for it, and its focus.
-fn fresh_start() -> Vec<Value> {
-    fresh_start_as("s1")
-}
-
-/// `fresh_start`, herdr reporting Claude Code session `session` for the new supervisor.
-fn fresh_start_as(session: &str) -> Vec<Value> {
-    vec![
-        focused(),
-        ok(SERVER_RUNNING),
-        ok(WORKSPACE_CREATE),
-        ok(PANE_RUN_OK),
-        wait_reports("idle"),
-        ok(&new_pane_agent(session)),
-    ]
-}
-
-/// An agent list with the new supervisor in `NEW_PANE`, herdr reporting Claude Code session
-/// `session` for it.
-fn new_pane_agent(session: &str) -> String {
-    lock_pane_agent("/workspaces/flow", Some(session))
-        .replace(LIVE_PANE, NEW_PANE)
-        .replace(r#""workspace_id":"w1""#, r#""workspace_id":"w3""#)
+/// An agent list with one agent, in `LIVE_PANE` of workspace `w1`, running in `cwd`, herdr
+/// reporting Claude Code session `session` for it.
+fn lock_pane_agent(cwd: &str, session: Option<&str>) -> String {
+    let mut agent = json!({
+        "agent": "claude", "agent_status": "idle", "cwd": cwd, "pane_id": LIVE_PANE,
+        "terminal_title_stripped": "Read the docs", "workspace_id": "w1",
+    });
+    if let Some(session) = session {
+        agent["agent_session"] =
+            json!({"agent": "claude", "kind": "id", "source": "herdr:claude", "value": session});
+    }
+    json!({"id": "cli:agent:list", "result": {"type": "agent_list", "agents": [agent]}}).to_string()
 }
 
 /// herdr's workspace list with the lock's workspace `w1` labelled `label`.
@@ -231,10 +196,6 @@ fn lock_workspace(label: &str) -> Value {
     let list = json!({"id": "cli:workspace:list", "result": {"type": "workspace_list",
         "workspaces": [{"workspace_id": "w1", "label": label}]}});
     ok(&list.to_string())
-}
-
-fn stdout_of(cmd: &mut Command) -> String {
-    output_of(cmd).0
 }
 
 /// The stdout and stderr of `cmd`, which must succeed.
@@ -253,45 +214,24 @@ fn refusal_of(cmd: &mut Command) -> String {
     String::from_utf8(out.stderr).unwrap()
 }
 
-/// The command lines typed into panes by `pane run` calls, in order.
-fn pane_run_lines(calls: &[(String, Vec<String>)]) -> Vec<String> {
-    calls
-        .iter()
-        .filter(|(_, argv)| argv.get(3..5) == Some(&["pane".to_owned(), "run".to_owned()]))
-        .map(|(_, argv)| argv.last().unwrap().clone())
-        .collect()
-}
-
-/// The command line typed into the pane by the only `pane run` call.
-fn pane_run_line(calls: &[(String, Vec<String>)]) -> String {
-    let lines = pane_run_lines(calls);
-    assert_eq!(lines.len(), 1, "{calls:?}");
-    lines[0].clone()
-}
-
-fn has_subcommand(calls: &[(String, Vec<String>)], words: &[&str]) -> bool {
-    calls.iter().any(|(_, argv)| {
-        argv.windows(words.len())
-            .any(|window| window.iter().zip(words).all(|(a, b)| a == b))
-    })
-}
-
-/// The argv of the last call, which focuses `pane` in herdr session `session`.
-fn assert_focused_last(calls: &[(String, Vec<String>)], session: &str, pane: &str) {
-    let (host, argv) = calls.last().unwrap();
-    assert_eq!(host, "host-a");
-    assert_eq!(
-        argv,
-        &["herdr", "--session", session, "agent", "focus", pane].map(str::to_owned)
-    );
+/// The lock `flow up` takes for `HERE_PANE` in workspace `w9` of herdr session `session` on
+/// `host-a`.
+fn here(session: &str) -> HerdrTarget {
+    HerdrTarget {
+        host: "host-a".to_owned(),
+        workspace_id: "w9".to_owned(),
+        pane_id: HERE_PANE.to_owned(),
+        agent: "claude".to_owned(),
+        session: session.to_owned(),
+    }
 }
 
 #[test]
 fn up_refuses_outside_a_herdr_pane() {
-    for unset in ["HERDR_ENV", "HERDR_PANE_ID"] {
+    for unset in ["HERDR_ENV", "HERDR_PANE_ID", "HERDR_WORKSPACE_ID"] {
         let fx = Fixture::new();
 
-        let stderr = refusal_of(fx.flow(&fresh_start()).env_remove(unset).arg("up"));
+        let stderr = refusal_of(fx.flow(&[]).env_remove(unset).arg("up"));
 
         assert_eq!(
             stderr, "flow up runs from a shell pane inside herdr\n",
@@ -307,7 +247,7 @@ fn up_refuses_a_socket_that_names_no_herdr_session() {
     let fx = Fixture::new();
 
     let stderr = refusal_of(
-        fx.flow(&fresh_start())
+        fx.flow(&[])
             .env("HERDR_SOCKET_PATH", "/run/elsewhere/herdr.sock")
             .arg("up"),
     );
@@ -323,103 +263,35 @@ fn up_refuses_a_socket_that_names_no_herdr_session() {
 }
 
 #[test]
-fn up_warns_when_herdr_reports_no_session_for_the_new_supervisor() {
-    let fx = Fixture::new();
-    let mut script = fresh_start();
-    let unreported = lock_pane_agent("/workspaces/flow", None)
-        .replace(LIVE_PANE, NEW_PANE)
-        .replace(r#""workspace_id":"w1""#, r#""workspace_id":"w3""#);
-    *script.last_mut().unwrap() = json!({"status": 0, "stdout": unreported, "stderr": "",
-        "repeat": true});
-
-    let (_, stderr) = output_of(
-        fx.flow(&script)
-            .env("FLOW_HANDSHAKE_POLL_MS", "10")
-            .env("FLOW_HANDSHAKE_TIMEOUT_MS", "300")
-            .arg("up"),
-    );
-
-    assert!(
-        stderr.contains(
-            "herdr reports no Claude Code session for the supervisor in pane w3:p1 on host-a; \
-             until it does, flow knows the supervisor only by that pane and its flow-supervisor \
-             label, so check its Claude Code integration (`herdr integration install claude`)\n"
-        ),
-        "{stderr}"
-    );
-    assert_eq!(fx.lock().unwrap().claude_session, None);
-}
-
-#[test]
-fn up_creates_supervisor_when_no_lock() {
+fn up_runs_the_supervisor_in_its_own_pane_when_none_was_started() {
     let fx = Fixture::new();
 
-    let (stdout, stderr) = output_of(fx.flow(&fresh_start()).arg("up"));
+    let (stdout, stderr) = output_of(fx.flow(&[]).arg("up"));
 
-    let calls = fx.calls();
-    assert!(calls.iter().all(|(host, _)| host == "host-a"), "{calls:?}");
-    assert!(
-        has_subcommand(
-            &calls,
-            &["workspace", "create", "--cwd", "/workspaces/flow"]
-        ),
-        "{calls:?}"
-    );
-    assert!(
-        has_subcommand(&calls, &["--label", "flow-supervisor"]),
-        "{calls:?}"
-    );
-    let line = pane_run_line(&calls);
-    let state = fs::canonicalize(&fx.state).unwrap();
     assert_eq!(
-        line,
-        format!(
-            "env 'FLOW_STATE={}' 'FLOW_SUPERVISOR=1' claude --name flow-supervisor {START_PROMPT}",
-            state.display()
-        ),
-        "the state path and marker keep the supervisor's hooks live; the prompt runs a first turn"
+        stdout,
+        fx.exec_line(""),
+        "the marker and state path keep the supervisor's hooks live; the prompt runs a first turn"
     );
-    assert!(!line.contains("--resume"), "{line}");
-    assert!(!line.contains("--settings"), "{line}");
-    assert_focused_last(&calls, "default", NEW_PANE);
-
-    let lock = fx.lock().expect("lock is written");
-    assert_eq!(lock.host_env_id, "env-0001");
-    assert_eq!(
-        lock.herdr,
-        HerdrTarget {
-            host: "host-a".to_owned(),
-            workspace_id: "w3".to_owned(),
-            pane_id: NEW_PANE.to_owned(),
-            agent: "claude".to_owned(),
-            session: "default".to_owned(),
-        }
-    );
-    assert_eq!(
-        lock.claude_session.as_deref(),
-        Some("s1"),
-        "the session herdr reports for the new supervisor is recorded"
-    );
-    assert_eq!(stdout, UP);
     assert_eq!(
         stderr,
-        format!("started a fresh supervisor on host-a (pane {NEW_PANE})\n")
+        format!("starting a fresh supervisor in pane {HERE_PANE} on host-a\n")
     );
+    assert!(fx.calls().is_empty(), "no herdr call: {:?}", fx.calls());
+    let lock = fx.lock().expect("lock is written");
+    assert_eq!(lock.host_env_id, "env-0001");
+    assert_eq!(lock.herdr, here("default"));
+    assert_eq!(lock.claude_session, None);
+    assert!(fx.state.join("supervisor/watch-state.json").exists());
 }
 
 #[test]
-fn up_starts_the_supervisor_in_the_herdr_session_it_runs_in() {
+fn up_records_the_herdr_session_it_runs_in() {
     let fx = Fixture::new();
 
-    let stdout = stdout_of(fx.flow_in("work", &fresh_start()).arg("up"));
+    fx.flow_in("work", &[]).arg("up").assert().success();
 
-    assert_eq!(stdout, UP);
-    let calls = fx.calls();
-    for (_, argv) in &calls {
-        assert_eq!(argv[..3], ["herdr", "--session", "work"], "{argv:?}");
-    }
-    assert_focused_last(&calls, "work", NEW_PANE);
-    assert_eq!(fx.lock().unwrap().herdr.session, "work");
+    assert_eq!(fx.lock().unwrap().herdr, here("work"));
 }
 
 #[test]
@@ -428,508 +300,205 @@ fn up_launch_line_names_the_state_dir_behind_a_symlink() {
     let link = fx.dir.path().join("state-link");
     std::os::unix::fs::symlink(&fx.state, &link).unwrap();
 
-    fx.flow(&fresh_start())
-        .env("FLOW_STATE", &link)
-        .arg("up")
-        .assert()
-        .success();
+    let (stdout, _) = output_of(fx.flow(&[]).env("FLOW_STATE", &link).arg("up"));
 
-    let line = pane_run_line(&fx.calls());
-    let target = fs::canonicalize(&fx.state).unwrap();
-    assert!(
-        line.starts_with(&format!("env 'FLOW_STATE={}' ", target.display())),
-        "{line}"
-    );
-    assert!(!line.contains("state-link"), "{line}");
+    assert_eq!(stdout, fx.exec_line(""));
+    assert!(!stdout.contains("state-link"), "{stdout}");
 }
 
 #[test]
-fn up_resumes_known_session() {
+fn up_resumes_the_recorded_session_while_its_transcript_exists() {
     let fx = Fixture::new();
     fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
-    let mut script = fresh_start_as("s9");
-    script.insert(1, ok(NO_AGENTS));
+    fx.write_transcript("s9");
 
-    let (stdout, stderr) = output_of(fx.flow(&script).arg("up"));
+    let (stdout, stderr) = output_of(fx.flow(&[ok(NO_AGENTS)]).arg("up"));
 
-    let calls = fx.calls();
-    let line = pane_run_line(&calls);
-    assert!(
-        line.ends_with(&format!(
-            "claude --name flow-supervisor --resume s9 {START_PROMPT}"
-        )),
-        "{line}"
-    );
+    assert_eq!(stdout, fx.exec_line("--resume s9 "));
     assert_eq!(
         stderr,
-        format!("resumed supervisor session s9 on host-a (pane {NEW_PANE})\n")
+        format!("resuming supervisor session s9 in pane {HERE_PANE} on host-a\n")
     );
     let lock = fx.lock().unwrap();
+    assert_eq!(lock.herdr, here("default"));
     assert_eq!(lock.claude_session.as_deref(), Some("s9"));
-    assert_eq!(lock.herdr.pane_id, NEW_PANE);
-    assert_eq!(stdout, UP);
-    assert_focused_last(&calls, "default", NEW_PANE);
-}
-
-/// Marks `host-b` gone in the cached inventory.
-fn host_b_gone(fx: &Fixture) {
-    let gone_path = fx.state.join("hosts/env-0002.json");
-    let mut gone: Value = serde_json::from_str(&fs::read_to_string(&gone_path).unwrap()).unwrap();
-    gone["gone"] = json!(true);
-    fs::write(&gone_path, gone.to_string()).unwrap();
 }
 
 #[test]
-fn up_starts_fresh_here_when_the_lock_host_is_gone() {
+fn up_starts_a_fresh_session_when_the_recorded_one_has_no_transcript() {
     let fx = Fixture::new();
-    host_b_gone(&fx);
-    fx.write_lock("env-0002", "host-b", LIVE_PANE, Some("s9"));
-    fx.lock_in_session("flow");
+    fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
 
-    let (stdout, stderr) = output_of(fx.flow(&fresh_start_as("s9")).arg("up"));
+    let (stdout, stderr) = output_of(fx.flow(&[ok(NO_AGENTS)]).arg("up"));
 
+    assert_eq!(stdout, fx.exec_line(""));
+    let transcript = fx
+        .dir
+        .path()
+        .join("claude/projects/-workspaces-flow/s9.jsonl");
     assert_eq!(
         stderr,
         format!(
-            "supervisor host host-b is gone; starting a new supervisor here\n\
-             resumed supervisor session s9 on host-a (pane {NEW_PANE})\n"
+            "no transcript of supervisor session s9 at {}; starting a fresh supervisor \
+             session\nstarting a fresh supervisor in pane {HERE_PANE} on host-a\n",
+            transcript.display()
         )
     );
-    assert_eq!(stdout, UP);
-    let calls = fx.calls();
-    assert!(calls.iter().all(|(host, _)| host == "host-a"), "{calls:?}");
-    assert_eq!(
-        calls[0].1[3..],
-        ["status", "server"],
-        "no listing looks for it"
-    );
-    let line = pane_run_line(&calls);
-    assert!(
-        line.contains("claude --name flow-supervisor --resume s9"),
-        "{line}"
-    );
-    let lock = fx.lock().unwrap();
-    assert_eq!(lock.host_env_id, "env-0001");
-    assert_eq!(lock.herdr.session, "default");
-    assert_eq!(lock.claude_session.as_deref(), Some("s9"));
+    assert_eq!(fx.lock().unwrap().claude_session, None);
 }
 
 #[test]
-fn up_clears_the_watch_lock_before_starting_a_supervisor() {
+fn up_reports_the_supervisor_herdr_shows_running_here_and_starts_nothing() {
     let fx = Fixture::new();
-    host_b_gone(&fx);
-    fx.write_lock("env-0002", "host-b", LIVE_PANE, None);
-    fx.write_watch_lock("env-0002");
+    fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
+    fx.lock_in_session("flow");
+    let before = fx.lock_text();
+    let script = [
+        ok(&lock_pane_agent("/workspaces/flow", Some("s9"))),
+        lock_workspace("Notes"),
+    ];
 
-    let (_, stderr) = output_of(fx.flow(&fresh_start()).arg("up"));
+    let (stdout, stderr) = output_of(fx.flow(&script).arg("up"));
 
-    assert!(!fx.state.join("supervisor/watch.lock").exists());
-    assert!(
-        stderr.contains("removed state/supervisor/watch.lock"),
-        "{stderr}"
+    assert_eq!(
+        stdout,
+        format!("the supervisor is running in pane {LIVE_PANE} (workspace Notes)\n")
     );
-    assert!(
-        stderr.ends_with(&format!(
-            "started a fresh supervisor on host-a (pane {NEW_PANE})\n"
-        )),
-        "{stderr}"
-    );
-    assert_eq!(stderr.lines().count(), 3, "{stderr}");
+    assert_eq!(stderr, "");
+    assert_eq!(fx.lock_text(), before);
+    let calls = fx.calls();
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    for (host, argv) in &calls {
+        assert_eq!(host, "host-a");
+        assert_eq!(argv[..3], ["herdr", "--session", "flow"], "{argv:?}");
+    }
+    assert!(!fx.state.join("supervisor/watch-state.json").exists());
 }
 
 #[test]
-fn up_refuses_a_supervisor_recorded_anywhere_else_without_asking_any_host() {
-    let cases = [
-        ("env-0002", "host-b", "default"),
-        ("env-0001", "host-a", "flow"),
-        ("env-0009", "host-z", "default"),
+fn up_starts_here_when_herdr_shows_no_agent_reporting_the_locks_session() {
+    let listings = [
+        lock_pane_agent("/workspaces/flow", Some("s-hand")),
+        lock_pane_agent("/workspaces/flow", None),
+        NO_AGENTS.to_owned(),
     ];
-    for (env_id, host, session) in cases {
+    for listing in listings {
+        let fx = Fixture::new();
+        fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
+        fx.write_transcript("s9");
+
+        let (stdout, _) = output_of(fx.flow(&[ok(&listing)]).arg("up"));
+
+        assert_eq!(stdout, fx.exec_line("--resume s9 "), "{listing}");
+        assert_eq!(fx.calls().len(), 1, "{listing}");
+        assert_eq!(fx.lock().unwrap().herdr, here("default"));
+    }
+}
+
+#[test]
+fn up_starts_here_when_no_herdr_server_runs_in_the_locks_session() {
+    let fx = Fixture::new();
+    fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
+    fx.lock_in_session("flow");
+    let not_running = json!({"status": 1, "stdout": "",
+        "stderr": include_str!("fixtures/herdr/agent_list_server_not_running.json")});
+
+    let (stdout, _) = output_of(fx.flow(&[not_running]).arg("up"));
+
+    assert_eq!(stdout, fx.exec_line(""));
+    assert_eq!(fx.lock().unwrap().herdr, here("default"));
+}
+
+#[test]
+fn up_warns_of_a_supervisor_recorded_on_another_host_and_starts_here_without_asking_it() {
+    for (env_id, host) in [("env-0002", "host-b"), ("env-0009", "host-z")] {
         let fx = Fixture::new();
         fx.write_lock(env_id, host, LIVE_PANE, Some("s9"));
-        fx.lock_in_session(session);
-        let before = fx.lock_text();
+        fx.write_transcript("s9");
 
-        let stderr = refusal_of(fx.flow(&supervisor_live()).arg("up"));
+        let (stdout, stderr) = output_of(fx.flow(&[]).arg("up"));
 
         let since =
             flow::render::relative("2026-10-26T12:00:00Z".parse().unwrap(), Timestamp::now());
         assert_eq!(
             stderr,
             format!(
-                "a supervisor is recorded on {host} in herdr session {session} (pane w1:p1) \
-                 since {since} ago; run flow down to stop it before starting one here\n"
+                "the previous supervisor was recorded on {host} since {since} ago; if it is \
+                 still running there, exit it\n\
+                 resuming supervisor session s9 in pane {HERE_PANE} on host-a\n"
             )
         );
-        assert!(fx.calls().is_empty(), "{host}/{session}");
-        assert_eq!(fx.lock_text(), before);
+        assert_eq!(stdout, fx.exec_line("--resume s9 "));
+        assert!(fx.calls().is_empty(), "{:?}", fx.calls());
+        let lock = fx.lock().unwrap();
+        assert_eq!(lock.host_env_id, "env-0001");
+        assert_eq!(lock.herdr, here("default"));
     }
 }
 
 #[test]
-fn up_focuses_the_supervisor_where_herdr_moved_it() {
+fn up_starts_here_without_a_warning_when_the_lock_host_is_gone() {
     let fx = Fixture::new();
-    fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
-    let moved = lock_pane_agent("/workspaces/flow", Some("s9"))
-        .replace(LIVE_PANE, "w4:p2")
-        .replace(r#""workspace_id":"w1""#, r#""workspace_id":"w4""#);
+    let gone_path = fx.state.join("hosts/env-0002.json");
+    let mut gone: Value = serde_json::from_str(&fs::read_to_string(&gone_path).unwrap()).unwrap();
+    gone["gone"] = json!(true);
+    fs::write(&gone_path, gone.to_string()).unwrap();
+    fx.write_lock("env-0002", "host-b", LIVE_PANE, None);
 
-    let stdout = stdout_of(fx.flow(&[focused(), ok(&moved)]).arg("up"));
+    let (stdout, stderr) = output_of(fx.flow(&[]).arg("up"));
 
-    assert_eq!(stdout, UP);
-    let calls = fx.calls();
-    assert_eq!(calls.len(), 2, "{calls:?}");
-    assert_focused_last(&calls, "default", "w4:p2");
-    let lock = fx.lock().unwrap();
-    assert_eq!(lock.herdr.pane_id, "w4:p2");
-    assert_eq!(lock.herdr.workspace_id, "w4");
-    assert_eq!(lock.claude_session.as_deref(), Some("s9"));
-}
-
-#[test]
-fn up_focuses_a_live_supervisor_in_the_herdr_session_it_runs_in() {
-    let fx = Fixture::new();
-    fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
-    fx.lock_in_session("work");
-
-    let stdout = stdout_of(fx.flow_in("work", &supervisor_live()).arg("up"));
-
-    assert_eq!(stdout, UP);
-    let calls = fx.calls();
-    assert_eq!(calls.len(), 2, "{calls:?}");
-    assert_eq!(
-        calls[0].1[..5],
-        ["herdr", "--session", "work", "agent", "list"]
-    );
-    assert_focused_last(&calls, "work", LIVE_PANE);
-}
-
-#[test]
-fn up_focuses_when_lock_live() {
-    let fx = Fixture::new();
-    fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
-    fx.write_watch_lock("env-0001");
-    let before = fx.lock_text();
-
-    let (stdout, stderr) = output_of(fx.flow(&supervisor_live()).arg("up"));
-
-    let calls = fx.calls();
-    assert_eq!(calls.len(), 2, "{calls:?}");
-    assert!(
-        !has_subcommand(&calls, &["workspace", "create"]),
-        "{calls:?}"
-    );
-    assert_focused_last(&calls, "default", LIVE_PANE);
-    assert_eq!(stdout, UP);
     assert_eq!(
         stderr,
-        format!("found the supervisor on host-a (pane {LIVE_PANE})\n")
+        format!("starting a fresh supervisor in pane {HERE_PANE} on host-a\n")
     );
-    assert_eq!(fx.lock_text(), before);
-    assert!(
-        fx.state.join("supervisor/watch.lock/owner.json").exists(),
-        "a live supervisor's watcher keeps its lock"
-    );
-    assert!(!fx.state.join("supervisor/watch-state.json").exists());
+    assert_eq!(stdout, fx.exec_line(""));
+    assert!(fx.calls().is_empty());
 }
 
 #[test]
-fn up_focuses_a_supervisor_herdr_reports_no_session_for_under_its_label() {
+fn up_reads_a_lock_an_earlier_version_marked_stopped() {
     let fx = Fixture::new();
     fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
-    let script = [
-        focused(),
-        ok(&lock_pane_agent("/workspaces/flow", None)),
-        lock_workspace("flow-supervisor"),
-    ];
+    let path = fx.state.join("supervisor/lock.json");
+    let mut lock: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    lock["stopped"] = json!("2026-10-27T08:00:00Z");
+    fs::write(&path, lock.to_string()).unwrap();
+    fx.write_transcript("s9");
 
-    let stdout = stdout_of(fx.flow(&script).arg("up"));
+    let (stdout, _) = output_of(fx.flow(&[ok(NO_AGENTS)]).arg("up"));
 
-    assert_eq!(stdout, UP);
-    let calls = fx.calls();
-    assert!(
-        !has_subcommand(&calls, &["workspace", "create"]),
-        "{calls:?}"
-    );
-    assert_focused_last(&calls, "default", LIVE_PANE);
+    assert_eq!(stdout, fx.exec_line("--resume s9 "));
+    assert!(!fx.lock_text().contains("stopped"), "{}", fx.lock_text());
 }
 
 #[test]
-fn up_still_reports_the_supervisor_when_herdr_cannot_focus_it() {
+fn up_clears_the_watch_lock_before_starting_a_supervisor() {
     let fx = Fixture::new();
-    fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
-    let not_found = r#"{"error":{"code":"agent_not_found","message":"agent target w1:p1 not found"},"id":"cli:agent:focus"}"#;
-    let script = [
-        json!({"argv": ["agent", "focus"], "status": 1, "stdout": "", "stderr": not_found}),
-        ok(&lock_pane_agent("/workspaces/flow", Some("s9"))),
-    ];
+    fx.write_watch_lock("env-0002");
 
-    let (stdout, stderr) = output_of(fx.flow(&script).arg("up"));
+    let (_, stderr) = output_of(fx.flow(&[]).arg("up"));
 
-    assert_eq!(stdout, UP);
-    assert!(
-        stderr.contains("could not focus the supervisor's pane w1:p1: "),
-        "{stderr}"
+    assert!(!fx.state.join("supervisor/watch.lock").exists());
+    assert_eq!(
+        stderr,
+        format!(
+            "removed state/supervisor/watch.lock left by the previous supervisor\n\
+             starting a fresh supervisor in pane {HERE_PANE} on host-a\n"
+        )
     );
 }
 
 #[test]
-fn up_starts_fresh_beside_another_agent_and_touches_nothing_of_it() {
-    let cases = [
-        vec![ok(&lock_pane_agent("/workspaces/flow", Some("s-hand")))],
-        vec![ok(
-            &lock_pane_agent("/workspaces/flow", None).replace(LIVE_PANE, "w1:p2")
-        )],
-        vec![
-            ok(&lock_pane_agent("/workspaces/flow", None)),
-            lock_workspace("Notes"),
-        ],
-        vec![ok(NO_AGENTS)],
-    ];
-    for listing in cases {
+fn attach_and_down_are_not_commands() {
+    for command in ["attach", "down"] {
         let fx = Fixture::new();
-        fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
-        let mut script = vec![focused()];
-        script.extend(listing.clone());
-        script.extend(fresh_start_as("s9").into_iter().skip(1));
 
-        let stdout = stdout_of(fx.flow(&script).arg("up"));
-
-        let calls = fx.calls();
-        assert!(
-            has_subcommand(&calls, &["workspace", "create"]),
-            "{listing:?}: {calls:?}"
-        );
-        assert!(
-            !has_subcommand(&calls, &["close"]),
-            "{listing:?}: {calls:?}"
-        );
-        assert_eq!(fx.lock().unwrap().herdr.pane_id, NEW_PANE);
-        assert_eq!(stdout, UP);
-        assert_focused_last(&calls, "default", NEW_PANE);
+        fx.flow(&[])
+            .arg(command)
+            .assert()
+            .code(2)
+            .stderr(predicates::str::contains("unrecognized subcommand"));
     }
-}
-/// An agent list with one agent, in `LIVE_PANE` of workspace `w1`, running in `cwd`, herdr
-/// reporting Claude Code session `session` for it.
-fn lock_pane_agent(cwd: &str, session: Option<&str>) -> String {
-    let mut agent = json!({
-        "agent": "claude", "agent_status": "idle", "cwd": cwd, "pane_id": LIVE_PANE,
-        "terminal_title_stripped": "Read the docs", "workspace_id": "w1",
-    });
-    if let Some(session) = session {
-        agent["agent_session"] =
-            json!({"agent": "claude", "kind": "id", "source": "herdr:claude", "value": session});
-    }
-    json!({"id": "cli:agent:list", "result": {"type": "agent_list", "agents": [agent]}}).to_string()
-}
-
-#[test]
-fn up_starts_fresh_beside_an_open_tasks_worker_in_the_lock_pane() {
-    for (recorded, reported) in [(true, Some("s-worker")), (false, None)] {
-        let fx = Fixture::new();
-        fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
-        create_task_with_pane(&fx)
-            .set_status(TASK, |status| {
-                if recorded {
-                    status.claude_session = Some(ClaudeSession {
-                        session_id: "s-worker".to_owned(),
-                        transcript_path: PathBuf::from("/home/dev/.claude/projects/x/y.jsonl"),
-                    });
-                } else if let Some(target) = &mut status.herdr {
-                    target.host = "host-a".to_owned();
-                    target.session = "default".to_owned();
-                    target.workspace_id = "w1".to_owned();
-                    target.pane_id = LIVE_PANE.to_owned();
-                }
-            })
-            .unwrap();
-        let mut script = vec![
-            focused(),
-            ok(&lock_pane_agent("/workspaces/flow", reported)),
-        ];
-        if reported.is_none() {
-            script.push(lock_workspace_labelled_with_the_task());
-        }
-        script.extend(fresh_start_as("s9").into_iter().skip(1));
-
-        let stdout = stdout_of(fx.flow(&script).arg("up"));
-
-        let calls = fx.calls();
-        assert!(
-            has_subcommand(&calls, &["workspace", "create"]),
-            "{reported:?}: {calls:?}"
-        );
-        assert!(!has_subcommand(&calls, &["close"]), "{calls:?}");
-        assert_eq!(stdout, UP);
-        let watch_state = fx.state.join("supervisor/watch-state.json");
-        let seeded: Value =
-            serde_json::from_str(&fs::read_to_string(watch_state).unwrap()).unwrap();
-        assert_eq!(seeded["seen"], json!({}), "an open task is left to replay");
-    }
-}
-
-#[test]
-fn up_starts_fresh_session_when_resume_fails() {
-    let fx = Fixture::new();
-    fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
-    let mut script = vec![
-        focused(),
-        ok(NO_AGENTS),
-        ok(SERVER_RUNNING),
-        ok(WORKSPACE_CREATE),
-        ok(PANE_RUN_OK),
-        failed(AGENT_WAIT_TIMEOUT),
-        ok("$ claude --resume s9\nNo conversation found with session ID: s9\n$ \n"),
-        ok(WORKSPACE_CLOSED),
-    ];
-    script.extend(fresh_start().into_iter().skip(2));
-    // herdr's `agent read` fails once Claude Code has exited, so the pane must be read as a
-    // terminal.
-    script.insert(0, agent_read_fails());
-
-    let out = fx
-        .flow(&script)
-        .arg("up")
-        .assert()
-        .success()
-        .get_output()
-        .clone();
-
-    let calls = fx.calls();
-    let lines = pane_run_lines(&calls);
-    assert_eq!(lines.len(), 2, "{calls:?}");
-    assert!(
-        lines[0].ends_with(&format!("--resume s9 {START_PROMPT}")),
-        "{}",
-        lines[0]
-    );
-    assert!(!lines[1].contains("--resume"), "{}", lines[1]);
-    assert!(lines[1].ends_with(START_PROMPT), "{}", lines[1]);
-    assert!(
-        has_subcommand(&calls, &["workspace", "close", "w3"]),
-        "{calls:?}"
-    );
-    assert!(
-        has_subcommand(&calls, &["pane", "read", NEW_PANE]),
-        "{calls:?}"
-    );
-    let stderr = String::from_utf8(out.stderr).unwrap();
-    assert!(
-        stderr.contains("resume of session s9 failed; starting a fresh supervisor session"),
-        "{stderr}"
-    );
-    assert!(
-        stderr.ends_with(&format!(
-            "started a fresh supervisor on host-a (pane {NEW_PANE})\n"
-        )),
-        "{stderr}"
-    );
-    let lock = fx.lock().unwrap();
-    assert_eq!(lock.claude_session.as_deref(), Some("s1"));
-    assert_eq!(lock.herdr.pane_id, NEW_PANE);
-    assert_eq!(String::from_utf8(out.stdout).unwrap(), UP);
-}
-
-#[test]
-fn up_starts_fresh_within_one_poll_when_claude_cannot_find_the_session() {
-    let fx = Fixture::new();
-    fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
-    let not_found = r#"{"error":{"code":"agent_not_found","message":"agent target w3:p1 not found"},"id":"cli:agent:wait"}"#;
-    let mut script = vec![
-        focused(),
-        ok(NO_AGENTS),
-        ok(SERVER_RUNNING),
-        ok(WORKSPACE_CREATE),
-        ok(PANE_RUN_OK),
-        failed(not_found),
-        ok("$ claude --resume s9\nNo conversation found with session ID: s9\n$ \n"),
-        ok(WORKSPACE_CLOSED),
-    ];
-    script.extend(fresh_start().into_iter().skip(2));
-
-    let started = std::time::Instant::now();
-    let out = fx
-        .flow(&script)
-        .env("FLOW_HANDSHAKE_POLL_MS", "60000")
-        .arg("up")
-        .timeout(std::time::Duration::from_secs(30))
-        .assert()
-        .success()
-        .get_output()
-        .clone();
-
-    assert!(
-        started.elapsed() < std::time::Duration::from_secs(10),
-        "no poll interval passed: {:?}",
-        started.elapsed()
-    );
-    let calls = fx.calls();
-    let lines = pane_run_lines(&calls);
-    assert_eq!(lines.len(), 2, "{calls:?}");
-    assert!(!lines[1].contains("--resume"), "{}", lines[1]);
-    assert!(
-        has_subcommand(&calls, &["workspace", "close", "w3"]),
-        "{calls:?}"
-    );
-    let stderr = String::from_utf8(out.stderr).unwrap();
-    assert!(
-        stderr.contains("resume of session s9 failed; starting a fresh supervisor session"),
-        "{stderr}"
-    );
-    assert_eq!(fx.lock().unwrap().claude_session.as_deref(), Some("s1"));
-}
-
-#[test]
-fn up_keeps_the_session_when_a_resume_fails_for_another_reason() {
-    let fx = Fixture::new();
-    fx.write_lock("env-0001", "host-a", LIVE_PANE, Some("s9"));
-    let script = vec![
-        ok(NO_AGENTS),
-        ok(SERVER_RUNNING),
-        ok(WORKSPACE_CREATE),
-        ok(PANE_RUN_OK),
-        agent_read_fails(),
-        failed(AGENT_WAIT_TIMEOUT),
-        ok("$ claude --resume s9\n Loading conversation…\n"),
-    ];
-
-    let out = fx
-        .flow(&script)
-        .arg("up")
-        .assert()
-        .code(1)
-        .get_output()
-        .clone();
-
-    let calls = fx.calls();
-    assert_eq!(pane_run_lines(&calls).len(), 1, "{calls:?}");
-    assert!(
-        !has_subcommand(&calls, &["workspace", "close"]),
-        "{calls:?}"
-    );
-    assert!(
-        has_subcommand(&calls, &["pane", "read", NEW_PANE]),
-        "{calls:?}"
-    );
-    let stderr = String::from_utf8(out.stderr).unwrap();
-    assert!(stderr.contains("did not start within"), "{stderr}");
-    assert!(stderr.contains("left open for inspection"), "{stderr}");
-    assert!(!stderr.contains("starting a fresh"), "{stderr}");
-    let lock = fx.lock().unwrap();
-    assert_eq!(lock.claude_session.as_deref(), Some("s9"));
-    assert_eq!(lock.herdr.pane_id, NEW_PANE);
-}
-
-#[test]
-fn attach_is_not_a_command() {
-    let fx = Fixture::new();
-    fx.write_lock("env-0001", "host-a", LIVE_PANE, None);
-
-    fx.flow(&[])
-        .arg("attach")
-        .assert()
-        .code(2)
-        .stderr(predicates::str::contains("unrecognized subcommand"));
 }
 
 fn create_task_with_pane(fx: &Fixture) -> Store {
@@ -972,15 +541,6 @@ fn task_pane_agent(session: Option<&str>) -> Value {
             .replace(LIVE_PANE, "w2:p1")
             .replace(r#""workspace_id":"w1""#, r#""workspace_id":"w2""#),
     )
-}
-
-/// herdr's workspace list with the lock's workspace `w1` under the label dispatch gives `TASK`.
-fn lock_workspace_labelled_with_the_task() -> Value {
-    let workspace = json!({"workspace_id": "w1",
-        "label": format!("Add retry to the example client · {TASK}")});
-    let list = json!({"id": "cli:workspace:list",
-        "result": {"type": "workspace_list", "workspaces": [workspace]}});
-    ok(&list.to_string())
 }
 
 /// herdr's workspace list with the task's workspace `w2` under the label dispatch gives it.
@@ -1241,34 +801,4 @@ fn hook_supervisor_outside_supervisor_needs_no_state_dir() {
         .code(0)
         .stdout("")
         .stderr("");
-}
-
-#[test]
-fn up_after_down_resumes_the_stopped_supervisor_here_without_probing_its_pane() {
-    let fx = Fixture::new();
-    fx.write_lock("env-0002", "host-b", LIVE_PANE, Some("s9"));
-    let path = fx.state.join("supervisor/lock.json");
-    let mut lock: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-    lock["stopped"] = json!("2026-10-27T08:00:00Z");
-    fs::write(&path, lock.to_string()).unwrap();
-
-    let (_, stderr) = output_of(fx.flow(&fresh_start_as("s9")).arg("up"));
-
-    let calls = fx.calls();
-    assert!(calls.iter().all(|(host, _)| host == "host-a"), "{calls:?}");
-    let line = pane_run_line(&calls);
-    assert!(
-        line.contains("claude --name flow-supervisor --resume s9"),
-        "{line}"
-    );
-    assert!(
-        stderr.contains(&format!(
-            "resumed supervisor session s9 on host-a (pane {NEW_PANE})"
-        )),
-        "{stderr}"
-    );
-    let lock = fx.lock().unwrap();
-    assert_eq!(lock.stopped, None);
-    assert_eq!(lock.claude_session.as_deref(), Some("s9"));
-    assert_eq!(lock.host_env_id, "env-0001");
 }

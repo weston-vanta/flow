@@ -63,7 +63,7 @@ pub fn run(state: &StateDir, id: &str, force: bool) -> anyhow::Result<()> {
         let hosts = inventory::hosts(state)?;
         let host = host::find(&hosts, &target.host)?;
         let herdr = Herdr::with_session(Arc::from(runner::from_env()?), &target.session);
-        let lock = supervisor::running(state)?;
+        let lock = supervisor::load(state)?;
         let tasks = store.list_tasks()?;
         match close_task_workspace(&herdr, host, &target, id, lock.as_ref(), &tasks)? {
             Closing::Closed => {

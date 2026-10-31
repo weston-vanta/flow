@@ -965,24 +965,15 @@ fn hand_sessions_in_reused_panes_are_observed() {
 }
 
 #[test]
-fn an_agent_with_no_session_in_the_supervisors_pane_is_the_supervisor_only_under_its_label() {
+fn an_agent_with_no_session_in_the_supervisors_pane_is_the_supervisor() {
     let unreported =
         SHARED_SESSION_AGENTS.replace(r#""agent_session":{"kind":"id","value":"s-sup"},"#, "");
     assert_ne!(unreported, SHARED_SESSION_AGENTS);
-    let labelled = |label: &str| {
-        let workspaces = json!({"id": "cli:workspace:list", "result": {"type": "workspace_list",
-            "workspaces": [{"workspace_id": "w1", "label": label}]}});
-        [
-            on("host-a", SERVER_RUNNING),
-            on("host-a", &unreported),
-            on("host-a", &workspaces.to_string()),
-        ]
-    };
+    let script = [on("host-a", SERVER_RUNNING), on("host-a", &unreported)];
     let fx = Fixture::new();
     fx.single_host();
     fx.sharing_default();
 
-    let script = labelled("flow-supervisor");
     let text = stdout_of(fx.flow(&script).arg("sessions"));
     assert!(
         text.contains("host-a  idle     supervisor  flow-supervisor\n"),
@@ -994,12 +985,6 @@ fn an_agent_with_no_session_in_the_supervisors_pane_is_the_supervisor_only_under
         .code(2)
         .stderr("pane w1:p1 on host-a is the supervisor's\n");
     assert!(!fx.state.join("supervisor/follow.json").exists());
-
-    let text = stdout_of(fx.flow(&labelled("Notes")).arg("sessions"));
-    assert!(
-        text.contains("host-a  idle     observed  flow-supervisor\n"),
-        "{text}"
-    );
 }
 
 /// One agent herdr reports no session id for, in task `TASK_ID`'s recorded pane `w2:p1` of the

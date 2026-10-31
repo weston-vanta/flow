@@ -49,7 +49,7 @@
 //!
 //! An error after the lock is taken wakes the supervisor as `watch-failed` once per distinct
 //! error; `run_retrying` keeps retrying a repeat of it in the background, holding the lock. A run
-//! whose lock is removed or taken over, as `flow down` does, ends quietly at its next touch,
+//! whose lock is removed or taken over, as `flow up` does, ends quietly at its next touch,
 //! retrying or not, so a watcher on another host ends on its own.
 
 pub mod classify;
@@ -191,7 +191,7 @@ impl HandSession {
 /// The agents in the cached inventory other than the supervisor, owned as of one reading of the
 /// lock and the tasks. Unreadable tasks own nothing here; `HandSession::owner` reads them again.
 fn hand_sessions(state: &StateDir) -> anyhow::Result<Vec<HandSession>> {
-    let lock = supervisor::running(state)?;
+    let lock = supervisor::load(state)?;
     let tasks = Store::open(state).list_tasks().unwrap_or_default();
     let mut hands = Vec::new();
     for inv in inventory::load_all(state)?
@@ -303,8 +303,8 @@ fn sleep_holding(lock: &Guard, delay: Duration) -> anyhow::Result<()> {
     }
 }
 
-/// Whether `err` says the run's lock was removed or taken over, as `flow down` and `flow up`
-/// do, so the run is to end without a word to the supervisor.
+/// Whether `err` says the run's lock was removed or taken over, as `flow up` does, so the run is
+/// to end without a word to the supervisor.
 fn is_lost(err: &anyhow::Error) -> bool {
     err.chain().any(|cause| cause.is::<lock::Lost>())
 }
@@ -1923,18 +1923,16 @@ default_branch = "main"
     }
 
     #[test]
-    fn an_agent_with_no_session_in_the_supervisors_pane_is_the_supervisor_only_under_its_label() {
-        for (label, watched) in [("flow-supervisor", false), ("Notes", true)] {
-            let fx = Fixture::new();
-            fx.agent("env-0001", "default", "w1:p1", "flow-supervisor");
-            fx.labelled("env-0001", "w1:p1", label);
-            fx.supervisor_in("default", "w1:p1");
-            let runner = fake(Vec::new());
+    fn an_agent_with_no_session_in_the_supervisors_pane_is_the_supervisor_under_any_label() {
+        let fx = Fixture::new();
+        fx.agent("env-0001", "default", "w1:p1", "flow-supervisor");
+        fx.labelled("env-0001", "w1:p1", "Notes");
+        fx.supervisor_in("default", "w1:p1");
+        let runner = fake(Vec::new());
 
-            let watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+        let watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
 
-            assert_eq!(!watcher.hands.is_empty(), watched, "{label}");
-        }
+        assert!(watcher.hands.is_empty());
     }
 
     #[test]
@@ -2013,24 +2011,6 @@ default_branch = "main"
             })
             .collect();
         assert_eq!(waited, ["w2:p1", "w3:p1"]);
-    }
-
-    #[test]
-    fn a_stopped_supervisors_pane_is_a_hand_session() {
-        let fx = Fixture::new();
-        fx.agent("env-0001", "flow", "w1:p1", "Tidy docs");
-        fx.supervisor_in("flow", "w1:p1");
-        supervisor::mark_stopped(&fx.state).unwrap();
-        let runner = fake(Vec::new());
-
-        let watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
-
-        let hands: Vec<&str> = watcher
-            .hands
-            .iter()
-            .map(|h| h.agent.pane_id.as_str())
-            .collect();
-        assert_eq!(hands, ["w1:p1"]);
     }
 
     #[test]

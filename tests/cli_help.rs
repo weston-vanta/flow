@@ -33,7 +33,6 @@ fn help_lists_the_operator_commands_and_hides_the_plumbing() {
             "unfollow",
             "steer",
             "up",
-            "down",
             "help"
         ],
         "{help}"
