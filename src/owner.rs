@@ -498,7 +498,7 @@ mod tests {
     fn retiring_clears_only_the_target_judged_reused() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("state")).unwrap();
-        let state = crate::paths::StateDir::resolve(dir.path()).unwrap();
+        let state = crate::paths::StateDir::at(dir.path().join("state")).unwrap();
         let store = Store::open(&state);
         let (record, _) = task("aaaaaaab", State::Working, None, None);
         store.create_task(record, "brief").unwrap();

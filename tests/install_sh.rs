@@ -1,3 +1,5 @@
+mod common;
+
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
@@ -94,7 +96,7 @@ impl Fixture {
 
     /// The install script on the clone, with `path` as `$PATH`.
     fn script(&self, path: &str) -> Command {
-        let mut cmd = Command::new(find_on(&system_path(), "bash"));
+        let mut cmd = common::command(find_on(&system_path(), "bash"));
         cmd.arg(Path::new(REPO).join("scripts/install.sh"))
             .env("FLOW_DIR", &self.flow_dir)
             .env("FLOW_STATE_DIR", &self.state_dir)
@@ -141,7 +143,7 @@ impl Fixture {
         );
         fs::write(work.join("NOTES"), "a later change\n").unwrap();
         git(&work, &["add", "NOTES"]);
-        let status = Command::new("git")
+        let status = common::command("git")
             .current_dir(&work)
             .args([
                 "-c",
@@ -161,7 +163,7 @@ impl Fixture {
 }
 
 fn git(dir: &Path, args: &[&str]) {
-    let status = Command::new("git")
+    let status = common::command("git")
         .current_dir(dir)
         .args(args)
         .status()
@@ -170,7 +172,7 @@ fn git(dir: &Path, args: &[&str]) {
 }
 
 fn git_stdout(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
+    let out = common::command("git")
         .current_dir(dir)
         .args(args)
         .output()

@@ -1,3 +1,5 @@
+mod common;
+
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
@@ -12,7 +14,7 @@ const TASK: &str = "aaaaaaab";
 const SESSION_START: &str = r#"{"hook_event_name":"SessionStart","session_id":"s1","transcript_path":"/t/s1.jsonl","cwd":"/w","source":"startup"}"#;
 
 fn flow(state: &Path) -> Command {
-    let mut cmd = Command::cargo_bin("flow").expect("flow binary is built");
+    let mut cmd = common::flow();
     cmd.env("FLOW_STATE", state);
     cmd
 }
@@ -21,7 +23,7 @@ fn setup() -> (tempfile::TempDir, PathBuf, Store) {
     let repo = tempfile::tempdir().unwrap();
     let state = repo.path().join("state");
     std::fs::create_dir(&state).unwrap();
-    let store = Store::open(&StateDir::resolve(repo.path()).unwrap());
+    let store = Store::open(&StateDir::at(repo.path().join("state")).unwrap());
     store
         .create_task(
             TaskRecord {

@@ -16,10 +16,19 @@ pub struct StateDir {
 
 impl StateDir {
     /// `$FLOW_STATE` if set, else `<repo_root>/state`. A dangling symlink counts as missing.
+    /// Only the binary calls this; tests build their state with [`StateDir::at`], so a
+    /// `FLOW_STATE` in the environment `cargo test` runs in never points them at real state.
     pub fn resolve(repo_root: &Path) -> Result<StateDir, PathError> {
         let root = env::var_os(STATE_ENV)
             .map(PathBuf::from)
             .unwrap_or_else(|| repo_root.join("state"));
+        StateDir::at(root)
+    }
+
+    /// The state directory at `root`, without reading the environment. A dangling symlink
+    /// counts as missing.
+    pub fn at(root: impl Into<PathBuf>) -> Result<StateDir, PathError> {
+        let root = root.into();
         if root.is_dir() {
             Ok(StateDir { root })
         } else {

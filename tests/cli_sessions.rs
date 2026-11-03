@@ -1,3 +1,5 @@
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -96,7 +98,7 @@ impl Fixture {
         )
         .unwrap();
 
-        let store = Store::open(&StateDir::resolve(dir.path()).unwrap());
+        let store = Store::open(&StateDir::at(dir.path().join("state")).unwrap());
         store
             .create_task(
                 TaskRecord {
@@ -140,7 +142,7 @@ impl Fixture {
 
     fn flow(&self, script: &[Value]) -> Command {
         fs::write(self.script_path(), Value::from(script.to_vec()).to_string()).unwrap();
-        let mut cmd = Command::cargo_bin("flow").expect("flow binary is built");
+        let mut cmd = common::flow();
         cmd.env("FLOW_STATE", &self.state)
             .env("ONA_ID", "env-0001")
             .env("FLOW_FAKE_RUNNER", self.script_path())
@@ -810,7 +812,7 @@ impl Fixture {
             CONFIG.replace("herdr_sessions = [\"flow\", \"default\"]\n", ""),
         )
         .unwrap();
-        let store = Store::open(&StateDir::resolve(self.dir.path()).unwrap());
+        let store = Store::open(&StateDir::at(self.dir.path().join("state")).unwrap());
         let target = |pane_id: &str| HerdrTarget {
             host: "host-a".to_owned(),
             workspace_id: pane_id.split(':').next().unwrap().to_owned(),
@@ -833,7 +835,7 @@ impl Fixture {
                 status.herdr = Some(target("w4:p1"));
             })
             .unwrap();
-        let state = StateDir::resolve(self.dir.path()).unwrap();
+        let state = StateDir::at(self.dir.path().join("state")).unwrap();
         flow::supervisor::take(&state, "env-0001", target("w1:p1")).unwrap();
         flow::supervisor::set_session(&state, Some("s-sup")).unwrap();
     }
@@ -926,7 +928,7 @@ fn hand_sessions_in_reused_panes_are_observed() {
     let fx = Fixture::new();
     fx.single_host();
     fx.sharing_default();
-    let state = StateDir::resolve(fx.dir.path()).unwrap();
+    let state = StateDir::at(fx.dir.path().join("state")).unwrap();
     Store::open(&state)
         .set_status("aaaaaaac", |status| status.state = State::Done)
         .unwrap();
@@ -1019,7 +1021,7 @@ fn an_agent_without_an_id_under_a_tab_label_naming_another_retires_the_target() 
     let fx = Fixture::new();
     fx.single_host();
     fx.sharing_default();
-    let state = StateDir::resolve(fx.dir.path()).unwrap();
+    let state = StateDir::at(fx.dir.path().join("state")).unwrap();
     let store = Store::open(&state);
     store
         .set_status(TASK_ID, |status| status.state = State::Done)
@@ -1062,6 +1064,6 @@ fn an_agent_without_an_id_under_its_tasks_tab_label_is_the_tasks() {
     );
 
     assert_eq!(owners(&json_out), [json!({"task": TASK_ID})]);
-    let state = StateDir::resolve(fx.dir.path()).unwrap();
+    let state = StateDir::at(fx.dir.path().join("state")).unwrap();
     assert!(Store::open(&state).task(TASK_ID).unwrap().1.herdr.is_some());
 }

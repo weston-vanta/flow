@@ -13,7 +13,7 @@ use serde_json::json;
 
 fn state_dir(repo: &Path) -> StateDir {
     fs::create_dir(repo.join("state")).unwrap();
-    StateDir::resolve(repo).unwrap()
+    StateDir::at(repo.join("state")).unwrap()
 }
 
 fn sample_record(id: &str) -> TaskRecord {

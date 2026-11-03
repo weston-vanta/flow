@@ -1304,7 +1304,7 @@ default_branch = "main"
             let root = dir.path().join("state");
             std::fs::create_dir(&root).unwrap();
             std::fs::write(root.join("config.toml"), CONFIG).unwrap();
-            let state = StateDir::resolve(dir.path()).unwrap();
+            let state = StateDir::at(dir.path().join("state")).unwrap();
             let host = Host {
                 name: "host-a".to_owned(),
                 env_id: "env-0001".to_owned(),

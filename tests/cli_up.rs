@@ -1,3 +1,5 @@
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -71,7 +73,7 @@ impl Fixture {
     fn flow(&self, script: &[Value]) -> Command {
         fs::write(self.script_path(), Value::from(script.to_vec()).to_string()).unwrap();
         let config_home = self.dir.path().join("config");
-        let mut cmd = Command::cargo_bin("flow").expect("flow binary is built");
+        let mut cmd = common::flow();
         cmd.env("FLOW_STATE", &self.state)
             .env("ONA_ID", "env-0001")
             .env("FLOW_FAKE_RUNNER", self.script_path())
@@ -115,7 +117,7 @@ impl Fixture {
     }
 
     fn state_dir(&self) -> StateDir {
-        StateDir::resolve(self.dir.path()).unwrap()
+        StateDir::at(self.dir.path().join("state")).unwrap()
     }
 
     /// A supervisor's lock in workspace `w1` of herdr's `default` session.
@@ -839,8 +841,7 @@ fn hook_supervisor_ignores_bad_input_and_corrupt_lock() {
 #[test]
 fn hook_supervisor_outside_supervisor_needs_no_state_dir() {
     let dir = tempfile::tempdir().unwrap();
-    Command::cargo_bin("flow")
-        .expect("flow binary is built")
+    common::flow()
         .env("FLOW_STATE", dir.path().join("missing"))
         .env_remove(supervisor::SUPERVISOR_ENV)
         .args(["hook", "supervisor"])
