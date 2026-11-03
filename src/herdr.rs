@@ -853,8 +853,11 @@ pub enum WaitEnd {
     Reached(AgentStatus),
     /// The wait's `--timeout` passed first.
     TimedOut,
-    /// herdr does not know the pane, or no server runs for the session.
-    Gone,
+    /// herdr sees no agent in the pane: it has not detected one yet, the agent exited, or the
+    /// pane is gone.
+    NoAgent,
+    /// No herdr server runs for the session.
+    NoServer,
     /// ssh could not reach the host.
     Unreachable,
     /// Anything else, described.
@@ -881,7 +884,8 @@ pub fn wait_end(code: Option<i32>, stdout: &str) -> WaitEnd {
     }
     match error_code(stdout).as_deref() {
         Some(TIMEOUT_CODE) => WaitEnd::TimedOut,
-        Some(AGENT_NOT_FOUND_CODE | SERVER_NOT_RUNNING_CODE) => WaitEnd::Gone,
+        Some(AGENT_NOT_FOUND_CODE) => WaitEnd::NoAgent,
+        Some(SERVER_NOT_RUNNING_CODE) => WaitEnd::NoServer,
         _ => WaitEnd::Failed(match code {
             Some(code) => format!("exited {code}: {stdout}"),
             None => format!("killed by a signal: {stdout}"),
@@ -1173,10 +1177,10 @@ mod tests {
     #[test]
     fn wait_end_reads_failures() {
         let not_found = r#"{"error":{"code":"agent_not_found","message":"agent target w9:p1 not found"},"id":"cli:agent:wait"}"#;
-        assert_eq!(wait_end(Some(1), not_found), WaitEnd::Gone);
+        assert_eq!(wait_end(Some(1), not_found), WaitEnd::NoAgent);
         assert_eq!(
             wait_end(Some(1), AGENT_LIST_SERVER_NOT_RUNNING),
-            WaitEnd::Gone
+            WaitEnd::NoServer
         );
         assert_eq!(wait_end(Some(1), AGENT_WAIT_TIMEOUT), WaitEnd::TimedOut);
         assert_eq!(wait_end(Some(255), ""), WaitEnd::Unreachable);
