@@ -7,11 +7,15 @@
 //! `working` when it has no change to wait for, so the `idle` that ends each of its turns is seen,
 //! standing in for the turn-end hook such a session lacks. A wait started on a pane whose status an
 //! earlier wake reported starts as if it had just read that status: it ends on any other one first,
-//! so a change made while no wait ran still reaches the watcher.
+//! so a change made while no wait ran still reaches the watcher. herdr may not yet see the agent
+//! in a dispatched task's pane right after its launch; until `LAUNCH_GRACE` has passed since the
+//! task was created, a wait answered with no agent asks again instead of reporting it gone.
 
 use std::io::Read;
 use std::process::Child;
 use std::time::{Duration, Instant};
+
+use jiff::{SignedDuration, Timestamp};
 
 use super::classify::Observation;
 use crate::herdr::{self, AgentStatus, Herdr, WaitEnd};
@@ -19,6 +23,13 @@ use crate::state::config::Host;
 
 /// How long a herdr wait that could not run waits before it is started again.
 const RETRY_AFTER: Duration = Duration::from_secs(30);
+/// How long after a dispatched task was created herdr may see no agent in its pane without the
+/// agent being gone. `flow dispatch` records the pane as the task's before it launches Claude
+/// Code there, and herdr answers `agent_not_found` until it detects the agent, so a watcher
+/// already running can ask too early. The same 60 s `flow dispatch` gives Claude Code to start.
+const LAUNCH_GRACE: SignedDuration = SignedDuration::from_secs(60);
+/// How long a wait answered with no agent during `LAUNCH_GRACE` waits before it asks again.
+const NOT_YET_RETRY_AFTER: Duration = Duration::from_secs(5);
 /// The worker statuses worth waking for.
 const TASK_WAKE_STATUSES: &[AgentStatus] = &[AgentStatus::Blocked, AgentStatus::Done];
 /// What an adopted task's wait ends on when it has no change to wait for: the wake statuses,
@@ -41,12 +52,20 @@ const WAITABLE_STATUSES: &[AgentStatus] = &[
     AgentStatus::Done,
 ];
 
-/// Whose agent a wait watches: a task's worker, with whether it was adopted, or a hand session,
-/// with whether the user follows it and its title as of the cached inventory.
+/// Whose agent a wait watches: a task's worker, with whether it was adopted and when the task
+/// was created, or a hand session, with whether the user follows it and its title as of the
+/// cached inventory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum WaitTarget {
-    Task { id: String, adopted: bool },
-    Observed { followed: bool, title: String },
+    Task {
+        id: String,
+        adopted: bool,
+        created: Timestamp,
+    },
+    Observed {
+        followed: bool,
+        title: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,6 +105,19 @@ impl WaitSpec {
         }
     }
 
+    /// Whether, at `now`, herdr may not see this wait's agent yet: it is a dispatched task's
+    /// worker and `LAUNCH_GRACE` has not passed since the task was created.
+    fn launching(&self, now: Timestamp) -> bool {
+        match self.target {
+            WaitTarget::Task {
+                adopted: false,
+                created,
+                ..
+            } => now.duration_since(created) < LAUNCH_GRACE,
+            _ => false,
+        }
+    }
+
     /// Whether this waits on a hand session the user does not follow.
     pub(super) fn unfollowed_hand(&self) -> bool {
         matches!(
@@ -107,7 +139,8 @@ impl WaitSpec {
         }
     }
 
-    /// herdr no longer knows the pane. A hand session's agent then reads as `unknown`.
+    /// herdr sees no agent in the pane, or no server for it. A hand session's agent then reads
+    /// as `unknown`.
     pub(super) fn gone(&self) -> Observation {
         match &self.target {
             WaitTarget::Task { id, .. } => Observation::AgentGone { task: id.clone() },
@@ -140,7 +173,8 @@ pub(super) struct PaneWait {
     /// The agent's status as of the last wait that ended, `None` once a wait could not tell.
     known: Option<AgentStatus>,
     retry_at: Option<Instant>,
-    /// Set once herdr no longer knows the pane; nothing more is asked about it.
+    /// Set once herdr sees no agent in the pane, or no server for it, other than during
+    /// `LAUNCH_GRACE`; nothing more is asked about it.
     gone: bool,
 }
 
@@ -148,6 +182,8 @@ pub(super) enum Polled {
     Running,
     Reached(AgentStatus),
     TimedOut,
+    /// herdr sees no agent in a dispatched task's pane yet; the wait asks again shortly.
+    NotYet,
     Gone,
     Unreachable,
     Failed(String),
@@ -244,7 +280,10 @@ impl PaneWait {
                 Polled::Reached(status)
             }
             WaitEnd::TimedOut => Polled::TimedOut,
-            WaitEnd::Gone => {
+            WaitEnd::NoAgent if self.spec.launching(Timestamp::now()) => {
+                self.back_off_for(NOT_YET_RETRY_AFTER, Polled::NotYet)
+            }
+            WaitEnd::NoAgent | WaitEnd::NoServer => {
                 self.gone = true;
                 self.known = None;
                 Polled::Gone
@@ -259,9 +298,13 @@ impl PaneWait {
     }
 
     fn back_off(&mut self, polled: Polled) -> Polled {
+        self.back_off_for(RETRY_AFTER, polled)
+    }
+
+    fn back_off_for(&mut self, delay: Duration, polled: Polled) -> Polled {
         self.child = None;
         self.known = None;
-        self.retry_at = Some(Instant::now() + RETRY_AFTER);
+        self.retry_at = Some(Instant::now() + delay);
         polled
     }
 }
@@ -295,10 +338,16 @@ mod tests {
         }
     }
 
+    /// A wait on a dispatched task created long enough ago that its launch grace has passed.
     fn task_wait(script: Vec<Scripted>) -> (PaneWait, Arc<FakeRunner>) {
+        task_wait_created(Timestamp::now() - SignedDuration::from_hours(1), script)
+    }
+
+    fn task_wait_created(created: Timestamp, script: Vec<Scripted>) -> (PaneWait, Arc<FakeRunner>) {
         let target = WaitTarget::Task {
             id: "aaaaaaab".to_owned(),
             adopted: false,
+            created,
         };
         wait_on(target, script)
     }
@@ -419,6 +468,7 @@ mod tests {
         let target = WaitTarget::Task {
             id: "aaaaaaab".to_owned(),
             adopted: true,
+            created: Timestamp::now(),
         };
         let (mut wait, _) = wait_on(target, vec![answer(0, WORKING), answer(0, IDLE)]);
         assert_eq!(
@@ -515,6 +565,56 @@ mod tests {
         assert!(wait.retry_at.is_some_and(|at| at > Instant::now()));
         assert!(matches!(wait.poll(1000), Polled::Running));
         assert_eq!(fake.calls().len(), 1);
+    }
+
+    #[test]
+    fn no_agent_right_after_dispatch_retries_shortly_and_is_not_gone() {
+        let (mut wait, fake) = task_wait_created(
+            Timestamp::now(),
+            vec![answer(1, NOT_FOUND), answer(0, WORKING)],
+        );
+        assert!(matches!(run_once(&mut wait), Polled::NotYet));
+        assert!(!wait.gone);
+        let retry_at = wait.retry_at.expect("the wait backs off");
+        assert!(retry_at <= Instant::now() + NOT_YET_RETRY_AFTER);
+        assert!(matches!(wait.poll(1000), Polled::Running));
+        assert_eq!(fake.calls().len(), 1, "no new wait while backing off");
+
+        wait.retry_at = Some(Instant::now() - Duration::from_millis(1));
+        assert!(matches!(
+            run_once(&mut wait),
+            Polled::Reached(AgentStatus::Working)
+        ));
+        assert_eq!(fake.calls().len(), 2);
+    }
+
+    #[test]
+    fn no_agent_after_the_launch_grace_is_gone() {
+        let created = Timestamp::now() - LAUNCH_GRACE - SignedDuration::from_secs(1);
+        let (mut wait, fake) = task_wait_created(created, vec![answer(1, NOT_FOUND)]);
+        assert!(matches!(run_once(&mut wait), Polled::Gone));
+        assert!(wait.gone);
+        assert!(matches!(wait.poll(1000), Polled::Running));
+        assert_eq!(fake.calls().len(), 1);
+    }
+
+    #[test]
+    fn no_server_right_after_dispatch_is_gone() {
+        let no_server =
+            include_str!("../../tests/fixtures/herdr/agent_list_server_not_running.json");
+        let (mut wait, _) = task_wait_created(Timestamp::now(), vec![answer(1, no_server)]);
+        assert!(matches!(run_once(&mut wait), Polled::Gone));
+    }
+
+    #[test]
+    fn no_agent_right_after_adoption_is_gone() {
+        let target = WaitTarget::Task {
+            id: "aaaaaaab".to_owned(),
+            adopted: true,
+            created: Timestamp::now(),
+        };
+        let (mut wait, _) = wait_on(target, vec![answer(1, NOT_FOUND)]);
+        assert!(matches!(run_once(&mut wait), Polled::Gone));
     }
 
     #[test]

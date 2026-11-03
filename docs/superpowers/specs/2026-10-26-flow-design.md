@@ -259,8 +259,10 @@ designer's call.
     herdr server and with a time limit per CDE, to find the sessions the user started by
     hand. It then blocks on the fleet: herdr `agent wait` per worker and per hand session
     (remote through ssh, one long-lived connection per CDE), file events on `state/`, and a
-    heartbeat while tasks are open or sessions are followed. A run watching only hand
-    sessions lists the CDEs again hourly and ends quietly after a day. It absorbs benign
+    heartbeat while tasks are open or sessions are followed. Dispatch records a worker's pane
+    before Claude Code starts in it, so for 60 s after a dispatched task is created a wait
+    herdr answers with no agent asks again rather than reporting the agent gone. A run watching
+    only hand sessions lists the CDEs again hourly and ends quietly after a day. It absorbs benign
     events in-process and exits 2 with a one-line reason when something is actionable. The
     harness delivers that as hook feedback and the supervisor takes a turn. A blocking Stop
     hook, `flow guard`, refuses to let the session end while work is under way and no

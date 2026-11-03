@@ -891,6 +891,7 @@ impl<'a> Watcher<'a> {
                     target: WaitTarget::Task {
                         id: rec.id.clone(),
                         adopted: rec.origin == Origin::Adopted,
+                        created: rec.created,
                     },
                     host: target.host.clone(),
                     session: target.session.clone(),
@@ -972,8 +973,8 @@ impl<'a> Watcher<'a> {
     }
 
     /// Starts the waits not running and reads the ones that ended. A status not worth waking
-    /// for, or an unreachable host seen only by an unfollowed hand session's wait, is logged
-    /// rather than observed.
+    /// for, an unreachable host seen only by an unfollowed hand session's wait, or no agent yet
+    /// in a just-dispatched worker's pane, is logged rather than observed.
     fn poll_waits(&mut self) -> Vec<(Observation, Progress)> {
         let timeout_ms = u64::try_from(self.settings.heartbeat.as_millis()).unwrap_or(u64::MAX);
         let mut observed = Vec::new();
@@ -997,6 +998,16 @@ impl<'a> Watcher<'a> {
                 }
                 Polled::TimedOut => {
                     reported.reachable(&wait.host.name);
+                    continue;
+                }
+                Polled::NotYet => {
+                    reported.reachable(&wait.host.name);
+                    notes.push(format!(
+                        "{}: herdr sees no agent in pane {} on {} yet; asking again",
+                        wait.spec.key(),
+                        wait.spec.pane_id,
+                        wait.host.name
+                    ));
                     continue;
                 }
                 Polled::Gone => {
@@ -1315,8 +1326,17 @@ default_branch = "main"
             Fixture { _dir: dir, state }
         }
 
-        /// A working task on `host-a`, its worker in `w1:p1` when `with_pane`.
+        /// A working task on `host-a`, its worker in `w1:p1` when `with_pane`, dispatched long
+        /// enough ago that herdr is past its launch.
         fn task(&self, with_pane: bool) {
+            self.task_created(
+                with_pane,
+                Timestamp::now() - jiff::SignedDuration::from_hours(1),
+            );
+        }
+
+        /// `task`, dispatched at `created`.
+        fn task_created(&self, with_pane: bool, created: Timestamp) {
             let store = Store::open(&self.state);
             let rec = TaskRecord {
                 id: TASK.to_owned(),
@@ -1326,7 +1346,7 @@ default_branch = "main"
                 cwd: PathBuf::from("/work/repo.wt/feature"),
                 repo: Some("example-repo".to_owned()),
                 harness: Harness::Claude,
-                created: Timestamp::now(),
+                created,
                 owner: "supervisor".to_owned(),
                 origin: Origin::Dispatched,
             };
@@ -3072,6 +3092,27 @@ default_branch = "main"
         );
         assert_eq!(watcher.cycle().unwrap(), None);
         assert_eq!(runner.calls().len(), 1);
+    }
+
+    #[test]
+    fn a_just_dispatched_worker_herdr_does_not_see_yet_does_not_wake() {
+        let fx = Fixture::new();
+        fx.task_created(true, Timestamp::now());
+        let runner = fake(vec![answer(1, NOT_FOUND)]);
+        let mut watcher = fx.watcher(&runner, DEFAULT_QUIET_SECS);
+        assert_eq!(two_cycles(&mut watcher), None);
+        assert_eq!(watcher.cycle().unwrap(), None);
+        assert_eq!(
+            runner.calls().len(),
+            1,
+            "the wait backs off before asking again"
+        );
+        assert!(
+            fx.log()
+                .contains("aaaaaaab: herdr sees no agent in pane w1:p1 on host-a yet"),
+            "{}",
+            fx.log()
+        );
     }
 
     #[test]
