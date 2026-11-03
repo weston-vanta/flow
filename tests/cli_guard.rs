@@ -1,3 +1,5 @@
+mod common;
+
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -41,7 +43,7 @@ impl Fixture {
     }
 
     fn state_dir(&self) -> StateDir {
-        StateDir::resolve(self.dir.path()).unwrap()
+        StateDir::at(self.dir.path().join("state")).unwrap()
     }
 
     fn task(&self, id: &str, state: State) {
@@ -75,7 +77,7 @@ impl Fixture {
 
     /// `flow guard` with no supervisor marker in its environment.
     fn guard_command(&self) -> Command {
-        let mut cmd = Command::cargo_bin("flow").expect("flow binary is built");
+        let mut cmd = common::flow();
         cmd.arg("guard")
             .env("FLOW_STATE", &self.state)
             .env("ONA_ID", HOST)
@@ -173,8 +175,7 @@ fn guard_ignores_non_supervisor_sessions() {
 #[test]
 fn guard_outside_supervisor_needs_no_state_dir() {
     let dir = tempfile::tempdir().unwrap();
-    Command::cargo_bin("flow")
-        .expect("flow binary is built")
+    common::flow()
         .arg("guard")
         .env("FLOW_STATE", dir.path().join("missing"))
         .env_remove(SUPERVISOR_ENV)

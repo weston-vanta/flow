@@ -1,10 +1,12 @@
+mod common;
+
 use std::fs;
 
 use assert_cmd::Command;
 use predicates::prelude::*;
 
 fn flow() -> Command {
-    Command::cargo_bin("flow").expect("flow binary is built")
+    common::flow()
 }
 
 #[test]

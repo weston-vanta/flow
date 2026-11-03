@@ -1,3 +1,5 @@
+mod common;
+
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
@@ -11,7 +13,7 @@ use serde_json::{Value, json};
 const TASK: &str = "aaaaaaab";
 
 fn flow(state: &Path) -> Command {
-    let mut cmd = Command::cargo_bin("flow").expect("flow binary is built");
+    let mut cmd = common::flow();
     cmd.env("FLOW_STATE", state);
     cmd
 }
@@ -22,7 +24,7 @@ fn setup() -> (tempfile::TempDir, PathBuf, Store) {
     let repo = tempfile::tempdir().unwrap();
     let state = repo.path().join("state");
     std::fs::create_dir(&state).unwrap();
-    let store = Store::open(&StateDir::resolve(repo.path()).unwrap());
+    let store = Store::open(&StateDir::at(repo.path().join("state")).unwrap());
     store
         .create_task(record(TASK, "Add retry to the example client"), "brief")
         .unwrap();

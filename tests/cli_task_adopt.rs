@@ -1,3 +1,5 @@
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -95,7 +97,7 @@ impl Fixture {
 
     fn flow(&self, script: &[Value]) -> Command {
         fs::write(self.script_path(), Value::from(script.to_vec()).to_string()).unwrap();
-        let mut cmd = Command::cargo_bin("flow").expect("flow binary is built");
+        let mut cmd = common::flow();
         cmd.env("FLOW_STATE", &self.state)
             .env("ONA_ID", "env-0001")
             .env("FLOW_FAKE_RUNNER", self.script_path())
@@ -122,7 +124,7 @@ impl Fixture {
     }
 
     fn store(&self) -> Store {
-        Store::open(&StateDir::resolve(self.dir.path()).unwrap())
+        Store::open(&StateDir::at(self.dir.path().join("state")).unwrap())
     }
 
     /// The tasks other than `DISPATCHED`.

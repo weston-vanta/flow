@@ -1,6 +1,8 @@
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command as StdCommand, Output, Stdio};
+use std::process::{Child, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -84,7 +86,7 @@ impl Fixture {
     }
 
     fn state_dir(&self) -> StateDir {
-        StateDir::resolve(self.dir.path()).unwrap()
+        StateDir::at(self.dir.path().join("state")).unwrap()
     }
 
     /// A working task on `host`, its worker in `pane_id` when given.
@@ -143,14 +145,14 @@ impl Fixture {
     }
 
     fn flow(&self) -> Command {
-        let mut cmd = Command::cargo_bin("flow").expect("flow binary is built");
+        let mut cmd = common::flow();
         cmd.envs(self.envs()).timeout(WATCH_BUDGET);
         cmd
     }
 
     /// `flow watch <args>` running in the background.
     fn spawn_watch(&self, args: &[&str]) -> Child {
-        StdCommand::new(assert_cmd::cargo::cargo_bin("flow"))
+        common::flow_std()
             .arg("watch")
             .args(args)
             .envs(self.envs())
@@ -361,8 +363,7 @@ fn watch_ignores_non_supervisor_sessions() {
 #[test]
 fn watch_outside_supervisor_needs_no_state_dir() {
     let dir = tempfile::tempdir().unwrap();
-    Command::cargo_bin("flow")
-        .expect("flow binary is built")
+    common::flow()
         .args(["watch", "--once"])
         .env("FLOW_STATE", dir.path().join("missing"))
         .env_remove(SUPERVISOR_ENV)

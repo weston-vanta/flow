@@ -1,7 +1,8 @@
+mod common;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use flow::paths::StateDir;
 use flow::state::Store;
@@ -43,7 +44,7 @@ fn snapshot(dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
 }
 
 fn migrate(state: &Path, args: &[&str]) -> String {
-    let out = Command::new(Path::new(REPO).join("scripts/migrate-2026-10-29.sh"))
+    let out = common::command(Path::new(REPO).join("scripts/migrate-2026-10-29.sh"))
         .args(args)
         .arg(state)
         .output()
@@ -58,7 +59,7 @@ fn migrate(state: &Path, args: &[&str]) -> String {
 }
 
 fn has_jq() -> bool {
-    Command::new("jq")
+    common::command("jq")
         .arg("--version")
         .output()
         .is_ok_and(|out| out.status.success())
@@ -76,7 +77,7 @@ fn migrates_old_state_so_flow_reads_it_and_a_second_run_changes_nothing() {
         &Path::new(REPO).join("tests/fixtures/migrate-2026-10-29"),
         &root,
     );
-    let state = StateDir::resolve(dir.path()).unwrap();
+    let state = StateDir::at(dir.path().join("state")).unwrap();
     let old = snapshot(&root);
     assert!(Store::open(&state).list_tasks().is_err());
 

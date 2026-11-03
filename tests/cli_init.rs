@@ -1,3 +1,5 @@
+mod common;
+
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
@@ -104,7 +106,7 @@ impl Fixture {
     fn flow(&self, script: &[Value]) -> Command {
         let runner = self.path("runner.json");
         fs::write(&runner, Value::from(script.to_vec()).to_string()).unwrap();
-        let mut cmd = Command::cargo_bin("flow").expect("flow binary is built");
+        let mut cmd = common::flow();
         cmd.env("FLOW_STATE", &self.state)
             .env("ONA_ID", ENV_ID)
             .env("FLOW_FAKE_RUNNER", runner)

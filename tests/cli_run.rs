@@ -1,3 +1,5 @@
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -53,7 +55,7 @@ fn write_record(state: &Path, fields: &serde_json::Value) {
 
 /// `flow` on `state`, running as the host whose env id is `env-0001` (`host-a`).
 fn flow(state: &Path) -> Command {
-    let mut cmd = Command::cargo_bin("flow").expect("flow binary is built");
+    let mut cmd = common::flow();
     cmd.env("FLOW_STATE", state)
         .env("ONA_ID", "env-0001")
         .env_remove("FLOW_FAKE_RUNNER");

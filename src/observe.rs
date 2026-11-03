@@ -390,7 +390,7 @@ mod tests {
             r#"{"follow": [{"host": "host-b", "pane_id": "w5:p1", "session": "default"}]}"#,
         )
         .unwrap();
-        let state = StateDir::resolve(dir.path()).unwrap();
+        let state = StateDir::at(dir.path().join("state")).unwrap();
         assert_eq!(
             FollowList::load(&state).unwrap().follow,
             [Followed {

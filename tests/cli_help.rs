@@ -1,9 +1,8 @@
-use assert_cmd::Command;
+mod common;
 
 #[test]
 fn help_lists_the_operator_commands_and_hides_the_plumbing() {
-    let out = Command::cargo_bin("flow")
-        .expect("flow binary is built")
+    let out = common::flow()
         .arg("--help")
         .assert()
         .success()
@@ -44,8 +43,7 @@ fn help_lists_the_operator_commands_and_hides_the_plumbing() {
 
 #[test]
 fn hidden_commands_still_run() {
-    let out = Command::cargo_bin("flow")
-        .expect("flow binary is built")
+    let out = common::flow()
         .args(["wake", "--help"])
         .assert()
         .success()

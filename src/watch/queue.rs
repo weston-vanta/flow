@@ -155,7 +155,7 @@ mod tests {
     fn state() -> (tempfile::TempDir, StateDir) {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("state")).unwrap();
-        let state = StateDir::resolve(dir.path()).unwrap();
+        let state = StateDir::at(dir.path().join("state")).unwrap();
         (dir, state)
     }
 
