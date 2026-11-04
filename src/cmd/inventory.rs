@@ -1,5 +1,6 @@
 //! `flow inventory`: worktrees, agents, PRs, and load per host, from the cache or refreshed.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
@@ -11,6 +12,7 @@ use serde_json::Value;
 use crate::herdr::Agent;
 use crate::host;
 use crate::inventory::{self, HostInventory, Unreachable, Worktree, discovery};
+use crate::observe::FollowList;
 use crate::paths::StateDir;
 use crate::render;
 use crate::runner::{self, Runner};
@@ -147,9 +149,15 @@ fn refresh_all(
     let now = Timestamp::now();
     let tasks = &Store::open(state).list_tasks().unwrap_or_default();
     let own = &supervisor::herdr_session(state)?;
-    let discovered = discovery::discover(state, &config.hosts, now)?;
+    let in_use = hosts_in_use(state)
+        .inspect_err(|err| eprintln!("keeping gone hosts: {err:#}"))
+        .ok();
+    let discovered = discovery::discover(state, &config.hosts, in_use.as_ref(), now)?;
     if let Some(warning) = &discovered.warning {
         eprintln!("{warning}");
+    }
+    for record in &discovered.forgotten {
+        eprintln!("forgot gone host {} ({})", record.name, record.env_id);
     }
     let targets: Vec<(Host, HostInventory)> = discovered
         .records
@@ -221,6 +229,22 @@ fn refresh_all(
         inventory::save(state, inventory)?;
     }
     Ok(failed)
+}
+
+/// The names of the hosts an open task runs on or has its herdr pane on, a followed session runs
+/// on, or the supervisor lock records. The watcher finds these hosts by name, and `flow up` reads
+/// the lock's host record, so their records stay while they are gone.
+fn hosts_in_use(state: &StateDir) -> anyhow::Result<HashSet<String>> {
+    let mut names = HashSet::new();
+    names.extend(supervisor::load(state)?.map(|lock| lock.herdr.host));
+    for (record, status) in Store::open(state).list_tasks()? {
+        if status.state.is_open() {
+            names.insert(record.host);
+            names.extend(status.herdr.map(|target| target.host));
+        }
+    }
+    names.extend(FollowList::load(state)?.follow.into_iter().map(|f| f.host));
+    Ok(names)
 }
 
 /// `host`'s `fresh` inventory keeping what discovery recorded in `record`, or `record` marked

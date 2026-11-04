@@ -330,6 +330,7 @@ state/
     decisions.jsonl  questions, who answered (supervisor|user), rationale
     report.md        final report (when done)
     requests/        dispatch requests written by the worker, consumed by the supervisor
+  archive/tasks/<task-id>/  a task `flow task archive` moved out of `tasks/`, files unchanged
   hosts/<env-id>.json inventory: name, ssh alias, worktrees, branches, PRs, sessions, load,
                      last seen
   supervisor/        lock (host, herdr target, session id), watcher ledger, wake queue
@@ -394,7 +395,7 @@ Operator:
 - `flow init [--force]`: write `state/config.toml` from what this machine can tell, then refresh the inventory; `--force` replaces an existing file.
 - `flow up`: from a shell pane inside herdr, run the supervisor in that pane; anywhere else it exits 1. It asks only this host's herdr: when the lock records the supervisor on this host and herdr reports an agent there with the lock's Claude Code session, it prints `the supervisor is running in pane <id> (workspace <label>)` and exits 0. Otherwise it records this host, this pane and its herdr session in the lock, keeping the Claude Code session to resume, and replaces itself with Claude Code in this pane, resuming that session while Claude Code keeps a non-empty transcript of it and starting a fresh one otherwise. When the lock names another host that is not gone, it first prints `the previous supervisor was recorded on <host> since <time> ago; if it is still running there, exit it`. Starting one first writes `state/supervisor/watch-state.json` with every closed task marked read when that file does not exist, so the first `flow watch` replays only open tasks, and otherwise forgets the observed sessions it records, so the first `flow watch` announces none of the sessions the supervisor's start procedure asks about.
 - `flow status [--all] [--json]`: open tasks, their holds, pending dispatch requests from workers (`req-id  from-task  host  title`), and observed sessions; `--all` includes done and orphaned tasks.
-- `flow inventory [--refresh] [--json]`: worktrees, agents, and PRs per host; `--refresh` first discovers hosts from Ona (or the static list), probes each running one, and lists open PRs. `--json` gives each host its ssh alias, whether it is the host flow runs on (`local`), its Ona phase, when it was last seen, and whether it is reachable or gone.
+- `flow inventory [--refresh] [--json]`: worktrees, agents, and PRs per host; `--refresh` first discovers hosts from Ona (or the static list), probes each running one, and lists open PRs. `--json` gives each host its ssh alias, whether it is the host flow runs on (`local`), its Ona phase, when it was last seen, and whether it is reachable or gone. A refresh deletes the record of each gone host no open task runs on or has its pane on, no followed session runs on, and the supervisor lock does not name, printing `forgot gone host <name> (<env id>)`; while the tasks or follow list cannot be read it keeps every gone host.
 - `flow run <host> -- <argv>...`: run a command on a host, passing its output and exit code through.
 - `flow sessions [--summaries] [--json]`: herdr agents across hosts, with their tasks, as the supervisor, or as observed sessions. `--summaries` adds each session's latest summary, and `--json` includes summaries, pane ids and each agent's `owner`.
 - `flow follow <host> <session>`: wake the supervisor when a session started by hand goes idle or done, not only when it turns blocked. `<session>` is the session's title as `flow sessions` shows it, or its pane id when several share the title, or `<herdr session>/<pane id>` when several herdr sessions hold that pane id; `flow sessions` then marks it `followed`.
@@ -411,6 +412,7 @@ Supervisor:
 - `flow task hold <id> --on user|supervisor --what <text>`: hold the task until someone answers.
 - `flow task orphan <id> --reason <text>`: mark the task orphaned: its work will not finish.
 - `flow task close <id> [--force]`: close the task's herdr tab, keeping its record, working directory and branch; `--force` closes it while the task is still open (working, pending, blocked or needs-decision). herdr closes the `flow` workspace with its last tab. herdr reuses tab ids, so it closes the tab only while herdr lists it under the task's label, which ends in the task id, and the task's pane holds the task's worker or no agent; under another label herdr reused the tab, so flow retires the task's target and closes nothing; a pane holding another agent refuses, closing nothing. An adopted task's tab belongs to whoever started the session, so it stays open: flow only stops treating the pane as the task's and prints `closed <id> (pane left to its owner)`.
+- `flow task archive <id>... [--delete]`: take done or orphaned tasks out of flow's view by moving each task's directory to `state/archive/tasks/<id>/`, where its brief, report, decisions and events stay readable; `--delete` removes the directories instead. The task's working directory and branch on its host are never touched; each line printed names the directory left behind. It refuses, changing no task, when any task named is still open (`flow task orphan` it first), still has a herdr pane on a host that is not gone (`flow task close` it first; a pane on a gone or forgotten host went with it), or has dispatch requests not yet handled.
 
 Worker:
 
@@ -461,7 +463,8 @@ above and are binding for Tasks 14–19.
 - **Host is optional.** `flow dispatch` defaults to the machine it runs on.
 - **Hosts are discovered, not listed.** Ona is the source of truth: `flow inventory
   --refresh` lists environments through the Ona CLI, derives name, ssh alias and repo
-  location, adds new hosts, and marks missing ones gone. Config keeps only overrides
+  location, adds new hosts, and marks missing ones gone; a gone host's record is deleted once
+  no open task, followed session or supervisor lock names it. Config keeps only overrides
   (name slugs, exclusions) and a static list for machines not managed by Ona. When the Ona
   token has expired, refresh says so in one line and uses the cached set.
 - **`flow init` and `scripts/install.sh`** are flow's (install.sh links the binary into

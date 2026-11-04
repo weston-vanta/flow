@@ -104,6 +104,11 @@ impl Store {
             .collect()
     }
 
+    /// Ids of the requests task `id` filed that are not yet consumed.
+    pub fn pending_request_ids(&self, id: &str) -> anyhow::Result<Vec<String>> {
+        request_ids(&self.existing_task_dir(id)?.join(REQUESTS_DIR))
+    }
+
     /// `pending_requests`, with each request's read on its own, so one unreadable request file
     /// does not hide the others. The error names the file.
     pub fn pending_request_reads(&self) -> anyhow::Result<Vec<(String, anyhow::Result<Request>)>> {
@@ -181,6 +186,7 @@ mod tests {
         let state = tempfile::tempdir().unwrap();
         let store = Store {
             tasks: state.path().join("tasks"),
+            archive: state.path().join("archive/tasks"),
         };
         for id in ids {
             let rec = TaskRecord {
