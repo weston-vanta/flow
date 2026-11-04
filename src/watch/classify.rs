@@ -65,7 +65,8 @@ pub enum Observation {
         /// herdr's title for the agent; empty when it has none.
         title: String,
     },
-    /// `--heartbeat` seconds passed.
+    /// The hourly heartbeat that flow no longer produces. Kept so that wake queues written
+    /// before it was dropped still parse; it is never observed and never wakes.
     Heartbeat,
     /// The watch run hit `error`; it retries in the background until the error clears.
     WatchFailed { error: String },
@@ -153,7 +154,7 @@ pub fn classify(obs: &Observation, thresholds: &Thresholds) -> Verdict {
             let title = if title.is_empty() { pane_id } else { title };
             format!("observed-new: {host} {pane_id} \"{title}\"")
         }
-        Observation::Heartbeat => "heartbeat".to_owned(),
+        Observation::Heartbeat => return Verdict::Absorb,
         Observation::WatchFailed { error } => format!("watch-failed: {error}"),
     };
     Verdict::Wake(reason)
@@ -545,8 +546,10 @@ mod tests {
     }
 
     #[test]
-    fn classify_heartbeat_wakes() {
-        assert_eq!(verdict(Observation::Heartbeat), wake("heartbeat"));
+    fn a_heartbeat_from_an_old_queue_never_wakes() {
+        assert_eq!(verdict(Observation::Heartbeat), Verdict::Absorb);
+        let old: Observation = serde_json::from_str(r#"{"type":"heartbeat"}"#).unwrap();
+        assert_eq!(old, Observation::Heartbeat);
     }
 
     fn reviewed(reported: &mut Reported, obs: &Observation) -> Verdict {

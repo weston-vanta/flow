@@ -133,8 +133,22 @@ fn guard_allows_when_watch_lock_live() {
 fn guard_blocks_on_pending_wakes() {
     let fixture = Fixture::new();
     let state = fixture.state_dir();
-    queue::push(&state, "heartbeat", &Observation::Heartbeat).unwrap();
-    queue::push(&state, "heartbeat", &Observation::Heartbeat).unwrap();
+    queue::push(
+        &state,
+        "agent-gone: aaaaaaab",
+        &Observation::AgentGone {
+            task: "aaaaaaab".to_owned(),
+        },
+    )
+    .unwrap();
+    queue::push(
+        &state,
+        "agent-gone: aaaaaaab",
+        &Observation::AgentGone {
+            task: "aaaaaaab".to_owned(),
+        },
+    )
+    .unwrap();
     let message = "flow: 2 unhandled wakes; run flow wake drain\n";
     fixture
         .guard(STOP_INPUT)
@@ -196,7 +210,14 @@ fn guard_hands_the_turn_to_a_wake_queued_during_its_grace() {
     // The async watcher takes the lock, queues a wake and exits within the guard's grace.
     let watcher = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(100));
-        queue::push(&state, "blocked: aaaaaaac", &Observation::Heartbeat).unwrap();
+        queue::push(
+            &state,
+            "agent-gone: aaaaaaac",
+            &Observation::AgentGone {
+                task: "aaaaaaac".to_owned(),
+            },
+        )
+        .unwrap();
     });
     let message = "flow: 1 unhandled wakes; run flow wake drain\n";
 

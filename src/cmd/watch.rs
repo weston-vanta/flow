@@ -1,19 +1,20 @@
-//! `flow watch [--heartbeat SECS] [--once]`: the supervisor's Stop hook. Blocks until something
-//! is actionable, then prints the reason on stdout and stderr and exits 2, which Claude Code
-//! delivers to the supervisor as hook feedback. Exits 0 silently when another watch holds the
-//! lock, under `--once` when nothing woke, when there is nothing to watch, and when only hand
-//! sessions nobody follows were watched for a day (`FLOW_WATCH_HAND_MAX_MS`): the heartbeat is
-//! off for them, so one blocked overnight still wakes the supervisor without hourly wakes.
+//! `flow watch [--once]`: the supervisor's Stop hook. Blocks until something is actionable,
+//! then prints the reason on stdout and stderr and exits 2, which Claude Code delivers to the
+//! supervisor as hook feedback. Nothing wakes it on a timer. Exits 0 silently when another watch
+//! holds the lock, under `--once` when nothing woke, when there is nothing to watch, and when
+//! only hand sessions nobody follows were watched for a day (`FLOW_WATCH_HAND_MAX_MS`), so one
+//! blocked overnight still wakes the supervisor while a run left watching hand sessions alone
+//! ends before the Stop hook's timeout.
 //! A run's first attempt lists every live host's agents, without starting any herdr server
 //! and giving each host at most a minute (`FLOW_WATCH_LIST_TIMEOUT_MS`), to find the hand
 //! sessions to watch; an attempt retried after a failure starts from what that listing cached.
-//! While a run watches only hand sessions it lists the hosts again every heartbeat interval,
-//! so a session started after the run began is watched within an hour. Once the lock is
+//! While a run watches only hand sessions it lists the hosts again every hour
+//! (`DEFAULT_RELIST`), so a session started after the run began is watched. Once the lock is
 //! held, an error wakes the supervisor as `watch-failed: <error>` rather than failing the hook,
 //! which would leave no watcher and nobody told. Each distinct error wakes once: a watch that
 //! hits the error the newest wake already reported keeps the lock and retries in the
-//! background with backoff, waking again only if the error changes or is still there a
-//! heartbeat after its wake; when a retry succeeds the watch goes on as usual. `--once` reports
+//! background with backoff, waking again only if the error changes or is still there an hour
+//! (`DEFAULT_REWAKE`) after its wake; when a retry succeeds the watch goes on as usual. `--once` reports
 //! any error at once and does not retry. Outside the supervisor session the binary exits 0
 //! before this runs.
 
@@ -37,25 +38,30 @@ const HAND_MAX_VAR: &str = vars::WATCH_HAND_MAX_MS;
 const DEFAULT_HAND_MAX: Duration = Duration::from_secs(24 * 60 * 60);
 const LIST_TIMEOUT_VAR: &str = vars::WATCH_LIST_TIMEOUT_MS;
 const DEFAULT_LIST_TIMEOUT: Duration = Duration::from_secs(60);
-const DEFAULT_HEARTBEAT_SECS: u64 = 3600;
+/// How often a run watching only hand sessions lists the hosts again.
+const DEFAULT_RELIST: Duration = Duration::from_secs(60 * 60);
+/// How long after its wake a `watch-failed` error that persists wakes the supervisor again.
+const DEFAULT_REWAKE: Duration = Duration::from_secs(60 * 60);
 const WAKE_EXIT: u8 = 2;
 
-pub fn run(state: &StateDir, heartbeat: Option<u64>, once: bool) -> anyhow::Result<ExitCode> {
+pub fn run(state: &StateDir, once: bool) -> anyhow::Result<ExitCode> {
     let Some(lock) = lock::acquire(state, std::process::id())? else {
         return Ok(ExitCode::SUCCESS);
     };
-    let heartbeat = Duration::from_secs(heartbeat.unwrap_or(DEFAULT_HEARTBEAT_SECS));
     let watched = if once {
-        watch_holding(state, heartbeat, true, true, &lock)
+        watch_holding(state, true, true, &lock)
             .unwrap_or_else(|err| Some(watch::failure_wake(state, &err)))
     } else {
         match env_millis(RETRY_VAR, DEFAULT_RETRY) {
             Ok(first) => {
-                let retry = Retry { first, heartbeat };
+                let retry = Retry {
+                    first,
+                    rewake: DEFAULT_REWAKE,
+                };
                 let mut first_attempt = true;
                 watch::run_retrying(state, &lock, &retry, || {
                     let list_agents = std::mem::take(&mut first_attempt);
-                    watch_holding(state, heartbeat, false, list_agents, &lock)
+                    watch_holding(state, false, list_agents, &lock)
                 })
             }
             Err(err) => Some(watch::failure_wake(state, &err)),
@@ -71,7 +77,6 @@ pub fn run(state: &StateDir, heartbeat: Option<u64>, once: bool) -> anyhow::Resu
 
 fn watch_holding(
     state: &StateDir,
-    heartbeat: Duration,
     once: bool,
     list_agents: bool,
     lock: &lock::Guard,
@@ -79,7 +84,7 @@ fn watch_holding(
     let runner: Arc<dyn Runner> = Arc::from(runner::from_env()?);
     let settings = Settings {
         poll: env_millis(POLL_VAR, DEFAULT_POLL)?,
-        heartbeat,
+        relist: DEFAULT_RELIST,
         once,
         quiet_secs: DEFAULT_QUIET_SECS,
         list_agents,

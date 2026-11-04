@@ -32,7 +32,8 @@ one reason; handle every row.
 - `agent-done: <id>`: the worker's session stopped while its task still reads `working` or
   `pending`, without reporting through flow. Check `flow task events <id>`, then steer it to
   continue or to report its status. A worker that stops after reporting `needs-decision` or
-  `blocked` is waiting on its hold and does not wake you.
+  `blocked`, or while its task holds on the user or on you, is waiting on that answer and
+  does not wake you.
 - `agent-gone: <id>`: the worker's pane or session disappeared, or herdr reused its pane and flow
   retired the task's herdr target (`target.retired` in its events). Check `flow sessions`. If the
   work cannot continue, `flow task orphan <id> --reason "<last known: branch pushed or not>"`
@@ -70,11 +71,12 @@ one reason; handle every row.
   long ago without reporting since and without writing in its working directory: it may have
   finished, or stopped to ask the user something in its own terminal. A turn that ended while
   no watcher ran is not logged, so the wake may come early; look before acting on it.
-- `heartbeat`: nothing happened. Glance at `flow status`; report only real changes.
+- A `heartbeat` wake queued by an older flow carries no news; acknowledge it. Nothing wakes
+  you on a timer: when the user asks how tasks stand, answer from `flow status`.
 - `watch-failed: <error>`: the watcher hit an error. Each distinct error wakes you once;
   the watcher started at your next turn end keeps retrying it in the background and resumes
   watching when it clears. Tell the user what it says; it likely needs fixing outside the
-  conversation. The same error waking you again a heartbeat (an hour) later means it is
+  conversation. The same error waking you again an hour after its first wake means it is
   still failing.
 
 ## 3. Acknowledge

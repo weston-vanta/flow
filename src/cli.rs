@@ -91,9 +91,6 @@ pub enum Command {
     /// Watch tasks and exit 2 with a reason when the supervisor should wake
     #[command(hide = true)]
     Watch {
-        /// Wake after this many seconds even when nothing happened [default: 3600]
-        #[arg(long, value_name = "SECS")]
-        heartbeat: Option<u64>,
         /// Watch for one poll interval and exit 0 when nothing woke
         #[arg(long)]
         once: bool,
@@ -444,7 +441,7 @@ pub fn run(cli: Cli, state: &StateDir, repo_root: &Path) -> anyhow::Result<ExitC
         Command::Sessions { json, summaries } => cmd::sessions::run(state, json, summaries),
         Command::Follow { host, session } => cmd::sessions::run_follow(state, &host, &session),
         Command::Unfollow { host, session } => cmd::sessions::run_unfollow(state, &host, &session),
-        Command::Watch { heartbeat, once } => return cmd::watch::run(state, heartbeat, once),
+        Command::Watch { once } => return cmd::watch::run(state, once),
         Command::Wake { command } => match command {
             WakeCommand::Drain => cmd::wake::run_drain(state),
             WakeCommand::Ack { through } => cmd::wake::run_ack(state, through),

@@ -166,19 +166,32 @@ mod tests {
             .collect()
     }
 
+    fn gone() -> Observation {
+        Observation::AgentGone {
+            task: "aaaaaaab".to_owned(),
+        }
+    }
+
     #[test]
     fn push_increments_seq() {
         let (_dir, state) = state();
-        assert_eq!(
-            push(&state, "heartbeat", &Observation::Heartbeat).unwrap(),
-            1
-        );
-        assert_eq!(
-            push(&state, "heartbeat", &Observation::Heartbeat).unwrap(),
-            2
-        );
+        assert_eq!(push(&state, "first", &gone()).unwrap(), 1);
+        assert_eq!(push(&state, "second", &gone()).unwrap(), 2);
         let pending = pending(&state).unwrap();
-        assert_eq!(reasons(&pending), [(1, "heartbeat"), (2, "heartbeat")]);
+        assert_eq!(reasons(&pending), [(1, "first"), (2, "second")]);
+        assert_eq!(pending[0].obs, gone());
+    }
+
+    #[test]
+    fn a_queue_holding_heartbeat_wakes_from_an_older_flow_still_reads() {
+        let (_dir, state) = state();
+        let path = queue_path(&state);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let old = r#"{"seq":1,"ts":"2026-11-01T00:00:00Z","reason":"heartbeat","obs":{"type":"heartbeat"}}"#;
+        std::fs::write(&path, format!("{old}\n")).unwrap();
+        assert_eq!(push(&state, "second", &gone()).unwrap(), 2);
+        let pending = pending(&state).unwrap();
+        assert_eq!(reasons(&pending), [(1, "heartbeat"), (2, "second")]);
         assert_eq!(pending[0].obs, Observation::Heartbeat);
     }
 
@@ -202,7 +215,7 @@ mod tests {
     fn ack_beyond_the_newest_wake_is_refused() {
         let (_dir, state) = state();
         for _ in 0..3 {
-            push(&state, "heartbeat", &Observation::Heartbeat).unwrap();
+            push(&state, "agent-gone: aaaaaaab", &gone()).unwrap();
         }
         let err = ack_through(&state, 10).unwrap_err();
         assert_eq!(
@@ -210,7 +223,7 @@ mod tests {
             "cannot ack through 10: the newest wake is 3"
         );
         assert_eq!(pending(&state).unwrap().len(), 3);
-        push(&state, "heartbeat", &Observation::Heartbeat).unwrap();
+        push(&state, "agent-gone: aaaaaaab", &gone()).unwrap();
         assert_eq!(pending(&state).unwrap().len(), 4);
     }
 
@@ -218,7 +231,7 @@ mod tests {
     fn ack_never_moves_back() {
         let (_dir, state) = state();
         for _ in 0..3 {
-            push(&state, "heartbeat", &Observation::Heartbeat).unwrap();
+            push(&state, "agent-gone: aaaaaaab", &gone()).unwrap();
         }
         ack_through(&state, 3).unwrap();
         ack_through(&state, 3).unwrap();
