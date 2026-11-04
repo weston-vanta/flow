@@ -370,6 +370,16 @@ pub enum TaskCommand {
         #[arg(long)]
         force: bool,
     },
+    /// Take done or orphaned tasks out of flow's view, moving each to state/archive/tasks/;
+    /// their working directories and branches are left as they are
+    Archive {
+        /// Done or orphaned task; with several, none changes when any is refused
+        #[arg(required = true, value_name = "ID")]
+        ids: Vec<String>,
+        /// Delete the tasks' records instead of archiving them
+        #[arg(long)]
+        delete: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -471,6 +481,7 @@ fn run_task(command: TaskCommand, state: &StateDir) -> anyhow::Result<ExitCode> 
         }
         TaskCommand::Orphan { id, reason } => cmd::task_write::run_orphan(state, &id, &reason),
         TaskCommand::Close { id, force } => cmd::task_close::run(state, &id, force),
+        TaskCommand::Archive { ids, delete } => cmd::task_archive::run(state, &ids, delete),
     };
     done.map(|()| ExitCode::SUCCESS)
 }

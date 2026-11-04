@@ -18,7 +18,8 @@ one reason; handle every row.
   report's path; read it. Check it against the brief's completion criteria. To look at the
   worker's files on another host, use `flow run <host> -- <argv>`, never plain `ssh`. Met: tell
   the user the outcome with links, then retire the worker's pane with `flow task close <id>`;
-  its worktree and branch stay. When it says herdr reused the tab and it closed nothing, or
+  its worktree and branch stay. Leave the record: `flow task archive <id>` takes closed tasks
+  out of `flow status --all` only when the user asks to clean up. When it says herdr reused the tab and it closed nothing, or
   refuses because another agent runs in the task's pane, the tab is no longer the task's: leave
   it, and tell the user. Not met: steer the worker to finish (`flow steer <id> "<what is missing>"`) and say so.
 - `needs-decision: <id>` or `blocked: <id>`: `flow task show <id>` shows the worker's question
@@ -42,7 +43,8 @@ one reason; handle every row.
 - `host-unreachable: <host>`: keep working from state. Tell the user plainly that `<host>` cannot
   be reached (an expired login, or a stopped or recycled host). After `flow inventory
   --refresh`, `flow inventory` shows a recycled host as `gone`; its tasks are orphaned with what
-  was last known; ask before redispatching.
+  was last known; ask before redispatching. A later refresh forgets a gone host once no open
+  task or followed session names it.
 - `quiet: <id> <N>s`: no events and no writes in the task's working directory for N seconds.
   Check `flow task events <id> --last 5` and `flow sessions`, then steer the worker with a
   short status question.

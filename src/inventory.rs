@@ -588,6 +588,16 @@ pub fn load_all(state: &StateDir) -> anyhow::Result<Vec<HostInventory>> {
     Ok(inventories)
 }
 
+/// Deletes the cached record of the host with `env_id`; no error when there is none.
+pub fn remove(state: &StateDir, env_id: &str) -> anyhow::Result<()> {
+    let path = hosts_dir(state).join(format!("{env_id}.json"));
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err).with_context(|| format!("removing {}", path.display())),
+    }
+}
+
 /// Writes `inventory` to `state/hosts/<env_id>.json` atomically.
 pub fn save(state: &StateDir, inventory: &HostInventory) -> anyhow::Result<()> {
     let dir = hosts_dir(state);

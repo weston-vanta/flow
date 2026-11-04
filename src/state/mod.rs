@@ -23,18 +23,23 @@ const STATUS_FILE: &str = "status.json";
 const BRIEF_FILE: &str = "brief.md";
 const REPORT_FILE: &str = "report.md";
 const DECISIONS_FILE: &str = "decisions.jsonl";
+/// Where archived tasks go, relative to the state directory.
+const ARCHIVE_TASKS_DIR: &str = "archive/tasks";
 const EVENT_SOURCE: &str = "flow";
 
-/// Task records under `state/tasks/<task-id>/`.
+/// Task records under `state/tasks/<task-id>/`, and archived ones under
+/// `state/archive/tasks/<task-id>/`.
 #[derive(Debug, Clone)]
 pub struct Store {
     tasks: PathBuf,
+    archive: PathBuf,
 }
 
 impl Store {
     pub fn open(state: &StateDir) -> Store {
         Store {
             tasks: state.root().join("tasks"),
+            archive: state.root().join(ARCHIVE_TASKS_DIR),
         }
     }
 
@@ -74,6 +79,31 @@ impl Store {
             let _ = std::fs::remove_dir_all(&staging);
         }
         result
+    }
+
+    /// Moves task `id`'s directory to `state/archive/tasks/<id>/` in one rename, so the task
+    /// leaves every listing while its files stay readable there. Returns the new path.
+    pub fn archive_task(&self, id: &str) -> anyhow::Result<PathBuf> {
+        let dir = self.existing_task_dir(id)?;
+        let archived = self.archive.join(id);
+        if archived.exists() {
+            bail!("{} already exists", archived.display());
+        }
+        std::fs::create_dir_all(&self.archive)
+            .with_context(|| format!("creating {}", self.archive.display()))?;
+        std::fs::rename(&dir, &archived)
+            .with_context(|| format!("moving {} to {}", dir.display(), archived.display()))?;
+        Ok(archived)
+    }
+
+    /// Removes task `id`'s directory: renames it to a hidden name first, so readers never see a
+    /// half-removed task, then deletes it.
+    pub fn delete_task(&self, id: &str) -> anyhow::Result<()> {
+        let dir = self.existing_task_dir(id)?;
+        let doomed = self.tasks.join(format!(".{id}.deleting"));
+        std::fs::rename(&dir, &doomed)
+            .with_context(|| format!("moving {} aside", dir.display()))?;
+        std::fs::remove_dir_all(&doomed).with_context(|| format!("removing {}", doomed.display()))
     }
 
     pub fn task(&self, id: &str) -> anyhow::Result<(TaskRecord, Status)> {

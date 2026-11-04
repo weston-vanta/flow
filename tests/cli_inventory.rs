@@ -4,6 +4,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
+use flow::paths::StateDir;
+use flow::state::Store;
+use flow::state::task::{Harness, Origin, State, TaskRecord};
 use serde_json::{Value, json};
 
 /// Lists herdr's `default` session beside flow's own, `flow` once `write_lock` records it.
@@ -137,6 +140,25 @@ impl Fixture {
 
     fn cached(&self, env_id: &str) -> Value {
         serde_json::from_str(&fs::read_to_string(self.cache_path(env_id)).unwrap()).unwrap()
+    }
+
+    /// Creates task `id` on `host` and sets it to `state`.
+    fn task_on(&self, id: &str, host: &str, state: State) {
+        let store = Store::open(&StateDir::at(&self.state).unwrap());
+        let record = TaskRecord {
+            id: id.to_owned(),
+            parent: None,
+            title: "a task".to_owned(),
+            host: host.to_owned(),
+            cwd: PathBuf::from("/work/repo"),
+            repo: None,
+            harness: Harness::Claude,
+            created: jiff::Timestamp::now(),
+            owner: "supervisor".to_owned(),
+            origin: Origin::Dispatched,
+        };
+        store.create_task(record, "brief").unwrap();
+        store.set_status(id, |status| status.state = state).unwrap();
     }
 
     fn write_cache(&self, env_id: &str, inventory: &Value) {
@@ -948,14 +970,29 @@ fn refresh_adds_new_hosts_and_marks_gone() {
     fx.use_ona_fixture();
     fx.write_cache(LAB, &bare_record("lab", LAB, ""));
     fx.write_cache("env-retired", &bare_record("retired", "env-retired", ""));
+    fx.write_cache("env-dropped", &bare_record("dropped", "env-dropped", ""));
+    fx.task_on("aaaaaaab", "retired", State::Working);
+    fx.task_on("aaaaaaac", "dropped", State::Done);
     let mut script = probes("lab");
     script.extend(probes("side-project"));
     script.push(on("lab", PR_LIST));
 
-    let stdout = stdout_of(
-        fx.flow(&script)
-            .env("ONA_ID", LAB)
-            .args(["inventory", "--refresh"]),
+    let out = fx
+        .flow(&script)
+        .env("ONA_ID", LAB)
+        .args(["inventory", "--refresh"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(
+        String::from_utf8(out.stderr).unwrap(),
+        "forgot gone host dropped (env-dropped)\n"
+    );
+    assert!(
+        !fx.cache_path("env-dropped").exists(),
+        "a gone host only a done task names is forgotten"
     );
 
     let lab = fx.cached(LAB);
@@ -982,7 +1019,7 @@ fn refresh_adds_new_hosts_and_marks_gone() {
     assert_eq!(stopped["worktrees"], json!([]));
 
     let retired = fx.cached("env-retired");
-    assert_eq!(retired["gone"], true);
+    assert_eq!(retired["gone"], true, "an open task keeps its gone host");
     assert_eq!(retired["name"], "retired");
 
     assert_eq!(
@@ -1095,7 +1132,7 @@ fn static_hosts_bypass_discovery() {
     script.extend(probes("host-b"));
     script.push(on("host-a", PR_LIST));
 
-    stdout_of(fx.flow(&script).args(["inventory", "--refresh"]));
+    let stderr = stderr_of(fx.flow(&script).args(["inventory", "--refresh"]));
 
     let host_a = fx.cached("env-0001");
     assert_eq!(host_a["name"], "host-a");
@@ -1103,8 +1140,40 @@ fn static_hosts_bypass_discovery() {
     assert_eq!(host_a["gone"], false);
     assert_eq!(host_a["ona_name"], Value::Null);
     assert_eq!(fx.cached("env-0002")["ssh_alias"], "host-b.example");
-    assert_eq!(fx.cached("env-retired")["gone"], true);
+    assert_eq!(stderr, "forgot gone host retired (env-retired)\n");
+    assert!(!fx.cache_path("env-retired").exists());
     assert_eq!(called_hosts(&fx), ["host-a", "host-b"]);
+}
+
+#[test]
+fn a_followed_session_keeps_its_gone_host() {
+    let fx = Fixture::new();
+    fx.write_cache("env-retired", &bare_record("retired", "env-retired", ""));
+    let follow = json!({"follow": [{"host": "retired", "pane_id": "w1:p1", "session": "default"}]});
+    fs::write(fx.state.join("supervisor/follow.json"), follow.to_string()).unwrap();
+    let mut script = host_a_probes();
+    script.extend(probes("host-b"));
+    script.push(on("host-a", PR_LIST));
+
+    stdout_of(fx.flow(&script).args(["inventory", "--refresh"]));
+
+    assert_eq!(fx.cached("env-retired")["gone"], true);
+}
+
+#[test]
+fn unreadable_tasks_keep_every_gone_host() {
+    let fx = Fixture::new();
+    fx.write_cache("env-retired", &bare_record("retired", "env-retired", ""));
+    fx.task_on("aaaaaaab", "host-a", State::Done);
+    fs::write(fx.state.join("tasks/aaaaaaab/status.json"), "not json").unwrap();
+    let mut script = host_a_probes();
+    script.extend(probes("host-b"));
+    script.push(on("host-a", PR_LIST));
+
+    let stderr = stderr_of(fx.flow(&script).args(["inventory", "--refresh"]));
+
+    assert!(stderr.starts_with("keeping gone hosts: "), "{stderr}");
+    assert_eq!(fx.cached("env-retired")["gone"], true);
 }
 
 #[test]

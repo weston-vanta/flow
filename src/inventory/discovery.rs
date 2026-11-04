@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use jiff::Timestamp;
 
-use super::{HostInventory, load_all, save, unreachable};
+use super::{HostInventory, load_all, remove, save, unreachable};
 use crate::host;
 use crate::ona::{self, OnaEnvironment};
 use crate::paths::StateDir;
@@ -13,19 +13,25 @@ use crate::state::config::{Host, HostSource, HostsConfig};
 
 const ONLY_LOCAL_VISIBLE: &str = "ona: only the current environment is visible; run gitpod login";
 
-/// Every host record after discovery, gone ones included, and the line to print when Ona could
+/// Every host record after discovery, gone ones still named by an open task or followed session
+/// included, and the line to print when Ona could
 /// not be used and the cached records were kept as they were.
 #[derive(Debug)]
 pub struct Discovered {
     pub records: Vec<HostInventory>,
+    /// Gone records deleted because nothing open names their host.
+    pub forgotten: Vec<HostInventory>,
     pub warning: Option<String>,
 }
 
 /// Brings the cached host records in step with the host set `config` names, saving the ones that
-/// changed. With `source = "ona"` this lists environments through the Ona CLI.
+/// changed. With `source = "ona"` this lists environments through the Ona CLI. A gone record is
+/// then deleted unless `in_use` names its host; with `in_use` `None` (unknown) every gone record
+/// is kept.
 pub fn discover(
     state: &StateDir,
     config: &HostsConfig,
+    in_use: Option<&HashSet<String>>,
     now: Timestamp,
 ) -> anyhow::Result<Discovered> {
     let cached = load_all(state)?;
@@ -39,15 +45,38 @@ pub fn discover(
         ),
         HostSource::Static => Discovered {
             records: from_static(cached.clone(), &config.static_hosts, now),
+            forgotten: Vec::new(),
             warning: None,
         },
     };
-    for record in &discovered.records {
+    let (records, forgotten) = match in_use {
+        Some(in_use) => forget_gone(discovered.records, in_use),
+        None => (discovered.records, Vec::new()),
+    };
+    for record in &records {
         if !cached.contains(record) {
             save(state, record)?;
         }
     }
-    Ok(discovered)
+    for record in &forgotten {
+        remove(state, &record.env_id)?;
+    }
+    Ok(Discovered {
+        records,
+        forgotten,
+        ..discovered
+    })
+}
+
+/// `records` split into those to keep and the gone ones `in_use` does not name, which are to
+/// be forgotten.
+pub fn forget_gone(
+    records: Vec<HostInventory>,
+    in_use: &HashSet<String>,
+) -> (Vec<HostInventory>, Vec<HostInventory>) {
+    records
+        .into_iter()
+        .partition(|record| !record.gone || in_use.contains(&record.name))
 }
 
 /// The records after Ona's `listed` environments: one per environment not excluded, named as
@@ -68,6 +97,7 @@ pub fn from_ona(
             let live = cached.iter().filter(|record| !record.gone).count();
             return Discovered {
                 records: cached,
+                forgotten: Vec::new(),
                 warning: Some(format!("ona: {err:#}; using {live} cached hosts")),
             };
         }
@@ -81,6 +111,7 @@ pub fn from_ona(
     if only_local_listed && others_cached {
         return Discovered {
             records: cached,
+            forgotten: Vec::new(),
             warning: Some(ONLY_LOCAL_VISIBLE.to_owned()),
         };
     }
@@ -122,6 +153,7 @@ pub fn from_ona(
     records.sort_by(|a, b| a.name.cmp(&b.name));
     Discovered {
         records,
+        forgotten: Vec::new(),
         warning: None,
     }
 }

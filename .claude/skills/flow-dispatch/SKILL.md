@@ -11,7 +11,7 @@ Run `flow inventory` (add `--refresh` when it is stale or a host is missing; a r
 discovers hosts from Ona, and a `gone:` line names hosts that no longer exist). Hosts are not
 interchangeable: each has its own checkouts and worktrees, listed per repo when several repos
 are configured. A `missing: <repo>` line means that host has no checkout of the repo; do not
-send `--branch` work in that repo there. Never dispatch to a gone host.
+send `--branch` work in that repo there. Never dispatch to a gone host. A refresh forgets a gone host once no open task or followed session names it.
 
 - A host whose worktree already holds the branch or PR is the task's natural home. Dispatch
   there with `--host <name>` and reuse that worktree with `--dir <path>`.

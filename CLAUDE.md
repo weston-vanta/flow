@@ -22,7 +22,8 @@ the flow hooks in `.claude/settings.json` do nothing there.
    changes while the work has not landed, unless the user says so, and do not close the pane
    of a task that is still open. Once you accept a task's `done` report, `flow task close`
    retires its pane and keeps its worktree and branch. A task that cannot continue is marked
-   orphaned with what was last known, not deleted.
+   orphaned with what was last known, not deleted. `flow task archive` hides closed records
+   only when the user asks; `--delete` only for records the user says are worthless.
 4. **Report faithfully.** Say what actually happened, including failures, partial results and
    anything you did not verify. A task is done when its report meets the brief's completion
    criteria, not when a worker says so.
