@@ -260,8 +260,10 @@ designer's call.
     `flow watch`. `flow watch` first lists every live CDE's herdr agents, without starting a
     herdr server and with a time limit per CDE, to find the sessions the user started by
     hand. It then blocks on the fleet: herdr `agent wait` per worker and per hand session
-    (remote through ssh, one long-lived connection per CDE), file events on `state/`, and a
-    heartbeat while tasks are open or sessions are followed. Dispatch records a worker's pane
+    (remote through ssh, one long-lived connection per CDE), and file events on `state/`;
+    nothing wakes the supervisor on a timer, except that a run with open tasks or followed
+    sessions still waiting after a day wakes it once as `watch-rearm`, which it acknowledges
+    silently, so a fresh run starts before the hook timeout. Dispatch records a worker's pane
     before Claude Code starts in it, so for 60 s after a dispatched task is created a wait
     herdr answers with no agent asks again rather than reporting the agent gone. A run watching
     only hand sessions lists the CDEs again hourly and ends quietly after a day. It absorbs benign
@@ -274,8 +276,10 @@ designer's call.
     worker went quiet beyond a threshold without evidence it is working (herdr `working`,
     recent writes in its worktree); a worker's session or pane disappeared; a CDE became
     unreachable; a dispatch request appeared; a session the user started by hand turned
-    `blocked`, or one the user follows went idle or done; the heartbeat fired. The heartbeat
-    fires only while tasks are open or sessions are followed. An adopted session wakes the
+    `blocked`, or one the user follows went idle or done; the watch itself failed. A worker
+    that stops while its task holds on the user or the supervisor, or after it reported
+    `needs-decision` or `blocked`, is waiting on that answer and is not actionable, nor is a
+    held task quiet. An adopted session wakes the
     supervisor as its task, never as a session started by hand.
 
 ### Decision authority
@@ -426,7 +430,7 @@ Worker:
 Hooks and plumbing, run by Claude Code and the supervisor rather than by hand, and left out of `flow --help`:
 
 - `flow guard`: Stop hook that blocks ending a turn while work is unwatched.
-- `flow watch [--heartbeat <secs>] [--once]`: watch tasks and exit 2 with a reason when the supervisor should wake, including `observed-new` for an observed session a listing finds in a pane it had not seen.
+- `flow watch [--once]`: watch tasks and exit 2 with a reason when the supervisor should wake, including `observed-new` for an observed session a listing finds in a pane it had not seen.
 - `flow wake drain`: print the queued wakes not yet acknowledged.
 - `flow wake ack --through <N>`: acknowledge every queued wake up to and including N.
 - `flow hook claude --task <id>`: record a worker's Claude Code hook event read as JSON from stdin.

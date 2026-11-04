@@ -22,7 +22,10 @@
 //!
 //! A worker that stops, blocked or done in herdr's terms, after its task reported
 //! `needs-decision` or `blocked` is absorbed: it stopped to wait on the hold that already woke
-//! the supervisor. A task whose worker herdr last reported `working` does not count as quiet.
+//! the supervisor. So is a worker that goes done while its task, `working` or `pending`, holds on
+//! the user or the supervisor: it waits on an answer the hold records, and recording the hold,
+//! which appends an event, would otherwise let the same stop wake the supervisor again. A task
+//! with a hold, or whose worker herdr last reported `working`, does not count as quiet.
 //!
 //! Hand sessions are the herdr agents on live hosts, in any herdr session flow lists, as of the
 //! cached inventory, other than the supervisor, each with its owner
@@ -42,14 +45,17 @@
 //! hear from, so a session back after a listing without it wakes again. With none saved, as after
 //! a seed or `flow up`, a listing records the observed sessions it finds without waking.
 //!
-//! A run with nothing to watch, no open task, followed session or hand session, ends after its
-//! first cycle rather than waiting for the heartbeat. A cycle that could not read the tasks or
-//! the follow list counts as having something to watch. The heartbeat fires only for open
-//! tasks, followed sessions or what could not be read, timed from when the run found one. A run
-//! watching hand sessions alone lists the hosts again every heartbeat interval, so a session
-//! started after the run began is watched within the hour, and ends without waking after
-//! `Settings::hand_max`, a day by default, rather than waking the supervisor hourly; the Stop
-//! hook's timeout is set longer than that.
+//! Nothing wakes the supervisor on a timer, except to outlast the Stop hook's timeout: a run with
+//! an open task, a followed session or what it could not read that is still waiting after
+//! `Settings::rearm`, a day by default, wakes it once as `watch-rearm`, so the turn that ends
+//! starts a fresh run before the hook would kill this one and leave nothing watching. A run with
+//! nothing to watch, no open task, followed
+//! session or hand session, ends after its first cycle. A cycle that could not read the tasks or
+//! the follow list counts as having something to watch. A run watching hand sessions alone, no
+//! open task, followed session or what could not be read, lists the hosts again every
+//! `Settings::relist`, an hour by default, so a session started after the run began is watched
+//! within the hour, and ends without waking after `Settings::hand_max`, a day by default; the
+//! Stop hook's timeout is set longer than that.
 //!
 //! An error after the lock is taken wakes the supervisor as `watch-failed` once per distinct
 //! error; `run_retrying` keeps retrying a repeat of it in the background, holding the lock. A run
@@ -98,6 +104,8 @@ const EVENT_SOURCE: &str = "watch";
 const TURN_END: &str = "turn.end";
 /// How often one quiet task's working directory is searched for writes.
 const WORKTREE_CHECK_INTERVAL: Duration = Duration::from_secs(10 * 60);
+/// How long one herdr wait on a pane may run before it is started again.
+const WAIT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 /// `--once` runs this many cycles, one poll interval apart, so the herdr waits the first
 /// starts can answer in the second.
 const ONCE_CYCLES: u32 = 2;
@@ -105,14 +113,19 @@ const ONCE_CYCLES: u32 = 2;
 #[derive(Debug, Clone)]
 pub struct Settings {
     pub poll: Duration,
-    pub heartbeat: Duration,
+    /// How often a run watching only hand sessions nobody follows lists the hosts again, so a
+    /// session started after the run began is watched.
+    pub relist: Duration,
     pub once: bool,
     pub quiet_secs: u64,
     /// Whether the run first lists every live host's agents into the cached inventory.
     pub list_agents: bool,
     /// How long a run watching only hand sessions nobody follows lasts before it ends without
-    /// waking, in place of the heartbeat.
+    /// waking.
     pub hand_max: Duration,
+    /// How long any other run waits before it wakes the supervisor as `watch-rearm`, so a fresh
+    /// run starts before the Stop hook's timeout ends this one.
+    pub rearm: Duration,
     /// How long listing the hosts' agents may take; a host not answered by then is left out.
     pub list_timeout: Duration,
 }
@@ -145,7 +158,7 @@ pub fn run(
             watcher.log("nothing to watch: no open tasks, followed or hand sessions; exiting");
             return Ok(None);
         }
-        if !watcher.beating && watcher.started.elapsed() >= settings.hand_max {
+        if !watcher.beyond_hands && watcher.started.elapsed() >= settings.hand_max {
             watcher.log("only hand sessions watched for the hand maximum; exiting");
             return Ok(None);
         }
@@ -249,19 +262,20 @@ fn hand_key(hand: &HandSession) -> String {
 /// How a watch that fails after taking the lock retries.
 #[derive(Debug, Clone)]
 pub struct Retry {
-    /// The delay before the first retry; each later one doubles, up to `heartbeat`.
+    /// The delay before the first retry; each later one doubles, up to `rewake`.
     pub first: Duration,
     /// The longest delay, and how long a reported error stays reported: the same error wakes
-    /// again once this long has passed since its wake.
-    pub heartbeat: Duration,
+    /// again once this long has passed since its wake, so a watcher that stays broken is not
+    /// silent.
+    pub rewake: Duration,
 }
 
 /// Runs `attempt`, a watch holding `lock`, until it returns, and returns what it returned.
 /// When it fails with an error that is news, the error's wake is queued (see `failure_wake`)
 /// and returned. An error is news unless the newest queued wake reported the same error less
-/// than `retry.heartbeat` ago. Otherwise the run keeps the lock, which keeps `flow guard`
+/// than `retry.rewake` ago. Otherwise the run keeps the lock, which keeps `flow guard`
 /// satisfied, logs the error, and retries silently after a delay that starts at `retry.first`
-/// and doubles up to the heartbeat, touching the lock meanwhile.
+/// and doubles up to `retry.rewake`, touching the lock meanwhile.
 pub fn run_retrying(
     state: &StateDir,
     lock: &Guard,
@@ -281,7 +295,7 @@ pub fn run_retrying(
         let error = one_line(&err);
         // An unreadable queue counts as no earlier wake: waking too often beats never waking.
         let latest = queue::latest(state).ok().flatten();
-        if failure_is_news(latest.as_ref(), &error, Timestamp::now(), retry.heartbeat) {
+        if failure_is_news(latest.as_ref(), &error, Timestamp::now(), retry.rewake) {
             return Some(failure_wake_for(state, error));
         }
         append_log(
@@ -295,7 +309,7 @@ pub fn run_retrying(
             append_log(state, &format!("{lost:#}; exiting"));
             return None;
         }
-        delay = (delay * 2).min(retry.heartbeat);
+        delay = (delay * 2).min(retry.rewake);
     }
 }
 
@@ -305,7 +319,7 @@ fn failure_is_news(
     latest: Option<&queue::Wake>,
     error: &str,
     now: Timestamp,
-    heartbeat: Duration,
+    rewake: Duration,
 ) -> bool {
     let Some(wake) = latest else {
         return true;
@@ -314,7 +328,7 @@ fn failure_is_news(
         return true;
     };
     let age_ms = now.as_millisecond() - wake.ts.as_millisecond();
-    reported != error || age_ms >= i64::try_from(heartbeat.as_millis()).unwrap_or(i64::MAX)
+    reported != error || age_ms >= i64::try_from(rewake.as_millis()).unwrap_or(i64::MAX)
 }
 
 /// Sleeps for `delay`, touching `lock` at least once a minute so it does not go stale, and
@@ -384,22 +398,29 @@ fn quiet(
     )
 }
 
-/// The task's state when `obs` is its worker stopping, blocked or done, after the task already
-/// reported `needs-decision` or `blocked`: the worker stopped to wait for the answer, and the
-/// status change already woke the supervisor.
-fn escalated(obs: &Observation, tasks: &[(TaskRecord, Status)]) -> Option<State> {
-    let Observation::AgentState {
-        task,
-        status: herdr::AgentStatus::Blocked | herdr::AgentStatus::Done,
-    } = obs
-    else {
+/// Why `obs`, the task's worker stopping, is expected, when it is: the worker stopped, blocked or
+/// done, after the task reported `needs-decision` or `blocked`, a status change that already woke
+/// the supervisor; or it went done while the task holds on the user or the supervisor, an answer
+/// the worker is waiting for. Recording a hold appends an event, which drops the pane's report,
+/// so without this the same stop would wake the supervisor again.
+fn expected_stop(obs: &Observation, tasks: &[(TaskRecord, Status)]) -> Option<String> {
+    let Observation::AgentState { task, status } = obs else {
         return None;
     };
-    tasks
-        .iter()
-        .find(|(rec, _)| rec.id == *task)
-        .map(|(_, status)| status.state)
-        .filter(|state| matches!(state, State::NeedsDecision | State::Blocked))
+    let (_, task) = tasks.iter().find(|(rec, _)| rec.id == *task)?;
+    let stopped = matches!(
+        status,
+        herdr::AgentStatus::Blocked | herdr::AgentStatus::Done
+    );
+    if stopped && matches!(task.state, State::NeedsDecision | State::Blocked) {
+        return Some(format!("task is {}", task.state));
+    }
+    match &task.hold {
+        Some(hold) if *status == herdr::AgentStatus::Done => {
+            Some(format!("task holds on the {}", hold.on))
+        }
+        _ => None,
+    }
 }
 
 /// A working-directory check under way for a quiet task.
@@ -460,11 +481,10 @@ struct Watcher<'a> {
     /// Whether the last cycle found anything to watch: an open task, a followed or hand
     /// session, or a task list or follow list it could not read.
     watching: bool,
-    /// Whether the heartbeat fires: the last cycle found something to watch besides hand
-    /// sessions.
-    beating: bool,
-    /// When `beating` last turned true; the heartbeat is timed from it.
-    beating_since: Option<Instant>,
+    /// Whether the last cycle found something to watch besides hand sessions nobody follows:
+    /// an open task, a followed session, or what it could not read. A run without it lists the
+    /// hosts again every `Settings::relist` and ends after `Settings::hand_max`.
+    beyond_hands: bool,
     /// When the hosts' agents were last listed, or the run started.
     listed_at: Instant,
     /// The hosts whose listing thread has not returned yet.
@@ -501,8 +521,7 @@ impl<'a> Watcher<'a> {
             saved: memory.clone(),
             memory,
             watching: true,
-            beating: true,
-            beating_since: None,
+            beyond_hands: true,
             listed_at: Instant::now(),
             listing: Arc::default(),
             pruned: false,
@@ -531,19 +550,14 @@ impl<'a> Watcher<'a> {
             |list| list.follow,
         );
         // What could not be read may well be open, so an error never ends the run as idle.
-        self.beating =
+        self.beyond_hands =
             unread || !follow.is_empty() || tasks.iter().any(|(_, status)| status.state.is_open());
-        self.watching = self.beating || !self.hands.is_empty();
-        if !self.beating {
-            self.beating_since = None;
-        } else if self.beating_since.is_none() {
-            self.beating_since = Some(Instant::now());
-        }
-        if !self.beating && self.watching {
+        self.watching = self.beyond_hands || !self.hands.is_empty();
+        if !self.beyond_hands && self.watching {
             let n = self.hands.len();
             let plural = if n == 1 { "" } else { "s" };
             self.log(&format!(
-                "watching {n} hand session{plural} for blocked only; heartbeat off"
+                "watching {n} hand session{plural} for blocked only"
             ));
         }
         let mut observed = self.read_task_files(&tasks);
@@ -559,23 +573,17 @@ impl<'a> Watcher<'a> {
                 .drain(..)
                 .map(|(obs, key)| (obs, Progress::ObservedPane(key))),
         );
-        if self
-            .beating_since
-            .is_some_and(|since| since.elapsed() >= self.settings.heartbeat)
-        {
-            observed.push((Observation::Heartbeat, Progress::Nothing));
+        if self.beyond_hands && self.started.elapsed() >= self.settings.rearm {
+            observed.push((Observation::Rearm, Progress::Nothing));
         }
         let thresholds = Thresholds {
             quiet_secs: self.settings.quiet_secs,
             follow,
         };
         for (obs, progress) in observed {
-            if let Some(state) = escalated(&obs, &tasks) {
+            if let Some(why) = expected_stop(&obs, &tasks) {
                 self.advance(progress, false);
-                self.log(&format!(
-                    "absorb {} (task is {state})",
-                    serde_json::to_string(&obs)?
-                ));
+                self.log(&format!("absorb {} ({why})", serde_json::to_string(&obs)?));
                 continue;
             }
             let verdict = self
@@ -600,10 +608,10 @@ impl<'a> Watcher<'a> {
         Ok(None)
     }
 
-    /// Whether a run watching only hand sessions is due to list the hosts again: a heartbeat
-    /// interval has passed since the last listing.
+    /// Whether a run watching only hand sessions is due to list the hosts again: `Settings::relist`
+    /// has passed since the last listing.
     fn relist_due(&self) -> bool {
-        self.watching && !self.beating && self.listed_at.elapsed() >= self.settings.heartbeat
+        self.watching && !self.beyond_hands && self.listed_at.elapsed() >= self.settings.relist
     }
 
     /// Lists every live host's agents into the cached inventory and takes the hand sessions
@@ -976,7 +984,7 @@ impl<'a> Watcher<'a> {
     /// for, an unreachable host seen only by an unfollowed hand session's wait, or no agent yet
     /// in a just-dispatched worker's pane, is logged rather than observed.
     fn poll_waits(&mut self) -> Vec<(Observation, Progress)> {
-        let timeout_ms = u64::try_from(self.settings.heartbeat.as_millis()).unwrap_or(u64::MAX);
+        let timeout_ms = u64::try_from(WAIT_TIMEOUT.as_millis()).unwrap_or(u64::MAX);
         let mut observed = Vec::new();
         let mut notes = Vec::new();
         let mut turn_ends = Vec::new();
@@ -1281,7 +1289,7 @@ mod tests {
     use crate::inventory::HostInventory;
     use crate::runner::{FakeRunner, Scripted};
     use crate::state::events::Event;
-    use crate::state::task::{ClaudeSession, Harness, HerdrTarget};
+    use crate::state::task::{ClaudeSession, Harness, HerdrTarget, Hold, HoldOn};
     use classify::DEFAULT_QUIET_SECS;
 
     const CONFIG: &str = r#"
@@ -1530,14 +1538,15 @@ default_branch = "main"
         }
     }
 
-    fn settings(heartbeat: Duration) -> Settings {
+    fn settings(relist: Duration) -> Settings {
         Settings {
             poll: Duration::from_millis(10),
-            heartbeat,
+            relist,
             once: false,
             quiet_secs: DEFAULT_QUIET_SECS,
             list_agents: false,
             hand_max: Duration::from_secs(86_400),
+            rearm: Duration::from_secs(86_400),
             list_timeout: Duration::from_secs(60),
         }
     }
@@ -2331,7 +2340,7 @@ default_branch = "main"
     }
 
     #[test]
-    fn heartbeat_is_off_while_only_hand_sessions_are_watched() {
+    fn hand_only_run_ends_quietly_after_the_hand_maximum() {
         let fx = Fixture::new();
         fx.hand();
         let mut script = hand_listing(DEFAULT_AGENTS);
@@ -2344,19 +2353,16 @@ default_branch = "main"
             Watcher::new(&fx.state, runner.clone(), &settings(Duration::ZERO)).unwrap();
         assert_eq!(watcher.cycle().unwrap(), None);
         assert!(watcher.watching);
-        assert!(!watcher.beating);
+        assert!(!watcher.beyond_hands);
         drop(watcher);
         let lock = lock::acquire(&fx.state, std::process::id())
             .unwrap()
             .unwrap();
-        let past_heartbeat = Settings {
+        let once = Settings {
             once: true,
             ..settings(Duration::ZERO)
         };
-        assert_eq!(
-            run(&fx.state, runner.clone(), &past_heartbeat, &lock).unwrap(),
-            None
-        );
+        assert_eq!(run(&fx.state, runner.clone(), &once, &lock).unwrap(), None);
         assert!(!fx.log().contains("exiting"), "{}", fx.log());
         let past_hand_max = Settings {
             hand_max: Duration::ZERO,
@@ -2369,7 +2375,7 @@ default_branch = "main"
         drop(lock);
         let log = fx.log();
         assert_eq!(
-            log.matches("watching 1 hand session for blocked only; heartbeat off")
+            log.matches("watching 1 hand session for blocked only")
                 .count(),
             3,
             "{log}"
@@ -2385,8 +2391,8 @@ default_branch = "main"
         fx.task(true);
         let mut watcher =
             Watcher::new(&fx.state, runner.clone(), &settings(Duration::ZERO)).unwrap();
-        assert_eq!(watcher.cycle().unwrap().as_deref(), Some("heartbeat"));
-        assert!(watcher.beating);
+        assert_eq!(watcher.cycle().unwrap(), None);
+        assert!(watcher.beyond_hands);
     }
 
     #[test]
@@ -2706,28 +2712,69 @@ default_branch = "main"
     }
 
     #[test]
-    fn heartbeat_is_timed_from_when_the_run_started_beating() {
+    fn nothing_wakes_on_a_timer_while_a_task_is_open() {
+        let fx = Fixture::new();
+        fx.task(true);
+        mark_read(&fx);
+        let runner = fake(vec![Scripted {
+            repeat: true,
+            ..answer(0, WORKING)
+        }]);
+        let mut watcher =
+            Watcher::new(&fx.state, runner.clone(), &settings(Duration::ZERO)).unwrap();
+        for _ in 0..3 {
+            assert_eq!(watcher.cycle().unwrap(), None);
+            thread::sleep(Duration::from_millis(50));
+        }
+        assert!(watcher.beyond_hands);
+        assert!(!watcher.relist_due());
+        assert!(queue::latest(&fx.state).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_run_with_an_open_task_wakes_once_to_rearm_before_the_hook_timeout() {
+        let fx = Fixture::new();
+        fx.task(true);
+        mark_read(&fx);
+        let runner = fake(vec![Scripted {
+            repeat: true,
+            ..answer(0, WORKING)
+        }]);
+        let rearm = Duration::from_millis(200);
+        let settings = Settings {
+            rearm,
+            ..settings(Duration::from_secs(3600))
+        };
+        let mut watcher = Watcher::new(&fx.state, runner.clone(), &settings).unwrap();
+        assert_eq!(watcher.cycle().unwrap(), None);
+        thread::sleep(rearm + Duration::from_millis(50));
+        assert_eq!(watcher.cycle().unwrap().as_deref(), Some("watch-rearm"));
+        assert_eq!(
+            queue::latest(&fx.state).unwrap().map(|wake| wake.obs),
+            Some(Observation::Rearm)
+        );
+    }
+
+    #[test]
+    fn a_hand_only_run_never_wakes_to_rearm() {
         let fx = Fixture::new();
         fx.hand();
         let runner = fake(vec![Scripted {
             repeat: true,
             ..answer(0, WORKING)
         }]);
-        let heartbeat = Duration::from_millis(300);
-        let mut watcher = Watcher::new(&fx.state, runner.clone(), &settings(heartbeat)).unwrap();
+        let settings = Settings {
+            rearm: Duration::ZERO,
+            ..settings(Duration::from_secs(3600))
+        };
+        let mut watcher = Watcher::new(&fx.state, runner.clone(), &settings).unwrap();
         assert_eq!(watcher.cycle().unwrap(), None);
-        thread::sleep(heartbeat + Duration::from_millis(50));
-        assert_eq!(watcher.cycle().unwrap(), None);
-
-        fx.task(true);
-        assert_eq!(watcher.cycle().unwrap(), None);
-        assert!(watcher.beating);
-        thread::sleep(heartbeat + Duration::from_millis(50));
-        assert_eq!(watcher.cycle().unwrap().as_deref(), Some("heartbeat"));
+        assert!(!watcher.beyond_hands);
+        assert!(queue::latest(&fx.state).unwrap().is_none());
     }
 
     #[test]
-    fn hand_only_run_lists_hosts_again_each_heartbeat_interval() {
+    fn hand_only_run_lists_hosts_again_each_relist_interval() {
         let fx = Fixture::new();
         fx.hand();
         fx.observed_before(&["host-a/default/w1:p1"]);
@@ -2761,7 +2808,7 @@ default_branch = "main"
         assert_eq!(watcher.cycle().unwrap(), None);
 
         fx.task(true);
-        assert_eq!(watcher.cycle().unwrap().as_deref(), Some("heartbeat"));
+        assert_eq!(watcher.cycle().unwrap(), None);
         assert!(!watcher.relist_due());
     }
 
@@ -2987,6 +3034,67 @@ default_branch = "main"
     }
 
     #[test]
+    fn worker_done_while_its_task_holds_is_absorbed() {
+        for on in [HoldOn::User, HoldOn::Supervisor] {
+            let fx = Fixture::new();
+            fx.task(true);
+            Store::open(&fx.state)
+                .set_status(TASK, |status| {
+                    status.hold = Some(Hold {
+                        on,
+                        what: "Which name?".to_owned(),
+                        since: Timestamp::now(),
+                    });
+                })
+                .unwrap();
+            mark_read(&fx);
+            // A quiet threshold of zero: a held task is never quiet either.
+            let runner = fake(vec![answer(0, DONE), answer(0, DONE)]);
+            assert_eq!(two_cycles(&mut fx.watcher(&runner, 0)), None);
+
+            // Recording the hold appends an event, which drops the pane's report; the same
+            // stop must not wake the supervisor a second time.
+            let ev = Event {
+                ts: Timestamp::now(),
+                source: "cli".to_owned(),
+                kind: "hold.set".to_owned(),
+                data: serde_json::json!({}),
+            };
+            Store::open(&fx.state).append_event(TASK, &ev).unwrap();
+            assert_eq!(two_cycles(&mut fx.watcher(&runner, 0)), None);
+            assert!(queue::latest(&fx.state).unwrap().is_none());
+            let log = fx.log();
+            assert!(
+                log.lines().any(|line| line.contains("absorb")
+                    && line.contains(r#""type":"agent-state""#)
+                    && line.contains(&format!("task holds on the {on}"))),
+                "{log}"
+            );
+        }
+    }
+
+    #[test]
+    fn worker_blocked_at_a_prompt_while_its_task_holds_still_wakes() {
+        let fx = Fixture::new();
+        fx.task(true);
+        Store::open(&fx.state)
+            .set_status(TASK, |status| {
+                status.hold = Some(Hold {
+                    on: HoldOn::User,
+                    what: "Which name?".to_owned(),
+                    since: Timestamp::now(),
+                });
+            })
+            .unwrap();
+        mark_read(&fx);
+        let runner = fake(vec![answer(0, BLOCKED)]);
+        assert_eq!(
+            two_cycles(&mut fx.watcher(&runner, DEFAULT_QUIET_SECS)).as_deref(),
+            Some("agent-blocked: aaaaaaab")
+        );
+    }
+
+    #[test]
     fn quiet_is_not_reported_while_herdr_reports_the_worker_working() {
         let fx = Fixture::new();
         fx.task(true);
@@ -3021,7 +3129,7 @@ default_branch = "main"
 
     #[test]
     fn a_watch_error_is_news_unless_the_newest_wake_just_reported_it() {
-        let heartbeat = Duration::from_secs(3600);
+        let rewake = Duration::from_secs(3600);
         let at = Timestamp::now();
         let wake = |obs: Observation| queue::Wake {
             seq: 1,
@@ -3034,31 +3142,16 @@ default_branch = "main"
         });
         let soon = at + jiff::SignedDuration::from_secs(60);
         let later = at + jiff::SignedDuration::from_secs(3600);
-        assert!(failure_is_news(None, "disk full", soon, heartbeat));
-        assert!(!failure_is_news(
-            Some(&failed),
+        assert!(failure_is_news(None, "disk full", soon, rewake));
+        assert!(!failure_is_news(Some(&failed), "disk full", soon, rewake));
+        assert!(failure_is_news(Some(&failed), "no such file", soon, rewake));
+        assert!(failure_is_news(Some(&failed), "disk full", later, rewake));
+        let legacy_rewake = wake(Observation::Heartbeat);
+        assert!(failure_is_news(
+            Some(&legacy_rewake),
             "disk full",
             soon,
-            heartbeat
-        ));
-        assert!(failure_is_news(
-            Some(&failed),
-            "no such file",
-            soon,
-            heartbeat
-        ));
-        assert!(failure_is_news(
-            Some(&failed),
-            "disk full",
-            later,
-            heartbeat
-        ));
-        let heartbeat_wake = wake(Observation::Heartbeat);
-        assert!(failure_is_news(
-            Some(&heartbeat_wake),
-            "disk full",
-            soon,
-            heartbeat
+            rewake
         ));
     }
 

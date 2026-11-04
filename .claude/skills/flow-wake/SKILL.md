@@ -72,11 +72,15 @@ one reason; handle every row.
   long ago without reporting since and without writing in its working directory: it may have
   finished, or stopped to ask the user something in its own terminal. A turn that ended while
   no watcher ran is not logged, so the wake may come early; look before acting on it.
-- `heartbeat`: nothing happened. Glance at `flow status`; report only real changes.
+- `watch-rearm`: the watcher waited a day with nothing to report and woke you only so a
+  fresh watcher starts before the Stop hook's timeout. Drain, acknowledge and end the turn;
+  tell the user nothing about it. Nothing else wakes you on a timer: when the user asks how
+  tasks stand, answer from `flow status`.
+- A `heartbeat` wake queued by an older flow carries no news; acknowledge it.
 - `watch-failed: <error>`: the watcher hit an error. Each distinct error wakes you once;
   the watcher started at your next turn end keeps retrying it in the background and resumes
   watching when it clears. Tell the user what it says; it likely needs fixing outside the
-  conversation. The same error waking you again a heartbeat (an hour) later means it is
+  conversation. The same error waking you again an hour after its first wake means it is
   still failing.
 
 ## 3. Acknowledge
