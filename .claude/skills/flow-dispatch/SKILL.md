@@ -1,6 +1,6 @@
 ---
 name: flow-dispatch
-description: Use when the user asks for work a worker should do, asks for a session they started by hand to become a worker, or `flow status` lists a worker's dispatch request. Covers choosing a host from `flow inventory`, writing a brief with completion criteria, starting the worker with `flow dispatch`, and adopting a hand session with `flow task adopt`.
+description: Use when the user asks for work a worker should do, asks for follow-up on a finished task, asks for a session they started by hand to become a worker, or `flow status` lists a worker's dispatch request. Covers choosing a host from `flow inventory`, writing a brief with completion criteria, starting the worker with `flow dispatch`, resuming a finished task for follow-up with `flow task resume`, and adopting a hand session with `flow task adopt`.
 ---
 
 # Dispatching a worker
@@ -66,6 +66,33 @@ the host has none; the user sees it under that host in their herdr window. Then:
   failure. Fix the cause and dispatch again, then `flow task orphan <old-id> --reason "..."`.
 
 Tell the user in one line what went where, and end the turn; `flow watch` arms on the stop.
+
+## Resuming a finished task
+
+When the user asks for follow-up on a task that is done or orphaned (PR review comments, a
+change, a question for the agent that did the work), resume it instead of dispatching a new
+one, so the same conversation carries on with its context:
+
+```
+flow task resume <task-id> --prompt "<the follow-up, as the worker should read it>"
+```
+
+It reopens the task to `working`, opens a new tab on the task's host in its working directory,
+and resumes the worker's recorded Claude Code session with the task's settings, so its reports
+reach you as before. The first message reminds the worker that its brief's Reporting section
+still applies, then carries `--prompt`; the follow-up's completion criteria are yours to state
+in it, since the brief's are already met. Leave out `--prompt` only when the user will type to
+the worker themselves; the worker then replies that it is ready and waits, and the
+`agent-done` wake its short turn raises needs no steer. It prints `resumed <task-id> on <host>
+(<pane>)`; tell the user in one line, and record a supervisor decision when you resumed on your
+own judgement. On a `done` wake, check the new report against the follow-up as well as the
+brief.
+
+It refuses an open task (steer it), one whose tab is still recorded (`flow task close` first),
+an adopted task (its owner resumes it in their own pane), an archived one, and one whose
+session, transcript, or working directory is gone; for those, dispatch a new task whose brief
+points at the old task's report. A failure once the tab opens returns the task to its state
+and logs `resume.failed`; `flow task close` any tab it names, fix the cause, and resume again.
 
 ## Adopting a session started by hand
 

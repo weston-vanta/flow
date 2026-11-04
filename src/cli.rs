@@ -7,6 +7,7 @@ use flow::cmd;
 use flow::cmd::Refused;
 use flow::cmd::dispatch::{BriefSource, DirSource, DispatchArgs, TaskSource};
 use flow::cmd::task_adopt::AdoptArgs;
+use flow::cmd::task_resume::ResumeArgs;
 use flow::cmd::task_write::ReportedState;
 use flow::paths::StateDir;
 use flow::state::task::HoldOn;
@@ -370,6 +371,20 @@ pub enum TaskCommand {
         #[arg(long)]
         force: bool,
     },
+    /// Reopen a done or orphaned task and relaunch its worker's Claude Code session, with the
+    /// task's settings, in a new tab on its host; refused while its tab is open, for adopted and
+    /// archived tasks, and when no session or transcript is left to resume
+    Resume {
+        id: String,
+        /// The follow-up for the worker, delivered as the session's first message after a
+        /// reminder that its brief's Reporting section still applies; without it the worker
+        /// waits for the next message
+        #[arg(long, value_name = "TEXT", allow_hyphen_values = true)]
+        prompt: Option<String>,
+        /// Resume even when another agent already works in the task's directory
+        #[arg(long)]
+        allow_shared_dir: bool,
+    },
     /// Take done or orphaned tasks out of flow's view, moving each to state/archive/tasks/;
     /// their working directories and branches are left as they are
     Archive {
@@ -459,6 +474,20 @@ pub fn run(cli: Cli, state: &StateDir, repo_root: &Path) -> anyhow::Result<ExitC
 fn run_task(command: TaskCommand, state: &StateDir) -> anyhow::Result<ExitCode> {
     let done = match command {
         TaskCommand::Adopt(args) => return cmd::task_adopt::run(state, &args.into()),
+        TaskCommand::Resume {
+            id,
+            prompt,
+            allow_shared_dir,
+        } => {
+            return cmd::task_resume::run(
+                state,
+                &ResumeArgs {
+                    id,
+                    prompt,
+                    allow_shared_dir,
+                },
+            );
+        }
         TaskCommand::Show { id, json } => cmd::task_show::run(state, &id, json),
         TaskCommand::Events { id, last, json } => cmd::task_events::run(state, &id, last, json),
         TaskCommand::Status {

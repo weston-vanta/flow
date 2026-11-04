@@ -96,6 +96,12 @@ impl Store {
         Ok(archived)
     }
 
+    /// Whether task `id` is archived: no longer under `state/tasks/` but under
+    /// `state/archive/tasks/`.
+    pub fn is_archived(&self, id: &str) -> anyhow::Result<bool> {
+        Ok(!self.task_dir(id)?.is_dir() && self.archive.join(id).is_dir())
+    }
+
     /// Removes task `id`'s directory: renames it to a hidden name first, so readers never see a
     /// half-removed task, then deletes it.
     pub fn delete_task(&self, id: &str) -> anyhow::Result<()> {
