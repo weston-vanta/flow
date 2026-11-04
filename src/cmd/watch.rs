@@ -1,6 +1,8 @@
 //! `flow watch [--once]`: the supervisor's Stop hook. Blocks until something is actionable,
 //! then prints the reason on stdout and stderr and exits 2, which Claude Code delivers to the
-//! supervisor as hook feedback. Nothing wakes it on a timer. Exits 0 silently when another watch
+//! supervisor as hook feedback. Nothing wakes it on a timer, except that a run watching open
+//! tasks or followed sessions that is still waiting after a day (`FLOW_WATCH_REARM_MS`) wakes it
+//! once as `watch-rearm`, so a fresh run starts before the hook's 25-hour timeout. Exits 0 silently when another watch
 //! holds the lock, under `--once` when nothing woke, when there is nothing to watch, and when
 //! only hand sessions nobody follows were watched for a day (`FLOW_WATCH_HAND_MAX_MS`), so one
 //! blocked overnight still wakes the supervisor while a run left watching hand sessions alone
@@ -36,6 +38,8 @@ const RETRY_VAR: &str = vars::WATCH_RETRY_MS;
 const DEFAULT_RETRY: Duration = Duration::from_secs(30);
 const HAND_MAX_VAR: &str = vars::WATCH_HAND_MAX_MS;
 const DEFAULT_HAND_MAX: Duration = Duration::from_secs(24 * 60 * 60);
+const REARM_VAR: &str = vars::WATCH_REARM_MS;
+const DEFAULT_REARM: Duration = Duration::from_secs(24 * 60 * 60);
 const LIST_TIMEOUT_VAR: &str = vars::WATCH_LIST_TIMEOUT_MS;
 const DEFAULT_LIST_TIMEOUT: Duration = Duration::from_secs(60);
 /// How often a run watching only hand sessions lists the hosts again.
@@ -89,6 +93,7 @@ fn watch_holding(
         quiet_secs: DEFAULT_QUIET_SECS,
         list_agents,
         hand_max: env_millis(HAND_MAX_VAR, DEFAULT_HAND_MAX)?,
+        rearm: env_millis(REARM_VAR, DEFAULT_REARM)?,
         list_timeout: env_millis(LIST_TIMEOUT_VAR, DEFAULT_LIST_TIMEOUT)?,
     };
     watch::run(state, runner, &settings, lock)

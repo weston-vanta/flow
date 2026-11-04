@@ -259,7 +259,9 @@ designer's call.
     herdr server and with a time limit per CDE, to find the sessions the user started by
     hand. It then blocks on the fleet: herdr `agent wait` per worker and per hand session
     (remote through ssh, one long-lived connection per CDE), and file events on `state/`;
-    nothing wakes the supervisor on a timer. Dispatch records a worker's pane
+    nothing wakes the supervisor on a timer, except that a run with open tasks or followed
+    sessions still waiting after a day wakes it once as `watch-rearm`, which it acknowledges
+    silently, so a fresh run starts before the hook timeout. Dispatch records a worker's pane
     before Claude Code starts in it, so for 60 s after a dispatched task is created a wait
     herdr answers with no agent asks again rather than reporting the agent gone. A run watching
     only hand sessions lists the CDEs again hourly and ends quietly after a day. It absorbs benign

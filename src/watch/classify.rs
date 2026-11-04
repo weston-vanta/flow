@@ -68,6 +68,10 @@ pub enum Observation {
     /// The hourly heartbeat that flow no longer produces. Kept so that wake queues written
     /// before it was dropped still parse; it is never observed and never wakes.
     Heartbeat,
+    /// The run has watched open tasks or followed sessions for `Settings::rearm` without
+    /// anything waking the supervisor; it wakes it so a fresh run starts before the Stop hook's
+    /// timeout kills this one.
+    Rearm,
     /// The watch run hit `error`; it retries in the background until the error clears.
     WatchFailed { error: String },
 }
@@ -155,6 +159,7 @@ pub fn classify(obs: &Observation, thresholds: &Thresholds) -> Verdict {
             format!("observed-new: {host} {pane_id} \"{title}\"")
         }
         Observation::Heartbeat => return Verdict::Absorb,
+        Observation::Rearm => "watch-rearm".to_owned(),
         Observation::WatchFailed { error } => format!("watch-failed: {error}"),
     };
     Verdict::Wake(reason)
@@ -543,6 +548,11 @@ mod tests {
             verdict(obs),
             wake("watch-failed: writing watch-state.json: disk full")
         );
+    }
+
+    #[test]
+    fn classify_rearm_wakes() {
+        assert_eq!(verdict(Observation::Rearm), wake("watch-rearm"));
     }
 
     #[test]

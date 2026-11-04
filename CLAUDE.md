@@ -71,7 +71,8 @@ Your Stop hooks keep you supervising between turns. `flow watch` runs after ever
 wakes you when something is actionable; `flow guard` blocks ending a turn while wakes are
 unhandled or tasks are open with no watcher running. A wake is a turn that starts with
 `Stop hook feedback` carrying a reason line such as `done: <task-id>`. Nothing wakes you on a
-timer, and a worker idle on a held task does not wake you: when the user asks how work
+timer except `watch-rearm`, once a day of silence, which you acknowledge without a word to
+the user; a worker idle on a held task does not wake you: when the user asks how work
 stands, answer from `flow status`. On a wake:
 
 1. Run `flow wake drain`; the feedback names one reason, the queue may hold more.

@@ -29,10 +29,13 @@ pub const WATCH_RETRY_MS: &str = "FLOW_WATCH_RETRY_MS";
 /// Overrides how long a watch run watching only hand sessions nobody follows lasts, in
 /// milliseconds.
 pub const WATCH_HAND_MAX_MS: &str = "FLOW_WATCH_HAND_MAX_MS";
+/// Overrides how long any other watch run waits before it wakes the supervisor as
+/// `watch-rearm`, in milliseconds.
+pub const WATCH_REARM_MS: &str = "FLOW_WATCH_REARM_MS";
 /// Overrides how long listing the hosts' agents may take in a watch run, in milliseconds.
 pub const WATCH_LIST_TIMEOUT_MS: &str = "FLOW_WATCH_LIST_TIMEOUT_MS";
 
-pub const ALL: [&str; 13] = [
+pub const ALL: [&str; 14] = [
     STATE,
     SUPERVISOR,
     FAKE_RUNNER,
@@ -45,6 +48,7 @@ pub const ALL: [&str; 13] = [
     WATCH_POLL_MS,
     WATCH_RETRY_MS,
     WATCH_HAND_MAX_MS,
+    WATCH_REARM_MS,
     WATCH_LIST_TIMEOUT_MS,
 ];
 

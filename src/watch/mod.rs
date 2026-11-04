@@ -45,7 +45,11 @@
 //! hear from, so a session back after a listing without it wakes again. With none saved, as after
 //! a seed or `flow up`, a listing records the observed sessions it finds without waking.
 //!
-//! Nothing wakes the supervisor on a timer. A run with nothing to watch, no open task, followed
+//! Nothing wakes the supervisor on a timer, except to outlast the Stop hook's timeout: a run with
+//! an open task, a followed session or what it could not read that is still waiting after
+//! `Settings::rearm`, a day by default, wakes it once as `watch-rearm`, so the turn that ends
+//! starts a fresh run before the hook would kill this one and leave nothing watching. A run with
+//! nothing to watch, no open task, followed
 //! session or hand session, ends after its first cycle. A cycle that could not read the tasks or
 //! the follow list counts as having something to watch. A run watching hand sessions alone, no
 //! open task, followed session or what could not be read, lists the hosts again every
@@ -119,6 +123,9 @@ pub struct Settings {
     /// How long a run watching only hand sessions nobody follows lasts before it ends without
     /// waking.
     pub hand_max: Duration,
+    /// How long any other run waits before it wakes the supervisor as `watch-rearm`, so a fresh
+    /// run starts before the Stop hook's timeout ends this one.
+    pub rearm: Duration,
     /// How long listing the hosts' agents may take; a host not answered by then is left out.
     pub list_timeout: Duration,
 }
@@ -566,6 +573,9 @@ impl<'a> Watcher<'a> {
                 .drain(..)
                 .map(|(obs, key)| (obs, Progress::ObservedPane(key))),
         );
+        if self.beyond_hands && self.started.elapsed() >= self.settings.rearm {
+            observed.push((Observation::Rearm, Progress::Nothing));
+        }
         let thresholds = Thresholds {
             quiet_secs: self.settings.quiet_secs,
             follow,
@@ -1536,6 +1546,7 @@ default_branch = "main"
             quiet_secs: DEFAULT_QUIET_SECS,
             list_agents: false,
             hand_max: Duration::from_secs(86_400),
+            rearm: Duration::from_secs(86_400),
             list_timeout: Duration::from_secs(60),
         }
     }
@@ -2717,6 +2728,48 @@ default_branch = "main"
         }
         assert!(watcher.beyond_hands);
         assert!(!watcher.relist_due());
+        assert!(queue::latest(&fx.state).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_run_with_an_open_task_wakes_once_to_rearm_before_the_hook_timeout() {
+        let fx = Fixture::new();
+        fx.task(true);
+        mark_read(&fx);
+        let runner = fake(vec![Scripted {
+            repeat: true,
+            ..answer(0, WORKING)
+        }]);
+        let rearm = Duration::from_millis(200);
+        let settings = Settings {
+            rearm,
+            ..settings(Duration::from_secs(3600))
+        };
+        let mut watcher = Watcher::new(&fx.state, runner.clone(), &settings).unwrap();
+        assert_eq!(watcher.cycle().unwrap(), None);
+        thread::sleep(rearm + Duration::from_millis(50));
+        assert_eq!(watcher.cycle().unwrap().as_deref(), Some("watch-rearm"));
+        assert_eq!(
+            queue::latest(&fx.state).unwrap().map(|wake| wake.obs),
+            Some(Observation::Rearm)
+        );
+    }
+
+    #[test]
+    fn a_hand_only_run_never_wakes_to_rearm() {
+        let fx = Fixture::new();
+        fx.hand();
+        let runner = fake(vec![Scripted {
+            repeat: true,
+            ..answer(0, WORKING)
+        }]);
+        let settings = Settings {
+            rearm: Duration::ZERO,
+            ..settings(Duration::from_secs(3600))
+        };
+        let mut watcher = Watcher::new(&fx.state, runner.clone(), &settings).unwrap();
+        assert_eq!(watcher.cycle().unwrap(), None);
+        assert!(!watcher.beyond_hands);
         assert!(queue::latest(&fx.state).unwrap().is_none());
     }
 
