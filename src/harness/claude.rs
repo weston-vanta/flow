@@ -28,29 +28,36 @@ impl HarnessAdapter for ClaudeAdapter {
         task_dir: &Path,
         flow_bin: &Path,
     ) -> anyhow::Result<Launch> {
-        // The id goes unquoted into the hook's shell command.
-        if !is_task_id(&task.id) {
-            bail!("invalid task id: {:?}", task.id);
-        }
-        let flow_bin = utf8(flow_bin)?;
-        let settings_path = task_dir.join(SETTINGS_FILE);
+        let mut argv = settings_argv(task, task_dir, flow_bin)?;
         let brief_path = task_dir.join(BRIEF_FILE);
-        let hook_command = format!("{} hook claude --task {}", shell_quote(flow_bin), task.id);
-        let settings = SETTINGS_TEMPLATE.replace(
-            "\"{{hook_command}}\"",
-            &serde_json::to_string(&hook_command)?,
-        );
-        write_atomic(&settings_path, settings.as_bytes())
-            .with_context(|| format!("writing {}", settings_path.display()))?;
+        argv.push(format!(
+            "Read {} and follow it exactly.",
+            utf8(&brief_path)?
+        ));
         Ok(Launch {
-            argv: vec![
-                "claude".to_owned(),
-                "--settings".to_owned(),
-                utf8(&settings_path)?.to_owned(),
-                "--name".to_owned(),
-                task.id.clone(),
-                format!("Read {} and follow it exactly.", utf8(&brief_path)?),
-            ],
+            argv,
+            env: Vec::new(),
+        })
+    }
+
+    /// Rewrites `<task_dir>/claude-settings.json` and returns
+    /// `claude --settings <that file> --name <id> --resume <session_id> <message>`.
+    fn prepare_resume(
+        &self,
+        task: &TaskRecord,
+        task_dir: &Path,
+        flow_bin: &Path,
+        session_id: &str,
+        message: &str,
+    ) -> anyhow::Result<Launch> {
+        let mut argv = settings_argv(task, task_dir, flow_bin)?;
+        argv.extend([
+            "--resume".to_owned(),
+            session_id.to_owned(),
+            message.to_owned(),
+        ]);
+        Ok(Launch {
+            argv,
             env: Vec::new(),
         })
     }
@@ -58,6 +65,35 @@ impl HarnessAdapter for ClaudeAdapter {
     fn kind(&self) -> &'static str {
         "claude"
     }
+}
+
+/// Writes `<task_dir>/claude-settings.json`, whose hooks call `flow_bin hook claude --task <id>`,
+/// and returns `claude --settings <that file> --name <id>`.
+fn settings_argv(
+    task: &TaskRecord,
+    task_dir: &Path,
+    flow_bin: &Path,
+) -> anyhow::Result<Vec<String>> {
+    // The id goes unquoted into the hook's shell command.
+    if !is_task_id(&task.id) {
+        bail!("invalid task id: {:?}", task.id);
+    }
+    let flow_bin = utf8(flow_bin)?;
+    let settings_path = task_dir.join(SETTINGS_FILE);
+    let hook_command = format!("{} hook claude --task {}", shell_quote(flow_bin), task.id);
+    let settings = SETTINGS_TEMPLATE.replace(
+        "\"{{hook_command}}\"",
+        &serde_json::to_string(&hook_command)?,
+    );
+    write_atomic(&settings_path, settings.as_bytes())
+        .with_context(|| format!("writing {}", settings_path.display()))?;
+    Ok(vec![
+        "claude".to_owned(),
+        "--settings".to_owned(),
+        utf8(&settings_path)?.to_owned(),
+        "--name".to_owned(),
+        task.id.clone(),
+    ])
 }
 
 fn utf8(path: &Path) -> anyhow::Result<&str> {
@@ -156,5 +192,40 @@ mod tests {
         );
         assert!(launch.env.is_empty());
         assert_eq!(ClaudeAdapter.kind(), "claude");
+    }
+
+    #[test]
+    fn resume_argv_resumes_the_session_with_the_task_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let launch = ClaudeAdapter
+            .prepare_resume(
+                &task(),
+                dir.path(),
+                Path::new(FLOW_BIN),
+                "0b5e7f3c-session",
+                "Address the review comments.",
+            )
+            .unwrap();
+        let settings = dir.path().join("claude-settings.json");
+
+        assert_eq!(
+            launch.argv,
+            [
+                "claude",
+                "--settings",
+                settings.to_str().unwrap(),
+                "--name",
+                "aaaaaaab",
+                "--resume",
+                "0b5e7f3c-session",
+                "Address the review comments.",
+            ]
+        );
+        assert!(launch.env.is_empty());
+        let settings: Value = serde_json::from_slice(&std::fs::read(&settings).unwrap()).unwrap();
+        assert_eq!(
+            settings["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+            "'/opt/flow/bin/flow' hook claude --task aaaaaaab"
+        );
     }
 }

@@ -91,7 +91,8 @@ plainly which hosts you cannot reach until they log in again.
 ## Skills
 
 - `flow-dispatch`: choosing a host from `flow inventory`, writing a brief with completion
-  criteria, and starting the worker with `flow dispatch`; also handling worker requests, and
+  criteria, and starting the worker with `flow dispatch`; also handling worker requests,
+  resuming a done task with `flow task resume` when the user asks for follow-up on it, and
   taking over a session the user started by hand with `flow task adopt` when the user asks
   for it to become a worker.
 - `flow-wake`: draining wakes, handling each reason, acknowledging, ending the turn.

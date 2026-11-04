@@ -6,7 +6,9 @@ use assert_cmd::Command;
 use flow::paths::StateDir;
 use flow::state::Store;
 use flow::state::events::Event;
-use flow::state::task::{Harness, HerdrTarget, Hold, HoldOn, Origin, State, TaskRecord};
+use flow::state::task::{
+    ClaudeSession, Harness, HerdrTarget, Hold, HoldOn, Origin, State, TaskRecord,
+};
 use jiff::Timestamp;
 use serde_json::{Value, json};
 
@@ -177,6 +179,38 @@ fn task_show_names_the_origin_and_the_herdr_session() {
         parsed["tasks"][0]["task"]["origin"], "adopted",
         "{json_out}"
     );
+}
+
+#[test]
+fn task_show_prints_the_resume_command_only_for_a_closed_task_with_a_session() {
+    let (_repo, state, store) = setup();
+    store
+        .create_task(record("aaaaaaab", "Add retry"), "brief")
+        .unwrap();
+    let resume = "resume      flow task resume aaaaaaab [--prompt <text>]\n";
+
+    store
+        .set_status("aaaaaaab", |s| s.state = State::Done)
+        .unwrap();
+    let out = stdout(flow(&state).args(["task", "show", "aaaaaaab"]));
+    assert!(!out.contains("resume"), "no session was recorded: {out}");
+
+    store
+        .set_status("aaaaaaab", |s| {
+            s.claude_session = Some(ClaudeSession {
+                session_id: "s1".to_owned(),
+                transcript_path: PathBuf::from("/home/dev/.claude/projects/x/s1.jsonl"),
+            });
+        })
+        .unwrap();
+    let out = stdout(flow(&state).args(["task", "show", "aaaaaaab"]));
+    assert!(out.contains(resume), "{out}");
+
+    store
+        .set_status("aaaaaaab", |s| s.state = State::Working)
+        .unwrap();
+    let out = stdout(flow(&state).args(["task", "show", "aaaaaaab"]));
+    assert!(!out.contains("resume"), "the task is open: {out}");
 }
 
 #[test]

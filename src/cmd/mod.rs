@@ -14,6 +14,7 @@ pub mod task_adopt;
 pub mod task_archive;
 pub mod task_close;
 pub mod task_events;
+pub mod task_resume;
 pub mod task_show;
 pub mod task_write;
 pub mod up;

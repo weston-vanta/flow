@@ -28,5 +28,16 @@ pub trait HarnessAdapter {
         flow_bin: &Path,
     ) -> anyhow::Result<Launch>;
 
+    /// Writes the same files as `prepare` and returns the command that resumes the task's
+    /// earlier harness session `session_id`, with `message` as its first prompt.
+    fn prepare_resume(
+        &self,
+        task: &TaskRecord,
+        task_dir: &Path,
+        flow_bin: &Path,
+        session_id: &str,
+        message: &str,
+    ) -> anyhow::Result<Launch>;
+
     fn kind(&self) -> &'static str;
 }
