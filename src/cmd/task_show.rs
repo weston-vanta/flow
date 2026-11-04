@@ -75,6 +75,12 @@ fn render_text(
         let since = render::relative(hold.since, now);
         fields.push(("hold", format!("{}: {} ({since})", hold.on, hold.what)));
     }
+    if super::task_resume::refusal(task, status).is_ok() {
+        fields.push((
+            "resume",
+            format!("flow task resume {} [--prompt <text>]", task.id),
+        ));
+    }
     if let Some(herdr) = &status.herdr {
         let target = format!(
             "{} {}/{} (workspace {}, {})",

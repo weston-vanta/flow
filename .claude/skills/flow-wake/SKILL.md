@@ -17,8 +17,9 @@ one reason; handle every row.
   show <id> --json`); the `report` event in `flow task events <id> --last 5 --json` gives the
   report's path; read it. Check it against the brief's completion criteria. To look at the
   worker's files on another host, use `flow run <host> -- <argv>`, never plain `ssh`. Met: tell
-  the user the outcome with links, then retire the worker's pane with `flow task close <id>`;
-  its worktree and branch stay. Leave the record: `flow task archive <id>` takes closed tasks
+  the user the outcome with links, and that they can ask for the task to be resumed for
+  follow-up (review comments, changes) in the same agent conversation; then retire the
+  worker's pane with `flow task close <id>`; its worktree and branch stay. Leave the record: `flow task archive <id>` takes closed tasks
   out of `flow status --all` only when the user asks to clean up. When it says herdr reused the tab and it closed nothing, or
   refuses because another agent runs in the task's pane, the tab is no longer the task's: leave
   it, and tell the user. Not met: steer the worker to finish (`flow steer <id> "<what is missing>"`) and say so.
@@ -31,9 +32,9 @@ one reason; handle every row.
   herdr session, since the same pane id can exist in several.
 - `agent-done: <id>`: the worker's session stopped while its task still reads `working` or
   `pending`, without reporting through flow. Check `flow task events <id>`, then steer it to
-  continue or to report its status. A worker that stops after reporting `needs-decision` or
-  `blocked`, or while its task holds on the user or on you, is waiting on that answer and
-  does not wake you.
+  continue or to report its status. A task just resumed without `--prompt` (its last `resume`
+  event has a null `prompt`) stops once after saying it is ready: leave it for the user. A worker that stops after reporting `needs-decision` or
+  `blocked` is waiting on its hold and does not wake you.
 - `agent-gone: <id>`: the worker's pane or session disappeared, or herdr reused its pane and flow
   retired the task's herdr target (`target.retired` in its events). Check `flow sessions`. If the
   work cannot continue, `flow task orphan <id> --reason "<last known: branch pushed or not>"`

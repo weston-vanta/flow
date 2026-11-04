@@ -14,7 +14,7 @@ use serde_json::json;
 
 use super::Refused;
 use crate::harness::handshake::{self, AgentStart};
-use crate::harness::{ClaudeAdapter, HarnessAdapter, brief};
+use crate::harness::{ClaudeAdapter, HarnessAdapter, Launch, brief};
 use crate::herdr::{self, Agent, Herdr, NewTab};
 use crate::host;
 use crate::inventory;
@@ -31,7 +31,7 @@ const EVENT_SOURCE: &str = "cli";
 const OWNER: &str = "supervisor";
 /// Printed after a dispatch from outside the supervisor's session: `flow watch` starts when a
 /// supervisor turn ends, so none may be watching the new task yet.
-const HAND_DISPATCH_NOTE: &str = "note: no supervisor turn is watching; the supervisor hears of \
+pub(super) const HAND_DISPATCH_NOTE: &str = "note: no supervisor turn is watching; the supervisor hears of \
      this task when it next ends a turn\n";
 /// The task's own working directory, inside its task directory, for work outside any repo.
 const WORK_DIR: &str = "work";
@@ -152,7 +152,8 @@ pub fn run(state: &StateDir, args: &DispatchArgs) -> anyhow::Result<ExitCode> {
         &brief::render(&rec, &body, &args.criteria, &flow_bin.display().to_string()),
     )?;
     let started = create_work_dir(&dir, &rec.cwd)
-        .and_then(|()| start_worker(&store, state.root(), &herdr, host, &rec, &flow_bin));
+        .and_then(|()| ClaudeAdapter.prepare(&rec, &store.task_dir(&rec.id)?, &flow_bin))
+        .and_then(|launch| start_worker(&store, state.root(), &herdr, host, &rec, &launch));
     match started {
         Ok((pane_id, start)) => {
             if let AgentStart::BlockedAtStart { .. } = start {
@@ -310,7 +311,7 @@ fn create_work_dir(dir: &WorkDir, cwd: &Path) -> anyhow::Result<()> {
 }
 
 /// Fails with `Refused` when an agent on `host` already works in `dir`.
-fn refuse_shared_dir(agents: &[Agent], host: &Host, dir: &Path) -> anyhow::Result<()> {
+pub(super) fn refuse_shared_dir(agents: &[Agent], host: &Host, dir: &Path) -> anyhow::Result<()> {
     let Some(agent) = agents.iter().find(|agent| agent.cwd == dir) else {
         return Ok(());
     };
@@ -329,20 +330,19 @@ fn refuse_shared_dir(agents: &[Agent], host: &Host, dir: &Path) -> anyhow::Resul
     .into())
 }
 
-/// Opens a tab for the task, records its pane as the task's herdr target, and launches the
-/// worker there as `env FLOW_STATE=<state_root> [<harness env>] <harness argv>`: herdr hands
-/// panes the environment of whoever started its server, which may hold another FLOW_STATE.
-/// Returns the worker's pane and how it started.
-fn start_worker(
+/// Opens a tab for the task, records its pane as the task's herdr target, moves the task to
+/// `working`, and launches the worker there as `env FLOW_STATE=<state_root> [<harness env>]
+/// <harness argv>`: herdr hands panes the environment of whoever started its server, which may
+/// hold another FLOW_STATE. Returns the worker's pane and how it started.
+pub(super) fn start_worker(
     store: &Store,
     state_root: &Path,
     herdr: &Herdr,
     host: &Host,
     rec: &TaskRecord,
-    flow_bin: &Path,
+    launch: &Launch,
 ) -> anyhow::Result<(String, AgentStart)> {
     let adapter = ClaudeAdapter;
-    let launch = adapter.prepare(rec, &store.task_dir(&rec.id)?, flow_bin)?;
     let state_root = state_root
         .to_str()
         .with_context(|| format!("state path is not UTF-8: {}", state_root.display()))?;
@@ -353,7 +353,7 @@ fn start_worker(
             .iter()
             .map(|(name, value)| format!("{name}={value}")),
     );
-    argv.extend(launch.argv);
+    argv.extend(launch.argv.iter().cloned());
 
     let NewTab {
         workspace_id,
@@ -429,7 +429,12 @@ fn record_failure(store: &Store, id: &str, err: &anyhow::Error) -> anyhow::Resul
     })
 }
 
-fn append_event(store: &Store, id: &str, kind: &str, data: impl Serialize) -> anyhow::Result<()> {
+pub(super) fn append_event(
+    store: &Store,
+    id: &str,
+    kind: &str,
+    data: impl Serialize,
+) -> anyhow::Result<()> {
     let ev = Event {
         ts: Timestamp::now(),
         source: EVENT_SOURCE.to_owned(),
