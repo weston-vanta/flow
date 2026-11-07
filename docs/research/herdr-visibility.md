@@ -105,9 +105,12 @@ History is not durable and does not replay; a slow subscriber gets `events_lost`
 resubscribe and reconcile with `session.snapshot`. Snapshots and events share no sequence, so
 events should be treated as invalidations that trigger a re-read [docs:socket-api].
 
-I opened a subscription over ssh on Oncall (90 s) and locally (400 s): both got
-`subscription_started`, then no events, because no pane changed state in those windows [probe].
-Event delivery over ssh is therefore confirmed to connect but not observed carrying an event.
+I opened a subscription over ssh on Oncall (90 s) and locally (400 s). Both got
+`subscription_started`. The Oncall one saw no events because no pane changed state in that
+window. The local one received
+`{"event":"pane.agent_status_changed","data":{"agent":"claude","agent_status":"idle","pane_id":"w1:p1","workspace_id":"w1"}}`
+215 s in, when the parent pane finished its turn [probe]. So events are confirmed locally;
+over ssh the stream is confirmed to connect but was not seen carrying an event.
 
 ### The Claude Code integration
 
