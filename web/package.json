@@ -1,0 +1,12 @@
+{
+  "name": "flow-web-prototype",
+  "private": true,
+  "description": "PROTOTYPE (throwaway): web app shape for flow v2, ticket 11. Not production code.",
+  "type": "module",
+  "scripts": {
+    "proto": "node prototype/dev.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.24.2"
+  }
+}
