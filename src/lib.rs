@@ -1,16 +1,1 @@
-pub mod cmd;
-pub mod harness;
-pub mod herdr;
-pub mod host;
-pub mod inventory;
-pub mod observe;
-pub mod ona;
-pub mod owner;
-pub mod paths;
-pub mod render;
-pub mod runner;
-pub mod state;
-pub mod supervisor;
-pub mod vars;
-pub mod watch;
-pub mod worktree;
+//! flow: the shared library behind the `flow` CLI and the `flowd` daemon.
