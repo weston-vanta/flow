@@ -11,7 +11,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 use jiff::Timestamp;
 use serde::Serialize;
 
-use flow::hook::{self, HookEnv};
+use flow::hook;
 use flow::services;
 use flow::store::Store;
 
@@ -176,7 +176,7 @@ fn run_hook(store: &Store, started: Timestamp) -> ExitCode {
         std::io::stdin()
             .read_to_string(&mut stdin)
             .map_err(anyhow::Error::from)
-            .and_then(|_| hook::handle_hook(store, &stdin, &HookEnv::from_env(), started))
+            .and_then(|_| hook::handle_hook(store, &stdin, started))
     });
     if let Ok(Err(err)) = result {
         hook::log_error(store, started, &format!("{err:#}"));

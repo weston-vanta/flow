@@ -11,11 +11,9 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
-use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -25,12 +23,6 @@ pub const DEFAULT_ROOT: &str = "/efs-home/flow/store";
 
 /// How many facet-reading threads a list uses at most.
 const LIST_PARALLELISM: usize = 16;
-
-/// How long to wait before re-reading a facet file that failed to parse (caught mid-write).
-const REREAD_DELAY: Duration = Duration::from_millis(50);
-
-/// The longest encoded id the Store can keep: one path segment, at most 255 bytes.
-const MAX_ENCODED_ID: usize = 255;
 
 /// One Session, PR or Branch: its id and every facet written so far.
 #[derive(Debug, Clone, PartialEq)]
@@ -67,10 +59,7 @@ impl Store {
 
     /// The Store at `FLOW_STORE`, or at [`DEFAULT_ROOT`].
     pub fn from_env() -> Self {
-        match std::env::var_os("FLOW_STORE") {
-            Some(root) if !root.is_empty() => Self::new(root),
-            _ => Self::new(DEFAULT_ROOT),
-        }
+        Self::new(std::env::var_os("FLOW_STORE").unwrap_or_else(|| DEFAULT_ROOT.into()))
     }
 
     pub fn root(&self) -> &Path {
@@ -79,59 +68,39 @@ impl Store {
 
     /// Every entity of `kind` that has at least one facet, ordered by id.
     pub fn list(&self, kind: &str) -> Result<Vec<Entity>> {
-        let kind_dir = self.root.join(kind);
-        let entries = match fs::read_dir(&kind_dir) {
-            Ok(entries) => entries,
+        let dirs: Vec<_> = match fs::read_dir(self.root.join(kind)) {
+            Ok(entries) => entries.collect::<Result<_, _>>()?,
             Err(err) if err.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(err) => return Err(err).with_context(|| format!("read {}", kind_dir.display())),
+            Err(err) => return Err(err.into()),
         };
-        let mut dirs = Vec::new();
-        for entry in entries {
-            let entry = entry.with_context(|| format!("read {}", kind_dir.display()))?;
-            let name = entry.file_name();
-            // Anything that is not an encoded id was not written by the Store; skip it.
-            if let Some(id) = name.to_str().and_then(decode_id) {
-                dirs.push((id, entry.path()));
-            }
-        }
-
-        let next = AtomicUsize::new(0);
-        let workers = dirs.len().clamp(1, LIST_PARALLELISM);
-        let results: Vec<Result<Option<Entity>>> = thread::scope(|scope| {
-            let handles: Vec<_> = (0..workers)
-                .map(|_| {
-                    scope.spawn(|| {
-                        let mut out = Vec::new();
-                        loop {
-                            let i = next.fetch_add(1, Ordering::Relaxed);
-                            let Some((id, dir)) = dirs.get(i) else { break };
-                            out.push(read_entity(id, dir));
-                        }
-                        out
+        let chunk = dirs.len().div_ceil(LIST_PARALLELISM).max(1);
+        let mut entities = thread::scope(|scope| {
+            let handles: Vec<_> = dirs
+                .chunks(chunk)
+                .map(|chunk| {
+                    scope.spawn(move || {
+                        chunk
+                            .iter()
+                            .map(|entry| {
+                                let id = decode_id(&entry.file_name().to_string_lossy());
+                                read_entity(&id, &entry.path())
+                            })
+                            .collect::<Vec<_>>()
                     })
                 })
                 .collect();
             handles
                 .into_iter()
-                .flat_map(|h| h.join().expect("list worker panicked"))
-                .collect()
-        });
-
-        let mut entities = Vec::new();
-        for result in results {
-            if let Some(entity) = result? {
-                entities.push(entity);
-            }
-        }
+                .flat_map(|h| h.join().unwrap())
+                .filter_map(Result::transpose)
+                .collect::<Result<Vec<_>>>()
+        })?;
         entities.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(entities)
     }
 
     /// The entity of `kind` with `id`, if any facet of it has been written.
     pub fn get(&self, kind: &str, id: &str) -> Result<Option<Entity>> {
-        if id.is_empty() {
-            return Ok(None);
-        }
         read_entity(id, &self.entity_dir(kind, id))
     }
 
@@ -145,48 +114,29 @@ impl Store {
         value: &Value,
         at: Timestamp,
     ) -> Result<Put> {
-        if id.is_empty() {
-            bail!("cannot write facet {name} of a {kind} with an empty id");
-        }
-        let encoded = encode_id(id).len();
-        if encoded > MAX_ENCODED_ID {
-            bail!(
-                "cannot write facet {name} of {kind} {id:?}: the id encodes to {encoded} bytes, more than the Store's limit of {MAX_ENCODED_ID}"
-            );
-        }
-        // `at` is kept to the microsecond, so compare at the precision it is stored with.
-        let at = Timestamp::from_microsecond(at.as_microsecond())?;
         let dir = self.entity_dir(kind, id);
         let path = dir.join(format!("{name}.json"));
-        match read_facet(&path) {
-            Ok(Some(current)) if at < current.at => return Ok(Put::Stale),
-            Ok(_) => {}
-            // A facet file that stays unparseable has no `at` to compare with; the write
-            // replaces it rather than leaving the facet unwritable for good.
-            Err(ReadError::Corrupt(_)) => {}
-            Err(ReadError::Io(err)) => return Err(err),
+        // A facet file that cannot be read has no `at` to compare with; the write replaces it.
+        if let Ok(Some(current)) = read_facet(&path)
+            && at < current.at
+        {
+            return Ok(Put::Stale);
         }
-        fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
         let file = FacetFile {
             at: format_at(at),
             value: value.clone(),
         };
-        let bytes = serde_json::to_vec(&file)?;
-        fs::write(&path, bytes).with_context(|| format!("write {}", path.display()))?;
+        fs::create_dir_all(&dir)
+            .and_then(|_| fs::write(&path, serde_json::to_vec(&file)?))
+            .with_context(|| format!("write {}", path.display()))?;
         Ok(Put::Applied)
     }
 
     /// Deletes entity `kind`/`id` and every facet of it. Removing a missing entity is not an
     /// error.
     pub fn remove(&self, kind: &str, id: &str) -> Result<()> {
-        if id.is_empty() {
-            return Ok(());
-        }
-        let dir = self.entity_dir(kind, id);
-        match fs::remove_dir_all(&dir) {
-            Err(err) if err.kind() != ErrorKind::NotFound => {
-                Err(err).with_context(|| format!("remove {}", dir.display()))
-            }
+        match fs::remove_dir_all(self.entity_dir(kind, id)) {
+            Err(err) if err.kind() != ErrorKind::NotFound => Err(err.into()),
             _ => Ok(()),
         }
     }
@@ -208,19 +158,6 @@ struct FacetFile {
     value: Value,
 }
 
-enum ReadError {
-    Io(anyhow::Error),
-    Corrupt(anyhow::Error),
-}
-
-impl From<ReadError> for anyhow::Error {
-    fn from(err: ReadError) -> Self {
-        match err {
-            ReadError::Io(err) | ReadError::Corrupt(err) => err,
-        }
-    }
-}
-
 fn read_entity(id: &str, dir: &Path) -> Result<Option<Entity>> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -229,106 +166,50 @@ fn read_entity(id: &str, dir: &Path) -> Result<Option<Entity>> {
     };
     let mut facets = BTreeMap::new();
     for entry in entries {
-        let entry = entry.with_context(|| format!("read {}", dir.display()))?;
+        let entry = entry?;
         let file_name = entry.file_name();
-        let Some(name) = file_name.to_str().and_then(|n| n.strip_suffix(".json")) else {
-            continue;
-        };
-        if let Some(facet) = read_facet(&entry.path())? {
+        if let Some(name) = file_name.to_str().and_then(|n| n.strip_suffix(".json"))
+            && let Some(facet) = read_facet(&entry.path())?
+        {
             facets.insert(name.to_owned(), facet);
         }
     }
-    if facets.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(Entity {
+    Ok((!facets.is_empty()).then(|| Entity {
         id: id.to_owned(),
         facets,
     }))
 }
 
-/// Reads one facet file, re-reading once if it fails to parse. `None` if it does not exist.
-fn read_facet(path: &Path) -> Result<Option<Facet>, ReadError> {
-    let mut retried = false;
-    loop {
+/// Reads one facet file, re-reading once if it fails to parse (caught mid-write). `None` if it
+/// does not exist.
+fn read_facet(path: &Path) -> Result<Option<Facet>> {
+    let read = || -> Result<Option<Facet>> {
         let bytes = match fs::read(path) {
             Ok(bytes) => bytes,
             Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
-            Err(err) => {
-                return Err(ReadError::Io(
-                    anyhow!(err).context(format!("read {}", path.display())),
-                ));
-            }
+            Err(err) => return Err(err.into()),
         };
-        match parse_facet(&bytes) {
-            Ok(facet) => return Ok(Some(facet)),
-            Err(_) if !retried => {
-                retried = true;
-                thread::sleep(REREAD_DELAY);
-            }
-            Err(err) => {
-                return Err(ReadError::Corrupt(
-                    err.context(format!("parse {}", path.display())),
-                ));
-            }
-        }
-    }
+        let file: FacetFile = serde_json::from_slice(&bytes)?;
+        Ok(Some(Facet {
+            at: file.at.parse()?,
+            value: file.value,
+        }))
+    };
+    read()
+        .or_else(|_| read())
+        .with_context(|| format!("read {}", path.display()))
 }
 
-/// Parses the first JSON document in a facet file. Bytes after it are ignored: two writers
-/// racing on one file each write their whole document from offset 0, so the file always
-/// starts with the last writer's complete document, possibly followed by the tail of a
-/// longer, earlier one.
-fn parse_facet(bytes: &[u8]) -> Result<Facet> {
-    let file: FacetFile = serde_json::Deserializer::from_slice(bytes)
-        .into_iter()
-        .next()
-        .ok_or_else(|| anyhow!("empty facet file"))??;
-    let at = file
-        .at
-        .parse()
-        .with_context(|| format!("bad at {:?}", file.at))?;
-    Ok(Facet {
-        at,
-        value: file.value,
-    })
-}
-
-/// Bytes kept as they are in an encoded id; every other byte becomes `%XX`.
-fn is_plain(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || b"-_.#@+~,=".contains(&byte)
-}
-
-/// Encodes an id into one path segment: `/`, `:`, `%` and any other byte outside a small
-/// plain set become `%XX`, and so does a leading `.`, so no id can name `.`, `..` or a
-/// hidden file.
+/// Encodes an id into one path segment by escaping `%`, `/` and `:`.
 fn encode_id(id: &str) -> String {
-    let mut out = String::with_capacity(id.len());
-    for (i, &byte) in id.as_bytes().iter().enumerate() {
-        if is_plain(byte) && !(i == 0 && byte == b'.') {
-            out.push(byte as char);
-        } else {
-            out.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    out
+    id.replace('%', "%25")
+        .replace('/', "%2F")
+        .replace(':', "%3A")
 }
 
-/// The id an encoded path segment stands for, or `None` if it is not one `encode_id` makes.
-fn decode_id(segment: &str) -> Option<String> {
-    let bytes = segment.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' {
-            let hex = segment.get(i + 1..i + 3)?;
-            out.push(u8::from_str_radix(hex, 16).ok()?);
-            i += 3;
-        } else {
-            out.push(bytes[i]);
-            i += 1;
-        }
-    }
-    let id = String::from_utf8(out).ok()?;
-    (!id.is_empty() && encode_id(&id) == segment).then_some(id)
+fn decode_id(segment: &str) -> String {
+    segment
+        .replace("%2F", "/")
+        .replace("%3A", ":")
+        .replace("%25", "%")
 }
