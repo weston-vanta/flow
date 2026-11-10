@@ -19,9 +19,9 @@
     return { lamp: "fine", tip: "base: no conflict" };
   }
   function ciLight(g) {
-    const failing = g.checks.filter((c) => c.conclusion && FAILING.has(c.conclusion));
-    if (failing.length) {
-      return { lamp: "act", tip: `CI failing: ${failing.map((c) => c.name).join(", ")}` };
+    const failing2 = g.checks.filter((c) => c.conclusion && FAILING.has(c.conclusion));
+    if (failing2.length) {
+      return { lamp: "act", tip: `CI failing: ${failing2.map((c) => c.name).join(", ")}` };
     }
     const running = g.checks.filter((c) => !c.conclusion || PENDING.has(c.conclusion));
     if (running.length) {
@@ -126,6 +126,22 @@
     if (h < 24) return `${h} h`;
     return `${Math.floor(h / 24)} d`;
   }
+  function stackLight(stack) {
+    if (!stack.length) return { lamp: "off", tip: "no pull requests" };
+    const needs = stack.filter((p) => p.needs.length).length;
+    if (needs) return { lamp: "act", tip: `${needs} of ${stack.length} PRs need attention` };
+    const open = stack.filter((p) => p.node !== "merged" && p.node !== "closed");
+    if (open.some((p) => [p.base, p.ci, p.feedback, p.review].some((l) => l.lamp === "run"))) {
+      return { lamp: "run", tip: "PRs in progress" };
+    }
+    return { lamp: "fine", tip: "PRs fine" };
+  }
+  function prDataAge(prs2, now = Date.now()) {
+    const ats = prs2.flatMap((p) => p.github?.state === "OPEN" ? [Date.parse(p.github.at)] : []);
+    if (!ats.length) return null;
+    const ms = now - Math.min(...ats);
+    return ms > 3 * 6e4 ? Math.floor(ms / 6e4) : null;
+  }
 
   // src/render.ts
   function esc(s) {
@@ -149,10 +165,19 @@
     <div class="gcell">${lamp(p.review.lamp, p.review.tip)}</div>
   </div>`;
   }
-  function sessionRow(v, i) {
-    const head = `<div class="sidx">${String(i + 1).padStart(2, "0")}</div>
+  function sessionRow(v, i, collapsed2) {
+    const idx = String(i + 1).padStart(2, "0");
+    const stat = `<div class="sstat ${v.status.lamp}">${lamp(v.status.lamp, v.status.tip, true)}${esc(v.status.tip)}${v.status.since ? ` \xB7 ${age(v.status.since)}` : ""}</div>`;
+    if (collapsed2.has(v.id)) {
+      const s = stackLight(v.stack);
+      return `<section class="srow folded" data-toggle="${esc(v.id)}" title="Show this Session">
+      <div class="sidx">${idx}</div>
+      <div class="sline">${stat}<b>${esc(v.title)}</b><span class="cde">${esc(v.cde ?? "unknown CDE")}</span>${lamp(s.lamp, `Stack: ${s.tip}`)}</div>
+    </section>`;
+    }
+    const head = `<div class="sidx">${idx}<button class="fold" data-toggle="${esc(v.id)}" title="Collapse this Session">\u2212</button></div>
     <div class="sinfo">
-      <div class="sstat ${v.status.lamp}">${lamp(v.status.lamp, v.status.tip, true)}${esc(v.status.tip)}${v.status.since ? ` \xB7 ${age(v.status.since)}` : ""}</div>
+      ${stat}
       <h2>${esc(v.title)}</h2>
       ${v.activity ? `<p class="activity" title="${esc(v.activity)}">${esc(v.activity)}</p>` : ""}
       <div class="smeta">
@@ -163,10 +188,11 @@
     const body = v.stack.length ? `<div class="grid ghead"><span></span><span></span><span></span><span>base</span><span>CI</span><span>feedback</span><span>review</span></div>` + v.stack.map((p, j) => prRow(p, j, v.stack.length)).join("") : `<div class="noprs"><span class="lamp off"></span><span>No pull requests yet</span></div>`;
     return `<section class="srow">${head}<div class="sprs">${body}</div></section>`;
   }
-  function render(views) {
+  function render(views, collapsed2, notices) {
     return `<div class="page">
     <header class="top"><div class="logo"><i></i></div><div class="brand"><b>flow</b><span>agent sessions and pull requests</span></div></header>
-    <main class="panel">${views.length ? views.map(sessionRow).join("") : '<p class="empty">No Sessions.</p>'}</main>
+    ${notices.map((n) => `<p class="notice">${esc(n)}</p>`).join("")}
+    <main class="panel">${views.length ? views.map((v, i) => sessionRow(v, i, collapsed2)).join("") : '<p class="empty">No Sessions.</p>'}</main>
     <footer class="key">
       <span><span class="lamp act"></span>needs action</span>
       <span><span class="lamp run"></span>in progress</span>
@@ -182,20 +208,45 @@
   var sessions = [];
   var prs = [];
   var drawn = "";
+  var lastGood = null;
+  var failing = false;
+  var collapsed = /* @__PURE__ */ new Set();
+  var root = document.getElementById("root");
   async function get(path) {
     const r = await fetch(path);
     if (!r.ok) throw new Error(`${path}: ${r.status}`);
     return r.json();
   }
+  function draw() {
+    const notices = [];
+    if (failing) {
+      notices.push(
+        lastGood ? `flowd unreachable \xB7 showing data from ${lastGood.toLocaleTimeString()}` : "flowd unreachable"
+      );
+    }
+    const stale = prDataAge(prs);
+    if (stale != null) notices.push(`PR data ${stale} min old`);
+    const html = render(sessionViews(sessions, prs), collapsed, notices);
+    if (html !== drawn) root.innerHTML = drawn = html;
+  }
   async function poll() {
     try {
       [sessions, prs] = await Promise.all([get("/api/sessions"), get("/api/prs")]);
+      lastGood = /* @__PURE__ */ new Date();
+      failing = false;
     } catch (err) {
+      failing = true;
       console.warn("flow: poll failed, showing the last good data", err);
     }
-    const html = render(sessionViews(sessions, prs));
-    if (html !== drawn) document.getElementById("root").innerHTML = drawn = html;
+    draw();
   }
+  root.addEventListener("click", (e) => {
+    const el = e.target.closest("[data-toggle]");
+    if (!el) return;
+    const id = el.dataset.toggle;
+    if (!collapsed.delete(id)) collapsed.add(id);
+    draw();
+  });
   poll();
   setInterval(poll, POLL_MS);
 })();

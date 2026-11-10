@@ -1,5 +1,5 @@
 // Variant A of the design canvas as HTML strings: one panel row per Session, its Stack beside it.
-import { age } from "./model.ts";
+import { age, stackLight } from "./model.ts";
 import type { Lamp, PrView, SessionView } from "./model.ts";
 
 export function esc(s: string | number): string {
@@ -28,10 +28,19 @@ function prRow(p: PrView, j: number, n: number): string {
   </div>`;
 }
 
-function sessionRow(v: SessionView, i: number): string {
-  const head = `<div class="sidx">${String(i + 1).padStart(2, "0")}</div>
+function sessionRow(v: SessionView, i: number, collapsed: Set<string>): string {
+  const idx = String(i + 1).padStart(2, "0");
+  const stat = `<div class="sstat ${v.status.lamp}">${lamp(v.status.lamp, v.status.tip, true)}${esc(v.status.tip)}${v.status.since ? ` · ${age(v.status.since)}` : ""}</div>`;
+  if (collapsed.has(v.id)) {
+    const s = stackLight(v.stack);
+    return `<section class="srow folded" data-toggle="${esc(v.id)}" title="Show this Session">
+      <div class="sidx">${idx}</div>
+      <div class="sline">${stat}<b>${esc(v.title)}</b><span class="cde">${esc(v.cde ?? "unknown CDE")}</span>${lamp(s.lamp, `Stack: ${s.tip}`)}</div>
+    </section>`;
+  }
+  const head = `<div class="sidx">${idx}<button class="fold" data-toggle="${esc(v.id)}" title="Collapse this Session">−</button></div>
     <div class="sinfo">
-      <div class="sstat ${v.status.lamp}">${lamp(v.status.lamp, v.status.tip, true)}${esc(v.status.tip)}${v.status.since ? ` · ${age(v.status.since)}` : ""}</div>
+      ${stat}
       <h2>${esc(v.title)}</h2>
       ${v.activity ? `<p class="activity" title="${esc(v.activity)}">${esc(v.activity)}</p>` : ""}
       <div class="smeta">
@@ -46,10 +55,13 @@ function sessionRow(v: SessionView, i: number): string {
   return `<section class="srow">${head}<div class="sprs">${body}</div></section>`;
 }
 
-export function render(views: SessionView[]): string {
+/** `collapsed` holds the ids of Sessions shown as a header line only; `notices` are warnings
+ * shown above the panel. */
+export function render(views: SessionView[], collapsed: Set<string>, notices: string[]): string {
   return `<div class="page">
     <header class="top"><div class="logo"><i></i></div><div class="brand"><b>flow</b><span>agent sessions and pull requests</span></div></header>
-    <main class="panel">${views.length ? views.map(sessionRow).join("") : '<p class="empty">No Sessions.</p>'}</main>
+    ${notices.map((n) => `<p class="notice">${esc(n)}</p>`).join("")}
+    <main class="panel">${views.length ? views.map((v, i) => sessionRow(v, i, collapsed)).join("") : '<p class="empty">No Sessions.</p>'}</main>
     <footer class="key">
       <span><span class="lamp act"></span>needs action</span>
       <span><span class="lamp run"></span>in progress</span>

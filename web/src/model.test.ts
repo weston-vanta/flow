@@ -6,9 +6,11 @@ import {
   ciLight,
   feedbackLight,
   parseJira,
+  prDataAge,
   prView,
   reviewLight,
   sessionViews,
+  stackLight,
   stackOf,
   statusLight,
 } from "./model.ts";
@@ -220,4 +222,29 @@ test("session views join Sessions to their Stacks and tolerate null facets", () 
   assert.deepEqual(two.stack, []);
   // Without PRs the repo falls back to the cwd's last segment.
   assert.equal(sessionViews([sessions[0]], [])[0].repo, "obsidian");
+});
+
+test("Stack summary lamp: act if a PR needs attention, run if an open PR is in progress, off without PRs", () => {
+  const lampOf = (...gs: Partial<Github>[]) => stackLight(gs.map((g, i) => prView(gh(g), i + 1))).lamp;
+  assert.equal(stackLight([]).lamp, "off");
+  assert.equal(lampOf({}, { state: "MERGED" }), "fine");
+  assert.equal(lampOf({}, { reviewDecision: "REVIEW_REQUIRED" }), "run");
+  assert.equal(lampOf({ reviewDecision: "REVIEW_REQUIRED" }, { mergeable: "CONFLICTING" }), "act");
+  // A closed PR's lamps do not count.
+  assert.equal(lampOf({ state: "CLOSED", reviewDecision: "REVIEW_REQUIRED", unresolvedReviewThreads: 2 }), "fine");
+});
+
+test("PR data age: minutes since the oldest open PR was fetched, only when over 3 minutes", () => {
+  const now = Date.parse(AT);
+  const fetched = (min: number, state: Github["state"] = "OPEN"): Pr => ({
+    key: "k",
+    owner: null,
+    github: { ...gh({ state }), at: new Date(now - min * 60_000).toISOString() },
+  });
+  assert.equal(prDataAge([], now), null);
+  assert.equal(prDataAge([fetched(1), fetched(3)], now), null);
+  assert.equal(prDataAge([fetched(1), fetched(7.5)], now), 7);
+  // Closed and merged PRs are fetched once, so their age says nothing.
+  assert.equal(prDataAge([fetched(1), fetched(60, "MERGED"), fetched(60, "CLOSED")], now), null);
+  assert.equal(prDataAge([{ key: "k", owner: null, github: null }], now), null);
 });

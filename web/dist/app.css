@@ -184,6 +184,59 @@ header.top {
   font-weight: 300;
   line-height: 1;
   color: var(--ink3);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+}
+.fold {
+  padding: 0 6px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: none;
+  color: var(--ink2);
+  font: inherit;
+  font-size: 14px;
+  line-height: 18px;
+  cursor: pointer;
+}
+.folded {
+  cursor: pointer;
+  align-items: center;
+}
+.folded .sidx {
+  padding: 14px 0 14px 28px;
+  font-size: 20px;
+}
+.sline {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 14px 28px 14px 0;
+  min-width: 0;
+}
+.sline .sstat {
+  flex: 0 0 200px;
+}
+.sline b {
+  flex: 1;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sline .cde {
+  font-size: 12px;
+  color: var(--ink2);
+}
+.notice {
+  margin: 0 0 -24px;
+  padding: 10px 16px;
+  border-left: 3px solid var(--act);
+  background: var(--panel);
+  color: var(--act);
+  font-weight: 500;
 }
 .sinfo {
   flex: 1 1 280px;

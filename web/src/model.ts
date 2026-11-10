@@ -252,3 +252,24 @@ export function age(iso: string, now = Date.now()): string {
   if (h < 24) return `${h} h`;
   return `${Math.floor(h / 24)} d`;
 }
+
+/** One lamp for a whole Stack, shown on a collapsed Session: act if any PR needs attention,
+ * run if any open PR has a lamp in progress, off with no PRs, else fine. */
+export function stackLight(stack: PrView[]): Light {
+  if (!stack.length) return { lamp: "off", tip: "no pull requests" };
+  const needs = stack.filter((p) => p.needs.length).length;
+  if (needs) return { lamp: "act", tip: `${needs} of ${stack.length} PRs need attention` };
+  const open = stack.filter((p) => p.node !== "merged" && p.node !== "closed");
+  if (open.some((p) => [p.base, p.ci, p.feedback, p.review].some((l) => l.lamp === "run"))) {
+    return { lamp: "run", tip: "PRs in progress" };
+  }
+  return { lamp: "fine", tip: "PRs fine" };
+}
+
+/** Minutes since the oldest `github.at` among open PRs when that is over 3 minutes, else null. */
+export function prDataAge(prs: Pr[], now = Date.now()): number | null {
+  const ats = prs.flatMap((p) => (p.github?.state === "OPEN" ? [Date.parse(p.github.at)] : []));
+  if (!ats.length) return null;
+  const ms = now - Math.min(...ats);
+  return ms > 3 * 60_000 ? Math.floor(ms / 60_000) : null;
+}
