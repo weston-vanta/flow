@@ -19,6 +19,7 @@ pub struct Session {
     pub origin: Option<Stamped<Origin>>,
     pub status: Option<Stamped<Status>>,
     pub context: Option<Stamped<Context>>,
+    pub activity: Option<Stamped<Activity>>,
 }
 
 /// A facet's fields with the time its fact was observed, serialised as `{at, ...fields}`.
@@ -66,9 +67,34 @@ pub enum State {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Context {
+    /// From the transcript's tail: its custom title, else its AI title, else a typed prompt.
     pub title: Option<String>,
     /// The branch checked out in the Session's cwd; `None` outside git or when detached.
     pub branch: Option<String>,
+}
+
+/// What a Session was last asked and, once it finished that turn, what it last said, as raw
+/// text. Writer: `flow hook`, on `UserPromptSubmit`, `Stop` and `StopFailure`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Activity {
+    pub prompt: Option<String>,
+    /// `None` while the Session works on `prompt`.
+    pub reply: Option<String>,
+}
+
+impl Activity {
+    /// The most characters `prompt` and `reply` each keep.
+    pub const MAX_CHARS: usize = 2_000;
+
+    /// An Activity with `prompt` and `reply` cut to [`Self::MAX_CHARS`] characters.
+    pub fn new(prompt: Option<String>, reply: Option<String>) -> Self {
+        let cap = |text: Option<String>| text.map(|t| t.chars().take(Self::MAX_CHARS).collect());
+        Self {
+            prompt: cap(prompt),
+            reply: cap(reply),
+        }
+    }
 }
 
 /// A Session facet: its name in the Store and its type.
@@ -88,6 +114,10 @@ impl SessionFacet for Context {
     const NAME: &'static str = "context";
 }
 
+impl SessionFacet for Activity {
+    const NAME: &'static str = "activity";
+}
+
 impl Session {
     pub fn from_entity(entity: &Entity) -> Result<Self> {
         Ok(Self {
@@ -95,6 +125,7 @@ impl Session {
             origin: facet(entity)?,
             status: facet(entity)?,
             context: facet(entity)?,
+            activity: facet(entity)?,
         })
     }
 

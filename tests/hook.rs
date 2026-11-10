@@ -82,6 +82,7 @@ fn every_event_in_the_table_writes_its_facets() {
             },
             "status": { "at": started_at, "state": "idle" },
             "context": { "at": started_at, "title": null, "branch": "feat/hooks" },
+            "activity": null,
         })
     );
 
@@ -149,14 +150,15 @@ fn facets_never_written_are_null() {
     let ts = TestStore::new();
     let repo = ts.scratch("repo");
     // A Session that started before flow's hook was registered: no SessionStart seen.
-    hook(&ts, event("user-prompt-submit", ID, &repo), &[]);
+    hook(&ts, event("permission-request", ID, &repo), &[]);
     let session = ts.session(ID);
     assert_eq!(session["origin"], Value::Null);
     assert_eq!(session["context"], Value::Null);
-    assert_eq!(session["status"]["state"], "running");
+    assert_eq!(session["activity"], Value::Null);
+    assert_eq!(session["status"]["state"], "waiting");
     assert_eq!(
         session.as_object().unwrap().keys().collect::<Vec<_>>(),
-        ["context", "id", "origin", "status"]
+        ["activity", "context", "id", "origin", "status"]
     );
 }
 
@@ -322,4 +324,194 @@ fn an_unwritable_store_exits_0_and_logs() {
     hook(&ts, event("session-start", ID, &repo), &[]);
     let log = ts.hook_log();
     assert_eq!(log.len(), 1, "{log:?}");
+}
+
+/// A synthetic transcript from `tests/fixtures/transcripts`.
+fn transcript(name: &str) -> String {
+    format!(
+        "{}/tests/fixtures/transcripts/{name}.jsonl",
+        env!("CARGO_MANIFEST_DIR")
+    )
+}
+
+/// `event` for session `ID` with its transcript path replaced and `fields` set on it.
+fn event_with(fixture: &str, cwd: &Path, transcript_path: &str, fields: Value) -> String {
+    let mut input: Value = serde_json::from_str(&event(fixture, ID, cwd)).unwrap();
+    input["transcript_path"] = json!(transcript_path);
+    for (name, value) in fields.as_object().unwrap() {
+        input[name] = value.clone();
+    }
+    input.to_string()
+}
+
+#[test]
+fn title_prefers_custom_title_then_ai_title_then_first_prompt() {
+    let cases = [
+        ("custom-title", "billing-flake"),
+        ("ai-title", "Fix flaky billing test"),
+        ("first-prompt", "Fix the flaky test in services/billing"),
+    ];
+    for fixture in ["session-start", "stop", "stop-failure"] {
+        for (name, title) in cases {
+            let ts = TestStore::new();
+            let repo = ts.scratch("repo");
+            let input = event_with(fixture, &repo, &transcript(name), json!({}));
+            hook(&ts, input, &[]);
+            let context = &ts.session(ID)["context"];
+            assert_eq!(context["title"], title, "{fixture} with {name}");
+        }
+    }
+}
+
+#[test]
+fn title_and_last_prompt_come_from_the_tail_of_a_large_transcript() {
+    let ts = TestStore::new();
+    let repo = ts.scratch("repo");
+    let path = ts.scratch("projects").join("large.jsonl");
+    let line = |value: Value| format!("{value}\n");
+    let mut text = line(json!({"type": "custom-title", "customTitle": "beyond the tail"}));
+    let filler = "x".repeat(10_000);
+    for _ in 0..100 {
+        let content = [{ json!({"type": "text", "text": filler}) }];
+        text += &line(json!({"type": "assistant", "message": {"content": content}}));
+    }
+    text += &line(json!({"type": "ai-title", "aiTitle": "Fix flaky billing test"}));
+    text += &line(json!({"type": "last-prompt", "lastPrompt": "Now open the PR"}));
+    // Claude Code is still writing its next record.
+    text += r#"{"type":"custom-title","customTi"#;
+    fs::write(&path, text).unwrap();
+
+    hook(
+        &ts,
+        event_with("stop", &repo, path.to_str().unwrap(), json!({})),
+        &[],
+    );
+    let session = ts.session(ID);
+    assert_eq!(session["context"]["title"], "Fix flaky billing test");
+    assert_eq!(session["activity"]["prompt"], "Now open the PR");
+}
+
+#[test]
+fn activity_follows_prompts_and_replies() {
+    let ts = TestStore::new();
+    let repo = ts.scratch("repo");
+    let path = transcript("first-prompt");
+    let activity = |ts: &TestStore| {
+        let mut activity = ts.session(ID)["activity"].clone();
+        activity.as_object_mut().unwrap().remove("at");
+        activity
+    };
+    let send = |fixture: &str, fields: Value| {
+        hook(&ts, event_with(fixture, &repo, &path, fields), &[]);
+    };
+
+    send("session-start", json!({}));
+    assert_eq!(ts.session(ID)["activity"], Value::Null);
+
+    send("user-prompt-submit", json!({}));
+    assert_eq!(
+        activity(&ts),
+        json!({"prompt": "Fix the flaky test in services/billing and open a PR", "reply": null})
+    );
+
+    // Stop takes the prompt from the transcript's last-prompt record.
+    send("stop", json!({}));
+    assert_eq!(
+        activity(&ts),
+        json!({"prompt": "Now open the PR", "reply": "I fixed the flaky test and opened the PR."})
+    );
+
+    // A new prompt clears the reply.
+    send(
+        "user-prompt-submit",
+        json!({"prompt": "Address the review comments"}),
+    );
+    assert_eq!(
+        activity(&ts),
+        json!({"prompt": "Address the review comments", "reply": null})
+    );
+
+    send("stop-failure", json!({}));
+    assert_eq!(
+        activity(&ts),
+        json!({"prompt": "Now open the PR", "reply": "API Error: Rate limit reached"})
+    );
+
+    // Other events leave it alone.
+    send("post-tool-use", json!({}));
+    send("session-end", json!({}));
+    assert_eq!(activity(&ts)["reply"], "API Error: Rate limit reached");
+}
+
+#[test]
+fn prompt_and_reply_are_cut_to_2000_characters() {
+    let ts = TestStore::new();
+    let repo = ts.scratch("repo");
+    // Multi-byte characters: the cap counts characters, not bytes.
+    let long = "é".repeat(2_500);
+    let exact = "ü".repeat(2_000);
+
+    let submit = json!({"prompt": long});
+    hook(
+        &ts,
+        event_with("user-prompt-submit", &repo, "/nonexistent", submit),
+        &[],
+    );
+    assert_eq!(ts.session(ID)["activity"]["prompt"], "é".repeat(2_000));
+
+    let stop = json!({"last_assistant_message": exact});
+    hook(&ts, event_with("stop", &repo, "/nonexistent", stop), &[]);
+    assert_eq!(ts.session(ID)["activity"]["reply"], exact);
+
+    let path = ts.scratch("projects").join("long-prompt.jsonl");
+    let record = json!({"type": "last-prompt", "lastPrompt": "🦀".repeat(2_001)});
+    fs::write(&path, format!("{record}\n")).unwrap();
+    let stop = json!({"last_assistant_message": long});
+    hook(
+        &ts,
+        event_with("stop", &repo, path.to_str().unwrap(), stop),
+        &[],
+    );
+    let activity = &ts.session(ID)["activity"];
+    assert_eq!(activity["prompt"], "🦀".repeat(2_000));
+    assert_eq!(activity["reply"], "é".repeat(2_000));
+}
+
+#[test]
+fn a_missing_or_unreadable_transcript_leaves_title_null_and_writes_status() {
+    let ts = TestStore::new();
+    let repo = ts.scratch("repo");
+    let garbage = ts.scratch("projects").join("garbage.jsonl");
+    fs::write(&garbage, b"\xff\xfe not json\n{\"type\":").unwrap();
+    let directory = ts.scratch("a-directory");
+    let paths = [
+        "/nonexistent/transcript.jsonl",
+        garbage.to_str().unwrap(),
+        directory.to_str().unwrap(),
+    ];
+    let steps = [
+        ("session-start", "idle"),
+        ("user-prompt-submit", "running"),
+        ("stop", "idle"),
+    ];
+    for path in paths {
+        for (fixture, state) in steps {
+            hook(&ts, event_with(fixture, &repo, path, json!({})), &[]);
+            let session = ts.session(ID);
+            assert_eq!(session["status"]["state"], state, "{fixture}, {path}");
+            assert_eq!(
+                session["context"]["title"],
+                Value::Null,
+                "{fixture}, {path}"
+            );
+        }
+        let activity = &ts.session(ID)["activity"];
+        assert_eq!(activity["prompt"], Value::Null, "{path}");
+        assert_eq!(
+            activity["reply"],
+            "I fixed the flaky test and opened the PR."
+        );
+    }
+    // An unreadable transcript is not an error.
+    assert_eq!(ts.hook_log(), Vec::<String>::new());
 }

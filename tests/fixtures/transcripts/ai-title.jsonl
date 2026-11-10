@@ -1,0 +1,4 @@
+{"type":"user","origin":{"kind":"human"},"promptId":"p1","message":{"role":"user","content":"Fix the flaky test in services/billing"},"uuid":"u3","sessionId":"8f2c1a7e-3b4d-4e5f-9a6b-1c2d3e4f5a6b"}
+{"type":"ai-title","aiTitle":"Fix flaky billing test","sessionId":"8f2c1a7e-3b4d-4e5f-9a6b-1c2d3e4f5a6b"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done."}]},"uuid":"a1","sessionId":"8f2c1a7e-3b4d-4e5f-9a6b-1c2d3e4f5a6b"}
+{"type":"last-prompt","lastPrompt":"Fix the flaky test in services/billing","leafUuid":"u3","sessionId":"8f2c1a7e-3b4d-4e5f-9a6b-1c2d3e4f5a6b"}
