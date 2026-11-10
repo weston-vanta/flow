@@ -176,6 +176,21 @@ impl Store {
         Ok(Put::Applied)
     }
 
+    /// Deletes entity `kind`/`id` and every facet of it. Removing a missing entity is not an
+    /// error.
+    pub fn remove(&self, kind: &str, id: &str) -> Result<()> {
+        if id.is_empty() {
+            return Ok(());
+        }
+        let dir = self.entity_dir(kind, id);
+        match fs::remove_dir_all(&dir) {
+            Err(err) if err.kind() != ErrorKind::NotFound => {
+                Err(err).with_context(|| format!("remove {}", dir.display()))
+            }
+            _ => Ok(()),
+        }
+    }
+
     fn entity_dir(&self, kind: &str, id: &str) -> PathBuf {
         self.root.join(kind).join(encode_id(id))
     }
