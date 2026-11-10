@@ -29,6 +29,9 @@ const LIST_PARALLELISM: usize = 16;
 /// How long to wait before re-reading a facet file that failed to parse (caught mid-write).
 const REREAD_DELAY: Duration = Duration::from_millis(50);
 
+/// The longest encoded id the Store can keep: one path segment, at most 255 bytes.
+const MAX_ENCODED_ID: usize = 255;
+
 /// One Session, PR or Branch: its id and every facet written so far.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Entity {
@@ -144,6 +147,12 @@ impl Store {
     ) -> Result<Put> {
         if id.is_empty() {
             bail!("cannot write facet {name} of a {kind} with an empty id");
+        }
+        let encoded = encode_id(id).len();
+        if encoded > MAX_ENCODED_ID {
+            bail!(
+                "cannot write facet {name} of {kind} {id:?}: the id encodes to {encoded} bytes, more than the Store's limit of {MAX_ENCODED_ID}"
+            );
         }
         // `at` is kept to the microsecond, so compare at the precision it is stored with.
         let at = Timestamp::from_microsecond(at.as_microsecond())?;
