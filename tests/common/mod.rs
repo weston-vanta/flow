@@ -2,10 +2,14 @@
 #![allow(dead_code)]
 
 use std::fs;
+use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+use std::net::{SocketAddr, TcpStream};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdout, Stdio};
 
 use assert_cmd::Command;
+use assert_cmd::cargo::CommandCargoExt as _;
 use flow::store::Store;
 use serde_json::Value;
 use tempfile::TempDir;
@@ -36,9 +40,30 @@ impl TestStore {
         self.command("flow")
     }
 
-    /// The `flowd` daemon with `FLOW_STORE` set to this Store.
-    pub fn flowd(&self) -> Command {
-        self.command("flowd")
+    /// Starts `flowd` on a free loopback port over this Store; it is killed on drop.
+    pub fn flowd(&self) -> Flowd {
+        let mut child = self
+            .std_command("flowd")
+            .args(["--port", "0"])
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("start flowd");
+        let mut line = String::new();
+        let mut stdout = BufReader::new(child.stdout.take().unwrap());
+        stdout
+            .read_line(&mut line)
+            .expect("read flowd's first line");
+        let addr = line
+            .trim()
+            .rsplit("http://")
+            .next()
+            .and_then(|addr| addr.parse().ok())
+            .unwrap_or_else(|| panic!("flowd printed no address: {line:?}"));
+        Flowd {
+            child,
+            _stdout: stdout,
+            addr,
+        }
     }
 
     /// The library Store the binaries use, for writing backdated state with an explicit `at`.
@@ -87,7 +112,11 @@ impl TestStore {
     }
 
     fn command(&self, bin: &str) -> Command {
-        let mut cmd = Command::cargo_bin(bin).expect("binary built by cargo");
+        Command::from_std(self.std_command(bin))
+    }
+
+    fn std_command(&self, bin: &str) -> std::process::Command {
+        let mut cmd = std::process::Command::cargo_bin(bin).expect("binary built by cargo");
         cmd.env("FLOW_STORE", self.store_path());
         for name in INHERITED_ENV {
             cmd.env_remove(name);
@@ -99,6 +128,46 @@ impl TestStore {
         );
         cmd
     }
+}
+
+/// A running `flowd`, killed on drop.
+pub struct Flowd {
+    child: Child,
+    /// Held open so a later line from `flowd` does not fail on a closed pipe.
+    _stdout: BufReader<ChildStdout>,
+    pub addr: SocketAddr,
+}
+
+impl Flowd {
+    /// Sends `GET path` and returns the status code and body.
+    pub fn get(&self, path: &str) -> (u16, String) {
+        get(self.addr, path).expect("connect to flowd")
+    }
+}
+
+impl Drop for Flowd {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Sends `GET path` to `addr` over plain HTTP/1.1 and returns the status code and body.
+pub fn get(addr: SocketAddr, path: &str) -> std::io::Result<(u16, String)> {
+    let mut stream = TcpStream::connect(addr)?;
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
+    )?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response)?;
+    let (head, body) = response.split_once("\r\n\r\n").expect("HTTP response");
+    let status = head
+        .split(' ')
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .expect("status code");
+    Ok((status, body.to_owned()))
 }
 
 /// Makes `dir` a git repository with `branch` checked out (unborn: no commit needed).

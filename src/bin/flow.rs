@@ -195,11 +195,7 @@ fn print_json(value: &impl Serialize) -> ExitCode {
 }
 
 fn store_error(err: &anyhow::Error) -> ExitCode {
-    error(
-        1,
-        &format!("{err:#}"),
-        "the Store could not be read or holds a malformed facet; the error names the path (FLOW_STORE, default /efs-home/flow/store)",
-    )
+    error(1, &format!("{err:#}"), services::STORE_ERROR_HELP)
 }
 
 fn error(code: u8, message: &str, help: &str) -> ExitCode {
