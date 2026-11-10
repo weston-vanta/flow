@@ -1,0 +1,15 @@
+{"data": {
+  "repo": {
+    "p3": {
+      "number": 3, "url": "https://github.com/acme/gadgets/pull/3", "title": "Gadget tweaks",
+      "state": "OPEN", "isDraft": true, "headRefName": "feat/g", "headRefOid": "fedcba9876543210fedcba9876543210fedcba98",
+      "baseRefName": "main", "mergeable": "CONFLICTING", "reviewDecision": null,
+      "updatedAt": "2026-11-10T10:00:00Z", "additions": 1, "deletions": 1,
+      "stackEntry": null,
+      "reviewRequests": {"nodes": []},
+      "reviewThreads": {"nodes": []},
+      "statusCheckRollup": {"contexts": {"pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": []}}
+    }
+  },
+  "rateLimit": {"cost": 1}
+}}

@@ -25,7 +25,10 @@ fn installs_both_binaries_and_replaces_them_under_a_running_flowd() {
 
     install(&dest);
     for bin in ["flow", "flowd"] {
-        Command::new(dest.join(bin)).arg("--help").assert().success();
+        Command::new(dest.join(bin))
+            .arg("--help")
+            .assert()
+            .success();
     }
 
     let old = ts.flowd_at(&dest.join("flowd"));

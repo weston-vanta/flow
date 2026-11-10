@@ -6,7 +6,7 @@
 use std::io::Cursor;
 use std::process::ExitCode;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use clap::Parser;
 use jiff::Timestamp;
@@ -14,7 +14,7 @@ use serde::Serialize;
 use tiny_http::{Header, Method, Request, Response, Server};
 
 use flow::store::Store;
-use flow::{retention, services};
+use flow::{github, retention, services};
 
 /// Serve flow's read API and web app on 127.0.0.1.
 #[derive(Parser)]
@@ -23,6 +23,9 @@ struct Args {
     /// The loopback port to listen on; 0 picks a free one.
     #[arg(long, env = "FLOWD_PORT", default_value_t = 7171)]
     port: u16,
+    /// The hard timeout on each `gh` call, in seconds.
+    #[arg(long, env = "FLOWD_GH_TIMEOUT", default_value_t = github::TIMEOUT.as_secs(), hide = true)]
+    gh_timeout: u64,
 }
 
 /// How often the retention sweep runs after the one at start.
@@ -66,6 +69,11 @@ fn main() -> ExitCode {
     // over a clone of `store`, before serving takes over this thread.
     let sweep_store = store.clone();
     thread::spawn(move || sweep_loop(&sweep_store));
+    thread::spawn({
+        let store = store.clone();
+        let timeout = Duration::from_secs(args.gh_timeout);
+        move || poll_loop(&store, timeout)
+    });
     for request in server.incoming_requests() {
         let response = respond(&store, &request);
         if let Err(err) = request.respond(response) {
@@ -82,6 +90,26 @@ fn sweep_loop(store: &Store) {
             eprintln!("flowd: retention sweep failed: {err:#}");
         }
         thread::sleep(SWEEP_EVERY);
+    }
+}
+
+/// The PR Writer: polls at once, then every [`github::INTERVAL`]. Errors go to stderr; one
+/// summary line per cycle goes to stdout.
+fn poll_loop(store: &Store, timeout: Duration) -> ! {
+    loop {
+        let started = Instant::now();
+        let cycle = github::poll_prs(store, timeout);
+        for err in &cycle.errors {
+            eprintln!("flowd: pr poll: {err:#}");
+        }
+        println!(
+            "flowd: pr poll wrote {} PRs in {:.1}s for {} points, {} errors",
+            cycle.written,
+            started.elapsed().as_secs_f64(),
+            cycle.cost,
+            cycle.errors.len()
+        );
+        thread::sleep(github::INTERVAL.saturating_sub(started.elapsed()));
     }
 }
 
