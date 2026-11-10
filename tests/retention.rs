@@ -85,8 +85,9 @@ fn exists(ts: &TestStore, kind: &str, id: &str) -> bool {
 #[test]
 fn the_cli_and_flowd_list_the_same_sessions_and_prs() {
     let ts = TestStore::new();
-    // Never done: listed however old.
-    put_status(&ts, "running", "running", ago(40 * DAY));
+    // Never done: listed however old (29 days, so flowd's start-up sweep, racing the requests
+    // below, leaves it alone).
+    put_status(&ts, "running", "running", ago(29 * DAY));
     // Done long ago, but owns an open PR.
     put_status(&ts, "open-pr", "done", ago(2 * DAY));
     put_branch(&ts, "feat/open", "open-pr", ago(2 * DAY));
