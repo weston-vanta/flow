@@ -256,7 +256,7 @@ a.node:hover {
   min-height: 72px;
 }
 .sline h2 {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
   margin: 0;
   font-size: 15px;
@@ -269,6 +269,7 @@ a.node:hover {
 }
 .sline .cde {
   flex: none;
+  margin-left: auto;
   font-size: 12px;
   color: var(--ink2);
 }
@@ -289,7 +290,19 @@ a.node:hover {
   flex-direction: column;
   gap: 10px;
 }
+.shead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  column-gap: 12px;
+  row-gap: 6px;
+}
+.shead .sstat {
+  margin-top: 4px;
+}
 .sinfo h2 {
+  flex: 0 1 auto;
+  min-width: 0;
   margin: 0;
   font-size: 18px;
   line-height: 24px;
@@ -306,13 +319,15 @@ a.node:hover {
   color: var(--ink2);
 }
 .sstat {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 8px;
-  min-width: 0;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--ink2);
 }
-.sstat > span {
-  min-width: 0;
+.activity {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -322,9 +337,6 @@ a.node:hover {
 }
 .sstat b.act {
   color: var(--act);
-}
-.sctx {
-  padding-left: 18px;
 }
 .sprs {
   flex: 999 1 640px;

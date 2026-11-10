@@ -41,6 +41,12 @@ const key = (v: SessionView, idx: string, folded: boolean) =>
 
 const title = (v: SessionView, tag: string) => `<${tag}${v.untitled ? ' class="untitled"' : ""}>${esc(v.title)}</${tag}>`;
 
+/** The status lamp, its label and the time in status, shown beside the title. */
+function status(v: SessionView): string {
+  const since = v.status.since ? ` · ${age(v.status.since)}` : "";
+  return `<div class="sstat">${lamp(v.status, true)}<span><b class="${v.status.lamp}">${esc(v.status.tip)}</b>${since}</span></div>`;
+}
+
 function sessionRow(v: SessionView, i: number, toggled: Set<string>): string {
   const idx = String(i + 1).padStart(2, "0");
   const cde = esc(v.cde ?? "unknown CDE");
@@ -48,17 +54,15 @@ function sessionRow(v: SessionView, i: number, toggled: Set<string>): string {
     const a = attentionLight(v);
     return `<section class="srow folded" data-toggle="${esc(v.id)}" aria-label="${esc(v.title)}">
       <div class="sidx">${key(v, idx, true)}</div>
-      <div class="sline">${title(v, "h2")}<span class="cde">${cde}</span><span class="attn" title="${esc(a.tip)}" aria-label="${esc(a.tip)}">${lamp(a)}</span></div>
+      <div class="sline">${title(v, "h2")}${status(v)}<span class="cde">${cde}</span><span class="attn" title="${esc(a.tip)}" aria-label="${esc(a.tip)}">${lamp(a)}</span></div>
     </section>`;
   }
-  const status = [v.status.since ? age(v.status.since) : null, v.activity?.replace(/\s+/g, " ")]
-    .filter(Boolean)
-    .join(" · ");
+  const activity = v.activity?.replace(/\s+/g, " ");
   const info = `<div class="sinfo">
-      ${title(v, "h2")}
+      <div class="shead">${title(v, "h2")}${status(v)}</div>
       <div class="smeta">
-        <div class="sstat"${v.activity ? ` title="${esc(v.activity)}"` : ""}>${lamp(v.status, true)}<span><b class="${v.status.lamp}">${esc(v.status.tip)}</b>${status ? ` · ${esc(status)}` : ""}</span></div>
-        <span class="sctx">${v.repo ? `<span class="mono">${esc(v.repo)}</span> · ` : ""}${cde}${v.started ? ` · started ${ago(v.started)}` : ""}</span>
+        ${activity ? `<span class="activity" title="${esc(v.activity!)}">${esc(activity)}</span>` : ""}
+        <span>${cde}${v.repo ? ` · <span class="mono">${esc(v.repo)}</span>` : ""}${v.started ? ` · started ${ago(v.started)}` : ""}</span>
       </div>
     </div>`;
   const body = v.stack.length

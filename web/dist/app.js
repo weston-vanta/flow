@@ -161,6 +161,10 @@
   }
   var key = (v, idx, folded) => `<button type="button" class="skey${folded ? " up" : ""}" data-toggle="${esc(v.id)}" aria-expanded="${!folded}" aria-label="${folded ? "Expand" : "Collapse"} session ${idx}"><span>${idx}</span></button>`;
   var title = (v, tag) => `<${tag}${v.untitled ? ' class="untitled"' : ""}>${esc(v.title)}</${tag}>`;
+  function status(v) {
+    const since = v.status.since ? ` \xB7 ${age(v.status.since)}` : "";
+    return `<div class="sstat">${lamp(v.status, true)}<span><b class="${v.status.lamp}">${esc(v.status.tip)}</b>${since}</span></div>`;
+  }
   function sessionRow(v, i, toggled2) {
     const idx = String(i + 1).padStart(2, "0");
     const cde = esc(v.cde ?? "unknown CDE");
@@ -168,15 +172,15 @@
       const a = attentionLight(v);
       return `<section class="srow folded" data-toggle="${esc(v.id)}" aria-label="${esc(v.title)}">
       <div class="sidx">${key(v, idx, true)}</div>
-      <div class="sline">${title(v, "h2")}<span class="cde">${cde}</span><span class="attn" title="${esc(a.tip)}" aria-label="${esc(a.tip)}">${lamp(a)}</span></div>
+      <div class="sline">${title(v, "h2")}${status(v)}<span class="cde">${cde}</span><span class="attn" title="${esc(a.tip)}" aria-label="${esc(a.tip)}">${lamp(a)}</span></div>
     </section>`;
     }
-    const status = [v.status.since ? age(v.status.since) : null, v.activity?.replace(/\s+/g, " ")].filter(Boolean).join(" \xB7 ");
+    const activity = v.activity?.replace(/\s+/g, " ");
     const info = `<div class="sinfo">
-      ${title(v, "h2")}
+      <div class="shead">${title(v, "h2")}${status(v)}</div>
       <div class="smeta">
-        <div class="sstat"${v.activity ? ` title="${esc(v.activity)}"` : ""}>${lamp(v.status, true)}<span><b class="${v.status.lamp}">${esc(v.status.tip)}</b>${status ? ` \xB7 ${esc(status)}` : ""}</span></div>
-        <span class="sctx">${v.repo ? `<span class="mono">${esc(v.repo)}</span> \xB7 ` : ""}${cde}${v.started ? ` \xB7 started ${ago(v.started)}` : ""}</span>
+        ${activity ? `<span class="activity" title="${esc(v.activity)}">${esc(activity)}</span>` : ""}
+        <span>${cde}${v.repo ? ` \xB7 <span class="mono">${esc(v.repo)}</span>` : ""}${v.started ? ` \xB7 started ${ago(v.started)}` : ""}</span>
       </div>
     </div>`;
     const body = v.stack.length ? `<div class="scroll"><div role="table" aria-label="Pull requests">

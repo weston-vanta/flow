@@ -47,19 +47,20 @@ a.node:hover{box-shadow:0 0 0 4px #EFE6FB}
 
 .folded{cursor:pointer}
 .sline{flex:999 1 560px;min-width:0;padding-right:28px;display:flex;align-items:center;gap:24px;min-height:72px}
-.sline h2{flex:1 1 auto;min-width:0;margin:0;font-size:15px;line-height:20px;font-weight:600;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.sline .cde{flex:none;font-size:12px;color:var(--ink2)}
+.sline h2{flex:0 1 auto;min-width:0;margin:0;font-size:15px;line-height:20px;font-weight:600;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sline .cde{flex:none;margin-left:auto;font-size:12px;color:var(--ink2)}
 .attn{flex:0 0 64px;display:flex;justify-content:center}
 .untitled{color:var(--ink3)}
 
 .sinfo{flex:1 1 280px;max-width:360px;min-width:0;padding:11px 32px 28px 0;display:flex;flex-direction:column;gap:10px}
-.sinfo h2{margin:0;font-size:18px;line-height:24px;font-weight:600;letter-spacing:-.01em;overflow-wrap:anywhere}
+.shead{display:flex;flex-wrap:wrap;align-items:flex-start;column-gap:12px;row-gap:6px}
+.shead .sstat{margin-top:4px}
+.sinfo h2{flex:0 1 auto;min-width:0;margin:0;font-size:18px;line-height:24px;font-weight:600;letter-spacing:-.01em;overflow-wrap:anywhere}
 .smeta{display:flex;flex-direction:column;gap:4px;font-size:12px;line-height:16px;color:var(--ink2)}
-.sstat{display:flex;align-items:center;gap:8px;min-width:0}
-.sstat>span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sstat{flex:none;display:flex;align-items:center;gap:8px;font-size:12px;line-height:16px;color:var(--ink2)}
+.activity{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sstat b{font-weight:500}
 .sstat b.act{color:var(--act)}
-.sctx{padding-left:18px}
 
 .sprs{flex:999 1 640px;min-width:0;padding:15px 28px 28px 0}
 .scroll{overflow-x:auto}
