@@ -1,8 +1,8 @@
 (() => {
   // src/model.ts
-  function parseJira(title) {
-    const m = /^\[([A-Z][A-Z0-9]*-\d+)\]\s+(.*)$/s.exec(title);
-    return m ? { jira: m[1], title: m[2] } : { jira: null, title };
+  function parseJira(title2) {
+    const m = /^\[([A-Z][A-Z0-9]*-\d+)\]\s+(.*)$/s.exec(title2);
+    return m ? { jira: m[1], title: m[2] } : { jira: null, title: title2 };
   }
   var FAILING = /* @__PURE__ */ new Set([
     "FAILURE",
@@ -27,7 +27,7 @@
     if (running.length) {
       return { lamp: "run", tip: `CI running: ${running.map((c) => c.name).join(", ")}` };
     }
-    if (!g.checks.length) return { lamp: "off", tip: "CI: no required checks" };
+    if (!g.checks.length) return { lamp: "fine", tip: "CI: no required checks" };
     return { lamp: "fine", tip: "CI: passing" };
   }
   function feedbackLight(g) {
@@ -38,32 +38,22 @@
     return { lamp: "fine", tip: "feedback: none open" };
   }
   function reviewLight(g) {
+    const light = (lamp2, tip, count = null) => ({ lamp: lamp2, tip, count });
+    if (g.state !== "OPEN") return light("fine", `review: ${g.state === "MERGED" ? "merged" : "closed"}`);
+    if (g.reviewDecision === "CHANGES_REQUESTED") return light("act", "review: changes requested");
     const names = g.reviewRequests.map((r) => "login" in r ? r.login : r.team);
-    const requested = names.length ? ` \xB7 requested: ${names.join(", ")}` : "";
-    if (g.isDraft) return { lamp: "off", tip: `review: draft${requested}` };
-    if (g.state === "MERGED") return { lamp: "fine", tip: "review: merged" };
-    if (g.reviewDecision === "APPROVED") return { lamp: "fine", tip: `review: approved${requested}` };
-    if (g.reviewDecision === "REVIEW_REQUIRED") {
-      return { lamp: "run", tip: `review: required${requested}` };
-    }
-    if (g.reviewDecision === "CHANGES_REQUESTED") {
-      return { lamp: "act", tip: `review: changes requested${requested}` };
-    }
-    return { lamp: "fine", tip: `review: none required${requested}` };
+    if (names.length) return light("fine", `review needed: ${names.join(", ")}`, names.length);
+    if (g.reviewDecision === "REVIEW_REQUIRED") return light("act", "review: no reviewers requested");
+    return light("fine", g.reviewDecision === "APPROVED" ? "review: approved" : "review: none required");
   }
   function prView(g, pos) {
     const base = baseLight(g);
     const ci = ciLight(g);
     const feedback = feedbackLight(g);
     const review = reviewLight(g);
+    const lamps = [base, ci, feedback, review];
     const open = g.state === "OPEN";
-    const needs = open ? [
-      base.lamp === "act" && "conflict",
-      ci.lamp === "act" && "CI failing",
-      feedback.lamp === "act" && "open feedback",
-      review.lamp === "act" && "changes requested"
-    ].filter((r) => !!r) : [];
-    const ready = open && !g.isDraft && [base, ci, feedback, review].every((l) => l.lamp === "fine");
+    const ready = open && !g.isDraft && review.count == null && lamps.every((l) => l.lamp === "fine");
     return {
       pos,
       url: g.url,
@@ -71,13 +61,13 @@
       ...parseJira(g.title),
       additions: g.additions,
       deletions: g.deletions,
-      node: g.state === "MERGED" ? "merged" : g.state === "CLOSED" ? "closed" : ready ? "ready" : g.isDraft ? "draft" : "open",
+      node: g.state === "MERGED" ? "merged" : g.state === "CLOSED" ? "closed" : ready ? "ready" : "open",
+      draft: g.isDraft,
       base,
       ci,
       feedback,
       review,
-      needs,
-      ready
+      attention: open && (ready || lamps.some((l) => l.lamp === "act"))
     };
   }
   function stackOf(session, prs2) {
@@ -106,12 +96,12 @@
       const stack = stackOf(s.id, prs2);
       const state = s.status?.state ?? null;
       const cwd = s.origin?.cwd;
-      const title = s.context?.title ?? null;
+      const title2 = s.context?.title ?? null;
       return {
         id: s.id,
         status: { ...statusLight(state), state, since: s.status?.at ?? null },
-        title: title ?? "New session",
-        untitled: title == null,
+        title: title2 ?? "New session",
+        untitled: title2 == null,
         repo: stack[0]?.repo ?? (cwd ? cwd.split("/").filter(Boolean).pop() ?? null : null),
         cde: s.origin?.cde ?? null,
         started: s.origin?.at ?? null,
@@ -128,15 +118,15 @@
     if (h < 24) return `${h} h`;
     return `${Math.floor(h / 24)} d`;
   }
-  function stackLight(stack) {
-    if (!stack.length) return { lamp: "off", tip: "no pull requests" };
-    const needs = stack.filter((p) => p.needs.length).length;
-    if (needs) return { lamp: "act", tip: `${needs} of ${stack.length} PRs need attention` };
-    const open = stack.filter((p) => p.node !== "merged" && p.node !== "closed");
-    if (open.some((p) => [p.base, p.ci, p.feedback, p.review].some((l) => l.lamp === "run"))) {
-      return { lamp: "run", tip: "PRs in progress" };
-    }
-    return { lamp: "fine", tip: "PRs fine" };
+  function attentionLight(v) {
+    const n = v.stack.length;
+    const prs2 = n ? `${n} pull request${n === 1 ? "" : "s"}` : "No pull requests";
+    if (v.status.state === "waiting") return { lamp: "act", tip: `${prs2}: waiting for you` };
+    if (v.stack.some((p) => p.attention)) return { lamp: "act", tip: `${prs2}: something needs action` };
+    return { lamp: "fine", tip: `${prs2}: nothing needs action` };
+  }
+  function isFolded(v, toggled2) {
+    return v.status.state === "done" !== toggled2.has(v.id);
   }
   function prDataAge(prs2, now = Date.now()) {
     const ats = prs2.flatMap((p) => p.github?.state === "OPEN" ? [Date.parse(p.github.at)] : []);
@@ -153,55 +143,71 @@
     const a = age(iso);
     return a === "just now" ? a : `${a} ago`;
   };
-  var lamp = (l, tip, sm = false) => `<span class="lamp ${l}${sm ? " sm" : ""}" title="${esc(tip)}"></span>`;
+  var lamp = (l, sm = false) => `<span class="lamp ${l.lamp}${sm ? " sm" : ""}" aria-hidden="true"></span>`;
+  var cell = (l) => {
+    const count = "count" in l && l.count != null;
+    return `<div class="gcell" role="cell" title="${esc(l.tip)}" aria-label="${esc(l.tip)}">${count ? `<span class="count" aria-hidden="true">${l.count}</span>` : lamp(l)}</div>`;
+  };
+  var NODE_TIP = { merged: "merged", closed: "closed", ready: "mergeable" };
   function prRow(p, j, n) {
-    const notes = p.ready ? ["ready to merge"] : p.needs;
-    return `<div class="grid grow">
-    ${j > 0 ? '<div class="rule"></div>' : ""}
-    <div class="gnode">${j > 0 ? '<div class="up"></div>' : ""}${j < n - 1 ? '<div class="down"></div>' : ""}<a class="node ${p.node}" href="${esc(p.url)}" target="_blank" rel="noreferrer" title="#${p.number} \xB7 ${p.node}">${p.pos}</a></div>
-    <div class="gtitle"><a class="t ${p.node}" href="${esc(p.url)}" target="_blank" rel="noreferrer">${esc(p.title)}</a><span class="sub">${p.jira ? `<span class="mono">${esc(p.jira)}</span>` : ""}${notes.length ? `<span class="needs">${esc(notes.join(" \xB7 "))}</span>` : ""}</span></div>
-    <div class="glines mono">+${p.additions} \u2212${p.deletions}</div>
-    <div class="gcell">${lamp(p.base.lamp, p.base.tip)}</div>
-    <div class="gcell">${lamp(p.ci.lamp, p.ci.tip)}</div>
-    <div class="gcell">${lamp(p.feedback.lamp, p.feedback.tip)}</div>
-    <div class="gcell">${lamp(p.review.lamp, p.review.tip)}</div>
+    const tip = `#${p.number} \xB7 ${p.node === "open" ? p.draft ? "draft" : "not yet mergeable" : NODE_TIP[p.node]}`;
+    return `<div class="grid grow" role="row">
+    ${j > 0 ? '<div class="rule" aria-hidden="true"></div>' : ""}
+    <div class="gnode" role="cell">${j > 0 ? '<div class="up"></div>' : ""}${j < n - 1 ? '<div class="down"></div>' : ""}<a class="node ${p.node}" href="${esc(p.url)}" target="_blank" rel="noreferrer" title="${esc(tip)}" aria-label="Pull request ${esc(tip)}">${p.pos}</a></div>
+    <div class="gtitle" role="cell"><a class="t ${p.node}" href="${esc(p.url)}" target="_blank" rel="noreferrer">${esc(p.title)}</a>${p.jira ? `<span class="jira mono">${esc(p.jira)}</span>` : ""}</div>
+    <div class="glines mono" role="cell">+${p.additions} \u2212${p.deletions}</div>
+    ${cell(p.base)}${cell(p.ci)}${cell(p.feedback)}${cell(p.review)}
   </div>`;
   }
-  function sessionRow(v, i, collapsed2) {
+  var key = (v, idx, folded) => `<button type="button" class="skey${folded ? " up" : ""}" data-toggle="${esc(v.id)}" aria-expanded="${!folded}" aria-label="${folded ? "Expand" : "Collapse"} session ${idx}"><span>${idx}</span></button>`;
+  var title = (v, tag) => `<${tag}${v.untitled ? ' class="untitled"' : ""}>${esc(v.title)}</${tag}>`;
+  function sessionRow(v, i, toggled2) {
     const idx = String(i + 1).padStart(2, "0");
-    const stat = `<div class="sstat ${v.status.lamp}">${lamp(v.status.lamp, v.status.tip, true)}${esc(v.status.tip)}${v.status.since ? ` \xB7 ${age(v.status.since)}` : ""}</div>`;
-    if (collapsed2.has(v.id)) {
-      const s = stackLight(v.stack);
-      return `<section class="srow folded" data-toggle="${esc(v.id)}" title="Show this Session">
-      <div class="sidx">${idx}</div>
-      <div class="sline">${stat}<b${v.untitled ? ' class="untitled"' : ""}>${esc(v.title)}</b><span class="cde">${esc(v.cde ?? "unknown CDE")}</span>${lamp(s.lamp, `Stack: ${s.tip}`)}</div>
+    const cde = esc(v.cde ?? "unknown CDE");
+    if (isFolded(v, toggled2)) {
+      const a = attentionLight(v);
+      return `<section class="srow folded" data-toggle="${esc(v.id)}" aria-label="${esc(v.title)}">
+      <div class="sidx">${key(v, idx, true)}</div>
+      <div class="sline">${title(v, "h2")}<span class="cde">${cde}</span><span class="attn" title="${esc(a.tip)}" aria-label="${esc(a.tip)}">${lamp(a)}</span></div>
     </section>`;
     }
-    const head = `<div class="sidx">${idx}<button class="fold" data-toggle="${esc(v.id)}" title="Collapse this Session">\u2212</button></div>
-    <div class="sinfo">
-      ${stat}
-      <h2${v.untitled ? ' class="untitled"' : ""}>${esc(v.title)}</h2>
-      ${v.activity ? `<p class="activity" title="${esc(v.activity)}">${esc(v.activity)}</p>` : ""}
+    const status = [v.status.since ? age(v.status.since) : null, v.activity?.replace(/\s+/g, " ")].filter(Boolean).join(" \xB7 ");
+    const info = `<div class="sinfo">
+      ${title(v, "h2")}
       <div class="smeta">
-        ${v.repo ? `<span class="mono">${esc(v.repo)}</span>` : ""}
-        <span>${esc(v.cde ?? "unknown CDE")}${v.started ? ` \xB7 started ${ago(v.started)}` : ""}</span>
+        <div class="sstat"${v.activity ? ` title="${esc(v.activity)}"` : ""}>${lamp(v.status, true)}<span><b class="${v.status.lamp}">${esc(v.status.tip)}</b>${status ? ` \xB7 ${esc(status)}` : ""}</span></div>
+        <span class="sctx">${v.repo ? `<span class="mono">${esc(v.repo)}</span> \xB7 ` : ""}${cde}${v.started ? ` \xB7 started ${ago(v.started)}` : ""}</span>
       </div>
     </div>`;
-    const body = v.stack.length ? `<div class="grid ghead"><span></span><span></span><span></span><span>base</span><span>CI</span><span>feedback</span><span>review</span></div>` + v.stack.map((p, j) => prRow(p, j, v.stack.length)).join("") : `<div class="noprs"><span class="lamp off"></span><span>No pull requests yet</span></div>`;
-    return `<section class="srow">${head}<div class="sprs">${body}</div></section>`;
+    const body = v.stack.length ? `<div class="scroll"><div role="table" aria-label="Pull requests">
+        <div class="grid ghead" role="row"><span></span><span></span><span></span><span role="columnheader">base</span><span role="columnheader">CI</span><span role="columnheader">feedback</span><span role="columnheader">review</span></div>
+        ${v.stack.map((p, j) => prRow(p, j, v.stack.length)).join("")}
+      </div></div>` : `<div class="noprs"><span class="ring" aria-hidden="true"></span><span>No pull requests yet</span></div>`;
+    return `<section class="srow" aria-label="${esc(v.title)}"><div class="sidx">${key(v, idx, false)}</div>${info}<div class="sprs">${body}</div></section>`;
   }
-  function render(views, collapsed2, notices) {
-    return `<div class="page">
-    <header class="top"><div class="logo"><i></i></div><div class="brand"><b>flow</b><span>agent sessions and pull requests</span></div></header>
-    ${notices.map((n) => `<p class="notice">${esc(n)}</p>`).join("")}
-    <main class="panel">${views.length ? views.map((v, i) => sessionRow(v, i, collapsed2)).join("") : '<p class="empty">No Sessions.</p>'}</main>
-    <footer class="key">
-      <span><span class="lamp act"></span>needs action</span>
-      <span><span class="lamp run"></span>in progress</span>
-      <span><span class="lamp fine"></span>fine</span>
-      <span><span class="lamp off"></span>does not apply</span>
-      <span>PR <span class="node key"></span>open <span class="node key draft"></span>draft <span class="node key ready"></span>ready to merge <span class="node key merged"></span>merged <span class="node key closed"></span>closed</span>
-    </footer>
+  var LEGEND = `<div class="legend" role="note" aria-label="Legend">
+    <div><span class="lh">lights</span>
+      <span class="li act"><span class="lamp act"></span>needs action</span>
+      <span class="li"><span class="lamp run"></span>in progress</span>
+      <span class="li"><span class="lamp fine"></span>fine</span>
+      <span class="li"><span class="count">2</span>reviews needed</span>
+    </div>
+    <div><span class="lh">pull requests</span>
+      <span class="li"><span class="node key"></span>open or draft</span>
+      <span class="li"><span class="node key ready"></span>mergeable</span>
+      <span class="li"><span class="node key merged"></span>merged</span>
+      <span class="li"><span class="node key closed"></span>closed</span>
+    </div>
+  </div>`;
+  function render(views, toggled2, notices, legend2) {
+    return `<div class="page${notices.length ? " noticed" : ""}">
+    <header class="top"><div class="logo" aria-hidden="true"><i></i></div><div class="brand"><b>flow</b><span>agent sessions and pull requests</span></div></header>
+    <main class="panel">${views.length ? views.map((v, i) => sessionRow(v, i, toggled2)).join("") : '<p class="empty">No Sessions.</p>'}</main>
+    <footer><button type="button" class="hint" data-legend aria-expanded="${legend2}" aria-keyshortcuts="h"><kbd class="${legend2 ? "down" : ""}">h</kbd><span>legend</span></button></footer>
+  </div>
+  <div class="dock">
+    ${legend2 ? LEGEND : ""}
+    ${notices.length ? `<div class="notices" role="status">${notices.map((n) => `<p>${esc(n)}</p>`).join("")}</div>` : ""}
   </div>`;
   }
 
@@ -212,7 +218,8 @@
   var drawn = "";
   var lastGood = null;
   var failing = false;
-  var collapsed = /* @__PURE__ */ new Set();
+  var toggled = /* @__PURE__ */ new Set();
+  var legend = false;
   var root = document.getElementById("root");
   async function get(path) {
     const r = await fetch(path);
@@ -228,7 +235,7 @@
     }
     const stale = prDataAge(prs);
     if (stale != null) notices.push(`PR data ${stale} min old`);
-    const html = render(sessionViews(sessions, prs), collapsed, notices);
+    const html = render(sessionViews(sessions, prs), toggled, notices, legend);
     if (html !== drawn) root.innerHTML = drawn = html;
   }
   async function poll() {
@@ -243,10 +250,22 @@
     draw();
   }
   root.addEventListener("click", (e) => {
-    const el = e.target.closest("[data-toggle]");
+    const target = e.target;
+    if (target.closest("[data-legend]")) {
+      legend = !legend;
+      return draw();
+    }
+    const el = target.closest("[data-toggle]");
     if (!el) return;
     const id = el.dataset.toggle;
-    if (!collapsed.delete(id)) collapsed.add(id);
+    if (!toggled.delete(id)) toggled.add(id);
+    draw();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
+    if (e.key === "h" || e.key === "H") legend = !legend;
+    else if (e.key === "Escape" && legend) legend = false;
+    else return;
     draw();
   });
   poll();

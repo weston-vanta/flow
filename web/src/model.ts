@@ -62,6 +62,9 @@ export interface Light {
   tip: string;
 }
 
+/** The review column: a lamp, or, while reviews are requested, how many with `count`. */
+export type ReviewLight = Light & { count: number | null };
+
 export interface PrView {
   /** 1-based place in the Stack, bottom first. */
   pos: number;
@@ -72,14 +75,15 @@ export interface PrView {
   jira: string | null;
   additions: number;
   deletions: number;
-  node: "merged" | "closed" | "ready" | "draft" | "open";
+  /** ready: mergeable (open, not a draft, all four columns fine). */
+  node: "merged" | "closed" | "ready" | "open";
+  draft: boolean;
   base: Light;
   ci: Light;
   feedback: Light;
-  review: Light;
-  /** Why the PR needs the user's attention; empty if it does not. */
-  needs: string[];
-  ready: boolean;
+  review: ReviewLight;
+  /** True if the user should act on this PR: it is mergeable or a lamp is lit. */
+  attention: boolean;
 }
 
 export interface SessionView {
@@ -128,7 +132,7 @@ export function ciLight(g: Github): Light {
   if (running.length) {
     return { lamp: "run", tip: `CI running: ${running.map((c) => c.name).join(", ")}` };
   }
-  if (!g.checks.length) return { lamp: "off", tip: "CI: no required checks" };
+  if (!g.checks.length) return { lamp: "fine", tip: "CI: no required checks" };
   return { lamp: "fine", tip: "CI: passing" };
 }
 
@@ -140,20 +144,17 @@ export function feedbackLight(g: Github): Light {
   return { lamp: "fine", tip: "feedback: none open" };
 }
 
-/** `reviewDecision` alone sets the lamp; the tooltip lists the raw review requests. */
-export function reviewLight(g: Github): Light {
+/** Changes requested or nobody asked to review → act; pending requests → their count;
+ * else fine. Drafts follow the same rules. Reviewers who requested changes leave
+ * `reviewRequests`, so that decision is shown as a lamp rather than counted. */
+export function reviewLight(g: Github): ReviewLight {
+  const light = (lamp: Lamp, tip: string, count: number | null = null): ReviewLight => ({ lamp, tip, count });
+  if (g.state !== "OPEN") return light("fine", `review: ${g.state === "MERGED" ? "merged" : "closed"}`);
+  if (g.reviewDecision === "CHANGES_REQUESTED") return light("act", "review: changes requested");
   const names = g.reviewRequests.map((r) => ("login" in r ? r.login : r.team));
-  const requested = names.length ? ` · requested: ${names.join(", ")}` : "";
-  if (g.isDraft) return { lamp: "off", tip: `review: draft${requested}` };
-  if (g.state === "MERGED") return { lamp: "fine", tip: "review: merged" };
-  if (g.reviewDecision === "APPROVED") return { lamp: "fine", tip: `review: approved${requested}` };
-  if (g.reviewDecision === "REVIEW_REQUIRED") {
-    return { lamp: "run", tip: `review: required${requested}` };
-  }
-  if (g.reviewDecision === "CHANGES_REQUESTED") {
-    return { lamp: "act", tip: `review: changes requested${requested}` };
-  }
-  return { lamp: "fine", tip: `review: none required${requested}` };
+  if (names.length) return light("fine", `review needed: ${names.join(", ")}`, names.length);
+  if (g.reviewDecision === "REVIEW_REQUIRED") return light("act", "review: no reviewers requested");
+  return light("fine", g.reviewDecision === "APPROVED" ? "review: approved" : "review: none required");
 }
 
 export function prView(g: Github, pos: number): PrView {
@@ -161,16 +162,9 @@ export function prView(g: Github, pos: number): PrView {
   const ci = ciLight(g);
   const feedback = feedbackLight(g);
   const review = reviewLight(g);
+  const lamps = [base, ci, feedback, review];
   const open = g.state === "OPEN";
-  const needs = open
-    ? [
-        base.lamp === "act" && "conflict",
-        ci.lamp === "act" && "CI failing",
-        feedback.lamp === "act" && "open feedback",
-        review.lamp === "act" && "changes requested",
-      ].filter((r): r is string => !!r)
-    : [];
-  const ready = open && !g.isDraft && [base, ci, feedback, review].every((l) => l.lamp === "fine");
+  const ready = open && !g.isDraft && review.count == null && lamps.every((l) => l.lamp === "fine");
   return {
     pos,
     url: g.url,
@@ -178,22 +172,13 @@ export function prView(g: Github, pos: number): PrView {
     ...parseJira(g.title),
     additions: g.additions,
     deletions: g.deletions,
-    node:
-      g.state === "MERGED"
-        ? "merged"
-        : g.state === "CLOSED"
-          ? "closed"
-          : ready
-            ? "ready"
-            : g.isDraft
-              ? "draft"
-              : "open",
+    node: g.state === "MERGED" ? "merged" : g.state === "CLOSED" ? "closed" : ready ? "ready" : "open",
+    draft: g.isDraft,
     base,
     ci,
     feedback,
     review,
-    needs,
-    ready,
+    attention: open && (ready || lamps.some((l) => l.lamp === "act")),
   };
 }
 
@@ -258,17 +243,19 @@ export function age(iso: string, now = Date.now()): string {
   return `${Math.floor(h / 24)} d`;
 }
 
-/** One lamp for a whole Stack, shown on a collapsed Session: act if any PR needs attention,
- * run if any open PR has a lamp in progress, off with no PRs, else fine. */
-export function stackLight(stack: PrView[]): Light {
-  if (!stack.length) return { lamp: "off", tip: "no pull requests" };
-  const needs = stack.filter((p) => p.needs.length).length;
-  if (needs) return { lamp: "act", tip: `${needs} of ${stack.length} PRs need attention` };
-  const open = stack.filter((p) => p.node !== "merged" && p.node !== "closed");
-  if (open.some((p) => [p.base, p.ci, p.feedback, p.review].some((l) => l.lamp === "run"))) {
-    return { lamp: "run", tip: "PRs in progress" };
-  }
-  return { lamp: "fine", tip: "PRs fine" };
+/** The one light on a folded Session: act if it is waiting for you or any PR needs
+ * attention, else fine. */
+export function attentionLight(v: SessionView): Light {
+  const n = v.stack.length;
+  const prs = n ? `${n} pull request${n === 1 ? "" : "s"}` : "No pull requests";
+  if (v.status.state === "waiting") return { lamp: "act", tip: `${prs}: waiting for you` };
+  if (v.stack.some((p) => p.attention)) return { lamp: "act", tip: `${prs}: something needs action` };
+  return { lamp: "fine", tip: `${prs}: nothing needs action` };
+}
+
+/** Done Sessions start folded; `toggled` holds the ids the user has flipped since load. */
+export function isFolded(v: SessionView, toggled: Set<string>): boolean {
+  return (v.status.state === "done") !== toggled.has(v.id);
 }
 
 /** Minutes since the oldest `github.at` among open PRs when that is over 3 minutes, else null. */

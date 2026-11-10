@@ -2,6 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   activityLine,
+  attentionLight,
+  isFolded,
   baseLight,
   ciLight,
   feedbackLight,
@@ -10,7 +12,6 @@ import {
   prView,
   reviewLight,
   sessionViews,
-  stackLight,
   stackOf,
   statusLight,
 } from "./model.ts";
@@ -70,7 +71,7 @@ test("base: merged → fine; conflicting → act; else fine", () => {
   assert.equal(baseLight(gh({ mergeable: "UNKNOWN" })).lamp, "fine");
 });
 
-test("CI: failing → act; not completed → run; none → off; else fine", () => {
+test("CI: failing → act; not completed → run; else fine, even with no checks", () => {
   const ok = check("COMPLETED", "SUCCESS", "lint");
   assert.equal(ciLight(gh({ checks: [ok, check("COMPLETED", "FAILURE")] })).lamp, "act");
   assert.equal(ciLight(gh({ checks: [check("COMPLETED", "TIMED_OUT")] })).lamp, "act");
@@ -78,7 +79,7 @@ test("CI: failing → act; not completed → run; none → off; else fine", () =
   assert.equal(ciLight(gh({ checks: [check("IN_PROGRESS", null, "a"), check("COMPLETED", "FAILURE")] })).lamp, "act");
   assert.equal(ciLight(gh({ checks: [ok, check("IN_PROGRESS", null)] })).lamp, "run");
   assert.equal(ciLight(gh({ checks: [check("QUEUED", null)] })).lamp, "run");
-  assert.equal(ciLight(gh({ checks: [] })).lamp, "off");
+  assert.equal(ciLight(gh({ checks: [] })).lamp, "fine");
   assert.equal(ciLight(gh({ checks: [ok, check("COMPLETED", "SKIPPED")] })).lamp, "fine");
   assert.match(ciLight(gh({ checks: [ok, check("COMPLETED", "FAILURE", "e2e")] })).tip, /e2e/);
 });
@@ -89,20 +90,28 @@ test("feedback: unresolved threads → act unless merged", () => {
   assert.equal(feedbackLight(gh({ unresolvedReviewThreads: 0 })).lamp, "fine");
 });
 
-test("review: draft → off; merged, approved or null → fine; required → run; changes → act", () => {
-  assert.equal(reviewLight(gh({ isDraft: true, reviewDecision: "CHANGES_REQUESTED" })).lamp, "off");
-  assert.equal(reviewLight(gh({ state: "MERGED", reviewDecision: "REVIEW_REQUIRED" })).lamp, "fine");
-  assert.equal(reviewLight(gh({ reviewDecision: "APPROVED" })).lamp, "fine");
-  assert.equal(reviewLight(gh({ reviewDecision: null })).lamp, "fine");
-  assert.equal(reviewLight(gh({ reviewDecision: "REVIEW_REQUIRED" })).lamp, "run");
-  assert.equal(reviewLight(gh({ reviewDecision: "CHANGES_REQUESTED" })).lamp, "act");
+test("review: changes requested or nobody requested → act; pending requests → count; else fine", () => {
+  const r = (o: Partial<Github>) => {
+    const l = reviewLight(gh(o));
+    return [l.lamp, l.count];
+  };
+  assert.deepEqual(r({ state: "MERGED", reviewDecision: "CHANGES_REQUESTED" }), ["fine", null]);
+  assert.deepEqual(r({ state: "CLOSED", reviewDecision: "REVIEW_REQUIRED" }), ["fine", null]);
+  assert.deepEqual(r({ reviewDecision: "CHANGES_REQUESTED", reviewRequests: [{ login: "ana" }] }), ["act", null]);
+  assert.deepEqual(r({ reviewDecision: "REVIEW_REQUIRED", reviewRequests: [{ login: "ana" }, { team: "acme/web" }] }), ["fine", 2]);
+  assert.deepEqual(r({ reviewDecision: null, reviewRequests: [{ login: "ana" }] }), ["fine", 1]);
+  assert.deepEqual(r({ reviewDecision: "REVIEW_REQUIRED" }), ["act", null]);
+  // Drafts follow the same rules.
+  assert.deepEqual(r({ isDraft: true, reviewDecision: "REVIEW_REQUIRED" }), ["act", null]);
+  assert.deepEqual(r({ reviewDecision: "APPROVED" }), ["fine", null]);
+  assert.deepEqual(r({ reviewDecision: null }), ["fine", null]);
 });
 
-test("review tooltip lists the requested people and teams", () => {
+test("review tooltip names the requested people and teams", () => {
   const tip = reviewLight(
     gh({ reviewDecision: "REVIEW_REQUIRED", reviewRequests: [{ login: "ana" }, { team: "acme/web" }] }),
   ).tip;
-  assert.match(tip, /requested: ana, acme\/web/);
+  assert.match(tip, /ana, acme\/web/);
 });
 
 test("Session status lamp: running → run, waiting → act, idle and done → fine", () => {
@@ -122,40 +131,29 @@ test("Jira key is parsed from a `[ABC-123] ` prefix and removed from the title",
   assert.deepEqual(parseJira("[ABC-123]no space"), { jira: null, title: "[ABC-123]no space" });
 });
 
-test("needs attention: conflict, failing CI, open feedback, changes requested; never review required", () => {
-  const all = prView(
-    gh({
-      mergeable: "CONFLICTING",
-      checks: [check("COMPLETED", "FAILURE")],
-      unresolvedReviewThreads: 1,
-      reviewDecision: "CHANGES_REQUESTED",
-    }),
-    1,
-  );
-  assert.deepEqual(all.needs, ["conflict", "CI failing", "open feedback", "changes requested"]);
-  assert.deepEqual(prView(gh({ reviewDecision: "REVIEW_REQUIRED" }), 1).needs, []);
-  assert.deepEqual(prView(gh({ checks: [check("IN_PROGRESS", null)] }), 1).needs, []);
+test("attention: an open PR that is mergeable or has a lit lamp", () => {
+  assert.equal(prView(gh(), 1).attention, true);
+  assert.equal(prView(gh({ mergeable: "CONFLICTING" }), 1).attention, true);
+  assert.equal(prView(gh({ reviewDecision: "REVIEW_REQUIRED" }), 1).attention, true);
+  assert.equal(prView(gh({ reviewRequests: [{ login: "ana" }] }), 1).attention, false);
+  assert.equal(prView(gh({ checks: [check("IN_PROGRESS", null)] }), 1).attention, false);
+  assert.equal(prView(gh({ isDraft: true }), 1).attention, false);
+  assert.equal(prView(gh({ state: "CLOSED", unresolvedReviewThreads: 2 }), 1).attention, false);
+  assert.equal(prView(gh({ state: "MERGED" }), 1).attention, false);
 });
 
-test("ready to merge: open, not a draft, all four lamps fine", () => {
-  const ready = prView(gh(), 1);
-  assert.equal(ready.ready, true);
-  assert.equal(ready.node, "ready");
-  assert.equal(prView(gh({ reviewDecision: null }), 1).ready, true);
-  assert.equal(prView(gh({ state: "MERGED" }), 1).ready, false);
-  assert.equal(prView(gh({ state: "CLOSED" }), 1).ready, false);
-  assert.equal(prView(gh({ isDraft: true }), 1).ready, false);
-  assert.equal(prView(gh({ reviewDecision: "REVIEW_REQUIRED" }), 1).ready, false);
-  assert.equal(prView(gh({ checks: [check("IN_PROGRESS", null)] }), 1).ready, false);
-  assert.equal(prView(gh({ checks: [] }), 1).ready, false);
-  assert.equal(prView(gh({ unresolvedReviewThreads: 1 }), 1).ready, false);
-});
-
-test("PR nodes: draft dashed, merged, closed, open", () => {
-  assert.equal(prView(gh({ isDraft: true }), 1).node, "draft");
-  assert.equal(prView(gh({ state: "MERGED" }), 1).node, "merged");
-  assert.equal(prView(gh({ state: "CLOSED" }), 1).node, "closed");
-  assert.equal(prView(gh({ reviewDecision: "REVIEW_REQUIRED" }), 1).node, "open");
+test("mergeable: open, not a draft, no review outstanding, all four lamps fine", () => {
+  const node = (o: Partial<Github>) => prView(gh(o), 1).node;
+  assert.equal(node({}), "ready");
+  assert.equal(node({ reviewDecision: null }), "ready");
+  assert.equal(node({ checks: [] }), "ready");
+  assert.equal(node({ isDraft: true }), "open");
+  assert.equal(node({ reviewRequests: [{ login: "ana" }] }), "open");
+  assert.equal(node({ reviewDecision: "REVIEW_REQUIRED" }), "open");
+  assert.equal(node({ checks: [check("IN_PROGRESS", null)] }), "open");
+  assert.equal(node({ unresolvedReviewThreads: 1 }), "open");
+  assert.equal(node({ state: "MERGED" }), "merged");
+  assert.equal(node({ state: "CLOSED" }), "closed");
 });
 
 test("Stack: the Session's PRs by stack position, missing positions last", () => {
@@ -227,14 +225,26 @@ test("session views join Sessions to their Stacks and tolerate null facets", () 
   assert.equal(sessionViews([sessions[0]], [])[0].repo, "obsidian");
 });
 
-test("Stack summary lamp: act if a PR needs attention, run if an open PR is in progress, off without PRs", () => {
-  const lampOf = (...gs: Partial<Github>[]) => stackLight(gs.map((g, i) => prView(gh(g), i + 1))).lamp;
-  assert.equal(stackLight([]).lamp, "off");
-  assert.equal(lampOf({}, { state: "MERGED" }), "fine");
-  assert.equal(lampOf({}, { reviewDecision: "REVIEW_REQUIRED" }), "run");
-  assert.equal(lampOf({ reviewDecision: "REVIEW_REQUIRED" }, { mergeable: "CONFLICTING" }), "act");
-  // A closed PR's lamps do not count.
-  assert.equal(lampOf({ state: "CLOSED", reviewDecision: "REVIEW_REQUIRED", unresolvedReviewThreads: 2 }), "fine");
+test("folded Session light: act if waiting or any PR needs attention, else fine", () => {
+  const view = (state: Session["status"], ...gs: Partial<Github>[]) =>
+    sessionViews([session("s", { status: state })], gs.map((g, i) => pr("s", { number: i + 1, ...g })))[0];
+  const st = (state: "running" | "waiting" | "idle" | "done") => ({ at: AT, state });
+  assert.equal(attentionLight(view(st("waiting"))).lamp, "act");
+  assert.equal(attentionLight(view(st("running"))).lamp, "fine");
+  assert.equal(attentionLight(view(st("running"), { reviewRequests: [{ login: "a" }] })).lamp, "fine");
+  assert.equal(attentionLight(view(st("idle"), { reviewRequests: [{ login: "a" }] }, {})).lamp, "act");
+  assert.equal(attentionLight(view(st("idle"), { mergeable: "CONFLICTING", reviewRequests: [{ login: "a" }] })).lamp, "act");
+});
+
+test("done Sessions start folded; a toggle flips the default", () => {
+  const [done, idle] = sessionViews(
+    [session("d", { status: { at: AT, state: "done" } }), session("i", { status: { at: AT, state: "idle" } })],
+    [],
+  );
+  assert.equal(isFolded(done, new Set()), true);
+  assert.equal(isFolded(idle, new Set()), false);
+  assert.equal(isFolded(done, new Set(["d"])), false);
+  assert.equal(isFolded(idle, new Set(["i"])), true);
 });
 
 test("PR data age: minutes since the oldest open PR was fetched, only when over 3 minutes", () => {

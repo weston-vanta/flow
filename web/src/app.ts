@@ -11,8 +11,10 @@ let drawn = "";
 /** When the last poll succeeded, and whether the latest one failed. */
 let lastGood: Date | null = null;
 let failing = false;
-/** Ids of collapsed Sessions; in memory only, so a reload reopens them all. */
-const collapsed = new Set<string>();
+/** Ids of Sessions folded or unfolded against their default (done Sessions start folded);
+ * in memory only, so a reload resets them. */
+const toggled = new Set<string>();
+let legend = false;
 const root = document.getElementById("root")!;
 
 async function get<T>(path: string): Promise<T> {
@@ -33,7 +35,7 @@ function draw() {
   const stale = prDataAge(prs);
   if (stale != null) notices.push(`PR data ${stale} min old`);
   // Redraw only on change, so hover tooltips and selections survive quiet polls.
-  const html = render(sessionViews(sessions, prs), collapsed, notices);
+  const html = render(sessionViews(sessions, prs), toggled, notices, legend);
   if (html !== drawn) root.innerHTML = drawn = html;
 }
 
@@ -50,10 +52,25 @@ async function poll() {
 }
 
 root.addEventListener("click", (e) => {
-  const el = (e.target as Element).closest<HTMLElement>("[data-toggle]");
+  const target = e.target as Element;
+  if (target.closest("[data-legend]")) {
+    legend = !legend;
+    return draw();
+  }
+  const el = target.closest<HTMLElement>("[data-toggle]");
   if (!el) return;
   const id = el.dataset.toggle!;
-  if (!collapsed.delete(id)) collapsed.add(id);
+  if (!toggled.delete(id)) toggled.add(id);
+  draw();
+});
+
+// `h` toggles the legend and Esc closes it. Listening on the document means the page
+// needs no focus first.
+document.addEventListener("keydown", (e) => {
+  if (e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
+  if (e.key === "h" || e.key === "H") legend = !legend;
+  else if (e.key === "Escape" && legend) legend = false;
+  else return;
   draw();
 });
 

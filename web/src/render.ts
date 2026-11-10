@@ -1,6 +1,7 @@
-// Variant A of the design canvas as HTML strings: one panel row per Session, its Stack beside it.
-import { age, stackLight } from "./model.ts";
-import type { Lamp, PrView, SessionView } from "./model.ts";
+// The "flow — sessions" design canvas as HTML strings: one panel row per Session, its Stack
+// beside it, the legend behind `h` and notices in a strip fixed to the bottom.
+import { age, attentionLight, isFolded } from "./model.ts";
+import type { Light, PrView, ReviewLight, SessionView } from "./model.ts";
 
 export function esc(s: string | number): string {
   return String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -11,63 +12,89 @@ const ago = (iso: string) => {
   return a === "just now" ? a : `${a} ago`;
 };
 
-const lamp = (l: Lamp, tip: string, sm = false) =>
-  `<span class="lamp ${l}${sm ? " sm" : ""}" title="${esc(tip)}"></span>`;
+const lamp = (l: Light, sm = false) =>
+  `<span class="lamp ${l.lamp}${sm ? " sm" : ""}" aria-hidden="true"></span>`;
+
+/** A table cell holding a lamp, or the review count while reviews are requested. */
+const cell = (l: Light | ReviewLight) => {
+  const count = "count" in l && l.count != null;
+  return `<div class="gcell" role="cell" title="${esc(l.tip)}" aria-label="${esc(l.tip)}">${
+    count ? `<span class="count" aria-hidden="true">${l.count}</span>` : lamp(l)
+  }</div>`;
+};
+
+const NODE_TIP = { merged: "merged", closed: "closed", ready: "mergeable" };
 
 function prRow(p: PrView, j: number, n: number): string {
-  const notes = p.ready ? ["ready to merge"] : p.needs;
-  return `<div class="grid grow">
-    ${j > 0 ? '<div class="rule"></div>' : ""}
-    <div class="gnode">${j > 0 ? '<div class="up"></div>' : ""}${j < n - 1 ? '<div class="down"></div>' : ""}<a class="node ${p.node}" href="${esc(p.url)}" target="_blank" rel="noreferrer" title="#${p.number} · ${p.node}">${p.pos}</a></div>
-    <div class="gtitle"><a class="t ${p.node}" href="${esc(p.url)}" target="_blank" rel="noreferrer">${esc(p.title)}</a><span class="sub">${p.jira ? `<span class="mono">${esc(p.jira)}</span>` : ""}${notes.length ? `<span class="needs">${esc(notes.join(" · "))}</span>` : ""}</span></div>
-    <div class="glines mono">+${p.additions} −${p.deletions}</div>
-    <div class="gcell">${lamp(p.base.lamp, p.base.tip)}</div>
-    <div class="gcell">${lamp(p.ci.lamp, p.ci.tip)}</div>
-    <div class="gcell">${lamp(p.feedback.lamp, p.feedback.tip)}</div>
-    <div class="gcell">${lamp(p.review.lamp, p.review.tip)}</div>
+  const tip = `#${p.number} · ${p.node === "open" ? (p.draft ? "draft" : "not yet mergeable") : NODE_TIP[p.node]}`;
+  return `<div class="grid grow" role="row">
+    ${j > 0 ? '<div class="rule" aria-hidden="true"></div>' : ""}
+    <div class="gnode" role="cell">${j > 0 ? '<div class="up"></div>' : ""}${j < n - 1 ? '<div class="down"></div>' : ""}<a class="node ${p.node}" href="${esc(p.url)}" target="_blank" rel="noreferrer" title="${esc(tip)}" aria-label="Pull request ${esc(tip)}">${p.pos}</a></div>
+    <div class="gtitle" role="cell"><a class="t ${p.node}" href="${esc(p.url)}" target="_blank" rel="noreferrer">${esc(p.title)}</a>${p.jira ? `<span class="jira mono">${esc(p.jira)}</span>` : ""}</div>
+    <div class="glines mono" role="cell">+${p.additions} −${p.deletions}</div>
+    ${cell(p.base)}${cell(p.ci)}${cell(p.feedback)}${cell(p.review)}
   </div>`;
 }
 
-function sessionRow(v: SessionView, i: number, collapsed: Set<string>): string {
+const key = (v: SessionView, idx: string, folded: boolean) =>
+  `<button type="button" class="skey${folded ? " up" : ""}" data-toggle="${esc(v.id)}" aria-expanded="${!folded}" aria-label="${folded ? "Expand" : "Collapse"} session ${idx}"><span>${idx}</span></button>`;
+
+const title = (v: SessionView, tag: string) => `<${tag}${v.untitled ? ' class="untitled"' : ""}>${esc(v.title)}</${tag}>`;
+
+function sessionRow(v: SessionView, i: number, toggled: Set<string>): string {
   const idx = String(i + 1).padStart(2, "0");
-  const stat = `<div class="sstat ${v.status.lamp}">${lamp(v.status.lamp, v.status.tip, true)}${esc(v.status.tip)}${v.status.since ? ` · ${age(v.status.since)}` : ""}</div>`;
-  if (collapsed.has(v.id)) {
-    const s = stackLight(v.stack);
-    return `<section class="srow folded" data-toggle="${esc(v.id)}" title="Show this Session">
-      <div class="sidx">${idx}</div>
-      <div class="sline">${stat}<b${v.untitled ? ' class="untitled"' : ""}>${esc(v.title)}</b><span class="cde">${esc(v.cde ?? "unknown CDE")}</span>${lamp(s.lamp, `Stack: ${s.tip}`)}</div>
+  const cde = esc(v.cde ?? "unknown CDE");
+  if (isFolded(v, toggled)) {
+    const a = attentionLight(v);
+    return `<section class="srow folded" data-toggle="${esc(v.id)}" aria-label="${esc(v.title)}">
+      <div class="sidx">${key(v, idx, true)}</div>
+      <div class="sline">${title(v, "h2")}<span class="cde">${cde}</span><span class="attn" title="${esc(a.tip)}" aria-label="${esc(a.tip)}">${lamp(a)}</span></div>
     </section>`;
   }
-  const head = `<div class="sidx">${idx}<button class="fold" data-toggle="${esc(v.id)}" title="Collapse this Session">−</button></div>
-    <div class="sinfo">
-      ${stat}
-      <h2${v.untitled ? ' class="untitled"' : ""}>${esc(v.title)}</h2>
-      ${v.activity ? `<p class="activity" title="${esc(v.activity)}">${esc(v.activity)}</p>` : ""}
+  const status = [v.status.since ? age(v.status.since) : null, v.activity?.replace(/\s+/g, " ")]
+    .filter(Boolean)
+    .join(" · ");
+  const info = `<div class="sinfo">
+      ${title(v, "h2")}
       <div class="smeta">
-        ${v.repo ? `<span class="mono">${esc(v.repo)}</span>` : ""}
-        <span>${esc(v.cde ?? "unknown CDE")}${v.started ? ` · started ${ago(v.started)}` : ""}</span>
+        <div class="sstat"${v.activity ? ` title="${esc(v.activity)}"` : ""}>${lamp(v.status, true)}<span><b class="${v.status.lamp}">${esc(v.status.tip)}</b>${status ? ` · ${esc(status)}` : ""}</span></div>
+        <span class="sctx">${v.repo ? `<span class="mono">${esc(v.repo)}</span> · ` : ""}${cde}${v.started ? ` · started ${ago(v.started)}` : ""}</span>
       </div>
     </div>`;
   const body = v.stack.length
-    ? `<div class="grid ghead"><span></span><span></span><span></span><span>base</span><span>CI</span><span>feedback</span><span>review</span></div>` +
-      v.stack.map((p, j) => prRow(p, j, v.stack.length)).join("")
-    : `<div class="noprs"><span class="lamp off"></span><span>No pull requests yet</span></div>`;
-  return `<section class="srow">${head}<div class="sprs">${body}</div></section>`;
+    ? `<div class="scroll"><div role="table" aria-label="Pull requests">
+        <div class="grid ghead" role="row"><span></span><span></span><span></span><span role="columnheader">base</span><span role="columnheader">CI</span><span role="columnheader">feedback</span><span role="columnheader">review</span></div>
+        ${v.stack.map((p, j) => prRow(p, j, v.stack.length)).join("")}
+      </div></div>`
+    : `<div class="noprs"><span class="ring" aria-hidden="true"></span><span>No pull requests yet</span></div>`;
+  return `<section class="srow" aria-label="${esc(v.title)}"><div class="sidx">${key(v, idx, false)}</div>${info}<div class="sprs">${body}</div></section>`;
 }
 
-/** `collapsed` holds the ids of Sessions shown as a header line only; `notices` are warnings
- * shown above the panel. */
-export function render(views: SessionView[], collapsed: Set<string>, notices: string[]): string {
-  return `<div class="page">
-    <header class="top"><div class="logo"><i></i></div><div class="brand"><b>flow</b><span>agent sessions and pull requests</span></div></header>
-    ${notices.map((n) => `<p class="notice">${esc(n)}</p>`).join("")}
-    <main class="panel">${views.length ? views.map((v, i) => sessionRow(v, i, collapsed)).join("") : '<p class="empty">No Sessions.</p>'}</main>
-    <footer class="key">
-      <span><span class="lamp act"></span>needs action</span>
-      <span><span class="lamp run"></span>in progress</span>
-      <span><span class="lamp fine"></span>fine</span>
-      <span><span class="lamp off"></span>does not apply</span>
-      <span>PR <span class="node key"></span>open <span class="node key draft"></span>draft <span class="node key ready"></span>ready to merge <span class="node key merged"></span>merged <span class="node key closed"></span>closed</span>
-    </footer>
+const LEGEND = `<div class="legend" role="note" aria-label="Legend">
+    <div><span class="lh">lights</span>
+      <span class="li act"><span class="lamp act"></span>needs action</span>
+      <span class="li"><span class="lamp run"></span>in progress</span>
+      <span class="li"><span class="lamp fine"></span>fine</span>
+      <span class="li"><span class="count">2</span>reviews needed</span>
+    </div>
+    <div><span class="lh">pull requests</span>
+      <span class="li"><span class="node key"></span>open or draft</span>
+      <span class="li"><span class="node key ready"></span>mergeable</span>
+      <span class="li"><span class="node key merged"></span>merged</span>
+      <span class="li"><span class="node key closed"></span>closed</span>
+    </div>
+  </div>`;
+
+/** `toggled` holds the ids of Sessions the user has folded or unfolded against their default;
+ * `notices` are warnings shown in the bottom strip; `legend` is whether the legend is open. */
+export function render(views: SessionView[], toggled: Set<string>, notices: string[], legend: boolean): string {
+  return `<div class="page${notices.length ? " noticed" : ""}">
+    <header class="top"><div class="logo" aria-hidden="true"><i></i></div><div class="brand"><b>flow</b><span>agent sessions and pull requests</span></div></header>
+    <main class="panel">${views.length ? views.map((v, i) => sessionRow(v, i, toggled)).join("") : '<p class="empty">No Sessions.</p>'}</main>
+    <footer><button type="button" class="hint" data-legend aria-expanded="${legend}" aria-keyshortcuts="h"><kbd class="${legend ? "down" : ""}">h</kbd><span>legend</span></button></footer>
+  </div>
+  <div class="dock">
+    ${legend ? LEGEND : ""}
+    ${notices.length ? `<div class="notices" role="status">${notices.map((n) => `<p>${esc(n)}</p>`).join("")}</div>` : ""}
   </div>`;
 }
