@@ -1,0 +1,9 @@
+{"type":"permission-mode","permissionMode":"default","sessionId":"8f2c1a7e-3b4d-4e5f-9a6b-1c2d3e4f5a6b"}
+{"type":"user","isMeta":true,"message":{"role":"user","content":"<local-command-caveat>Caveat: injected by Claude Code.</local-command-caveat>"},"uuid":"u1","sessionId":"8f2c1a7e-3b4d-4e5f-9a6b-1c2d3e4f5a6b"}
+{"type":"user","message":{"role":"user","content":"<command-name>/model</command-name>\n<command-args></command-args>"},"uuid":"u2","sessionId":"8f2c1a7e-3b4d-4e5f-9a6b-1c2d3e4f5a6b"}
+{"type":"user","origin":{"kind":"human"},"promptId":"p1","message":{"role":"user","content":"Fix the flaky test in services/billing"},"uuid":"u3","sessionId":"8f2c1a7e-3b4d-4e5f-9a6b-1c2d3e4f5a6b"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"cargo test"}}]},"uuid":"a1","sessionId":"8f2c1a7e-3b4d-4e5f-9a6b-1c2d3e4f5a6b"}
+{"type":"user","promptId":"p1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]},"uuid":"u4","sessionId":"8f2c1a7e-3b4d-4e5f-9a6b-1c2d3e4f5a6b"}
+{"type":"user","origin":{"kind":"task-notification"},"promptId":"p2","message":{"role":"user","content":"A background task finished."},"uuid":"u5","sessionId":"8f2c1a7e-3b4d-4e5f-9a6b-1c2d3e4f5a6b"}
+{"type":"user","origin":{"kind":"human"},"promptId":"p3","message":{"role":"user","content":"Now open the PR"},"uuid":"u6","sessionId":"8f2c1a7e-3b4d-4e5f-9a6b-1c2d3e4f5a6b"}
+{"type":"last-prompt","lastPrompt":"Now open the PR","leafUuid":"u6","sessionId":"8f2c1a7e-3b4d-4e5f-9a6b-1c2d3e4f5a6b"}

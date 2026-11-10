@@ -9,8 +9,9 @@ use anyhow::{Context as _, Result, bail};
 use jiff::Timestamp;
 use serde::Deserialize;
 
-use crate::session::{Context, Origin, Session, State, Status};
+use crate::session::{Activity, Context, Origin, Session, State, Status};
 use crate::store::{self, Store};
+use crate::transcript;
 
 /// The fields flow reads from Claude Code's hook JSON; the rest are ignored.
 #[derive(Deserialize)]
@@ -20,6 +21,10 @@ struct HookInput {
     cwd: Option<String>,
     transcript_path: Option<String>,
     notification_type: Option<String>,
+    /// `UserPromptSubmit`'s prompt.
+    prompt: Option<String>,
+    /// `Stop` and `StopFailure`'s final assistant text.
+    last_assistant_message: Option<String>,
 }
 
 /// What the hook takes from its environment. Empty variables count as unset.
@@ -71,17 +76,14 @@ fn write_facets(store: &Store, input: &HookInput, env: &HookEnv, at: Timestamp) 
                 transcript_path: input.transcript_path.clone(),
             };
             Session::put(store, id, &origin, at)?;
-            Session::put(
-                store,
-                id,
-                &Context {
-                    title: None,
-                    branch,
-                },
-                at,
-            )?;
+            let title = transcript(input).title;
+            Session::put(store, id, &Context { title, branch }, at)?;
         }
-        "UserPromptSubmit" | "PostToolUse" => {
+        "UserPromptSubmit" => {
+            status(State::Running)?;
+            Session::put(store, id, &Activity::new(input.prompt.clone(), None), at)?;
+        }
+        "PostToolUse" => {
             status(State::Running)?;
         }
         "PermissionRequest" => {
@@ -105,15 +107,18 @@ fn write_facets(store: &Store, input: &HookInput, env: &HookEnv, at: Timestamp) 
         "Stop" | "StopFailure" => {
             status(State::Idle)?;
             let branch = git_branch(input.cwd.as_deref());
+            let facts = transcript(input);
             Session::put(
                 store,
                 id,
                 &Context {
-                    title: None,
+                    title: facts.title,
                     branch,
                 },
                 at,
             )?;
+            let reply = input.last_assistant_message.clone();
+            Session::put(store, id, &Activity::new(facts.last_prompt, reply), at)?;
         }
         "SessionEnd" => {
             status(State::Done)?;
@@ -150,6 +155,15 @@ fn append(path: &Path, line: &str) -> std::io::Result<()> {
         .append(true)
         .open(path)?
         .write_all(line.as_bytes())
+}
+
+/// What the Session's transcript says; empty when the hook names none or it can't be read.
+fn transcript(input: &HookInput) -> transcript::Facts {
+    input
+        .transcript_path
+        .as_deref()
+        .map(|path| transcript::read(Path::new(path)))
+        .unwrap_or_default()
 }
 
 /// The CDE's name for `ona_id`, from `gitpod environment get`; `None` on any failure.
