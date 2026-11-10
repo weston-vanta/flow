@@ -40,13 +40,13 @@ fn read_tail(path: &Path) -> io::Result<Facts> {
 
     let (mut custom_title, mut ai_title, mut first_prompt, mut last_prompt) =
         (None, None, None, None);
-    // A tail that starts mid-file starts mid-line, so its first line is skipped. A last line
-    // still being written fails to parse and is skipped too.
-    for line in tail.split(|&b| b == b'\n').skip(usize::from(start > 0)) {
+    // A first line cut mid-record, or a last line still being written, fails to parse and is
+    // skipped.
+    for line in tail.split(|&b| b == b'\n') {
         match serde_json::from_slice(line) {
             Ok(Record::CustomTitle { custom_title: t }) => custom_title = Some(t),
             Ok(Record::AiTitle { ai_title: t }) => ai_title = Some(t),
-            Ok(Record::LastPrompt { last_prompt: p }) => last_prompt = p.or(last_prompt),
+            Ok(Record::LastPrompt { last_prompt: p }) => last_prompt = Some(p),
             Ok(Record::User(user)) if first_prompt.is_none() => first_prompt = user.typed_prompt(),
             _ => {}
         }
@@ -72,7 +72,7 @@ enum Record {
         ai_title: String,
     },
     LastPrompt {
-        last_prompt: Option<String>,
+        last_prompt: String,
     },
     User(UserRecord),
     #[serde(other)]

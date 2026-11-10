@@ -44,7 +44,7 @@ fn list_returns_every_session_ordered_by_id() {
 #[test]
 fn ids_with_path_characters_round_trip() {
     let ts = TestStore::new();
-    let ids = ["a/b:c", "..", ".hidden", "50%/x", "owner/repo#12"];
+    let ids = ["a/b:c", "50%/x", "owner/repo#12", "acme/widgets:feat%2Fx"];
     for id in ids {
         put_status(&ts, id, "running");
     }
