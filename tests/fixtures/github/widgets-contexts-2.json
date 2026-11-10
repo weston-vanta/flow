@@ -1,0 +1,13 @@
+{"data": {
+  "repo": {
+    "p7": {"statusCheckRollup": {"contexts": {
+      "pageInfo": {"hasNextPage": false, "endCursor": "Y3Vyc29yOjEwMw=="},
+      "nodes": [
+        {"__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "SUCCESS", "databaseId": 105, "isRequired": true},
+        {"__typename": "CheckRun", "name": "test", "status": "IN_PROGRESS", "conclusion": null, "databaseId": 104, "isRequired": true},
+        {"__typename": "CheckRun", "name": "security", "status": "COMPLETED", "conclusion": "SUCCESS", "databaseId": 90, "isRequired": true}
+      ]
+    }}}
+  },
+  "rateLimit": {"cost": 1}
+}}

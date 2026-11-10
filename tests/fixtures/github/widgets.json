@@ -1,0 +1,36 @@
+{"data": {
+  "repo": {
+    "p7": {
+      "number": 7, "url": "https://github.com/acme/widgets/pull/7", "title": "[ABC-123] Add widgets",
+      "state": "OPEN", "isDraft": false, "headRefName": "feat/x", "headRefOid": "0123456789abcdef0123456789abcdef01234567",
+      "baseRefName": "main", "mergeable": "MERGEABLE", "reviewDecision": "REVIEW_REQUIRED",
+      "updatedAt": "2026-11-10T11:00:00Z", "additions": 120, "deletions": 4,
+      "stackEntry": {"position": 2},
+      "reviewRequests": {"nodes": [
+        {"requestedReviewer": {"login": "alice"}},
+        {"requestedReviewer": {"slug": "platform"}}
+      ]},
+      "reviewThreads": {"nodes": [{"isResolved": false}, {"isResolved": true}, {"isResolved": false}]},
+      "statusCheckRollup": {"contexts": {
+        "pageInfo": {"hasNextPage": true, "endCursor": "Y3Vyc29yOjEwMA=="},
+        "nodes": [
+          {"__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "FAILURE", "databaseId": 100, "isRequired": true},
+          {"__typename": "CheckRun", "name": "lint", "status": "COMPLETED", "conclusion": "CANCELLED", "databaseId": 101, "isRequired": false},
+          {"__typename": "StatusContext", "context": "ci/legacy", "state": "PENDING", "isRequired": true},
+          {"__typename": "StatusContext", "context": "ci/optional", "state": "FAILURE", "isRequired": false}
+        ]
+      }}
+    },
+    "p5": {
+      "number": 5, "url": "https://github.com/acme/widgets/pull/5", "title": "Widget base",
+      "state": "MERGED", "isDraft": false, "headRefName": "feat/base", "headRefOid": "89abcdef0123456789abcdef0123456789abcdef",
+      "baseRefName": "main", "mergeable": "UNKNOWN", "reviewDecision": "APPROVED",
+      "updatedAt": "2026-11-01T09:00:00Z", "additions": 30, "deletions": 0,
+      "stackEntry": null,
+      "reviewRequests": {"nodes": []},
+      "reviewThreads": {"nodes": []},
+      "statusCheckRollup": null
+    }
+  },
+  "rateLimit": {"cost": 2}
+}}

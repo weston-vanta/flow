@@ -12,6 +12,11 @@ pub const KIND: &str = "pr";
 /// The name of the `github` facet in the Store.
 pub const GITHUB: &str = "github";
 
+/// The key of PR `number` in repository `repo` (`owner/name`).
+pub fn key(repo: &str, number: u64) -> String {
+    format!("{repo}#{number}")
+}
+
 /// A PR as the CLI prints it. `owner` is derived at read time, never stored: the `reporter`
 /// Session of the Branch keyed `<repo>:<headRefName>`, or `None`.
 #[derive(Debug, Clone, Serialize)]

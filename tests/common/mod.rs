@@ -23,7 +23,8 @@ const INHERITED_ENV: &[&str] = &[
 ];
 
 /// A temp directory holding the binaries' Store (through `FLOW_STORE`), the hook log beside
-/// it, and a `bin` directory put first on PATH for fake executables; removed on drop.
+/// it, and a `bin` directory put first on PATH for fake executables (holding a `gh` that
+/// always fails until a test replaces it); removed on drop.
 pub struct TestStore {
     dir: TempDir,
 }
@@ -32,7 +33,10 @@ impl TestStore {
     pub fn new() -> Self {
         let dir = TempDir::new().expect("create temp dir");
         fs::create_dir(dir.path().join("bin")).expect("create bin dir");
-        Self { dir }
+        let ts = Self { dir };
+        // `flowd` polls GitHub through `gh`; no test reaches the real one.
+        ts.fake_bin("gh", "echo 'no fake gh in this test' >&2; exit 1");
+        ts
     }
 
     /// The `flow` CLI with `FLOW_STORE` set to this Store.
@@ -42,9 +46,15 @@ impl TestStore {
 
     /// Starts `flowd` on a free loopback port over this Store; it is killed on drop.
     pub fn flowd(&self) -> Flowd {
+        self.flowd_with_env(&[])
+    }
+
+    /// Starts `flowd` like [`Self::flowd`], with extra environment variables.
+    pub fn flowd_with_env(&self, env: &[(&str, &str)]) -> Flowd {
         let mut child = self
             .std_command("flowd")
             .args(["--port", "0"])
+            .envs(env.iter().copied())
             .stdout(Stdio::piped())
             .spawn()
             .expect("start flowd");
@@ -61,7 +71,7 @@ impl TestStore {
             .unwrap_or_else(|| panic!("flowd printed no address: {line:?}"));
         Flowd {
             child,
-            _stdout: stdout,
+            stdout,
             addr,
         }
     }
@@ -134,7 +144,7 @@ impl TestStore {
 pub struct Flowd {
     child: Child,
     /// Held open so a later line from `flowd` does not fail on a closed pipe.
-    _stdout: BufReader<ChildStdout>,
+    stdout: BufReader<ChildStdout>,
     pub addr: SocketAddr,
 }
 
@@ -142,6 +152,21 @@ impl Flowd {
     /// Sends `GET path` and returns the status code and body.
     pub fn get(&self, path: &str) -> (u16, String) {
         get(self.addr, path).expect("connect to flowd")
+    }
+
+    /// Blocks until `flowd` prints a stdout line starting with `prefix`, and returns it.
+    pub fn wait_for_line(&mut self, prefix: &str) -> String {
+        loop {
+            let mut line = String::new();
+            let read = self
+                .stdout
+                .read_line(&mut line)
+                .expect("read flowd's stdout");
+            assert!(read > 0, "flowd exited before printing {prefix:?}");
+            if line.starts_with(prefix) {
+                return line;
+            }
+        }
     }
 }
 
