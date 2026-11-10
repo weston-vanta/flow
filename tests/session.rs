@@ -118,3 +118,134 @@ fn a_facet_file_with_trailing_bytes_reads_as_its_first_document() {
     assert_eq!(sessions.len(), 1, "{sessions:?}");
     assert_eq!(sessions[0]["status"]["state"], "idle");
 }
+
+fn removed(out: &assert_cmd::assert::Assert) -> Value {
+    serde_json::from_slice(&out.get_output().stdout).unwrap()
+}
+
+fn exists(ts: &TestStore, id: &str) -> bool {
+    ts.flow()
+        .args(["session", "get", id])
+        .output()
+        .unwrap()
+        .status
+        .success()
+}
+
+#[test]
+fn remove_deletes_done_sessions() {
+    let ts = TestStore::new();
+    put_status(&ts, "a", "done");
+    put_status(&ts, "b", "done");
+    put_status(&ts, "c", "done");
+    let out = ts
+        .flow()
+        .args(["session", "remove", "a", "b"])
+        .assert()
+        .success();
+    assert_eq!(removed(&out), json!({ "removed": ["a", "b"] }));
+    assert!(!exists(&ts, "a"));
+    assert!(!exists(&ts, "b"));
+    assert!(exists(&ts, "c"));
+}
+
+#[test]
+fn remove_refuses_a_session_that_is_not_done_and_removes_nothing() {
+    let ts = TestStore::new();
+    put_status(&ts, "a", "done");
+    put_status(&ts, "b", "running");
+    let out = ts
+        .flow()
+        .args(["session", "remove", "a", "b"])
+        .assert()
+        .code(1);
+    let body = error_body(&out);
+    assert!(body["error"].as_str().unwrap().contains("\"b\""), "{body}");
+    assert!(body["help"].as_str().unwrap().contains("--force"), "{body}");
+    assert!(exists(&ts, "a"));
+    assert!(exists(&ts, "b"));
+}
+
+#[test]
+fn remove_refuses_a_session_with_no_status() {
+    let ts = TestStore::new();
+    ts.store()
+        .put_facet(
+            "session",
+            "partial",
+            "context",
+            &json!({ "title": null, "branch": null }),
+            Timestamp::now(),
+        )
+        .unwrap();
+    ts.flow()
+        .args(["session", "remove", "partial"])
+        .assert()
+        .code(1);
+    assert!(exists(&ts, "partial"));
+}
+
+#[test]
+fn remove_with_force_deletes_a_session_in_any_status() {
+    let ts = TestStore::new();
+    for state in ["running", "waiting", "idle"] {
+        put_status(&ts, state, state);
+    }
+    ts.store()
+        .put_facet(
+            "session",
+            "partial",
+            "context",
+            &json!({ "title": null, "branch": null }),
+            Timestamp::now(),
+        )
+        .unwrap();
+    let out = ts
+        .flow()
+        .args([
+            "session", "remove", "--force", "running", "waiting", "idle", "partial",
+        ])
+        .assert()
+        .success();
+    assert_eq!(
+        removed(&out),
+        json!({ "removed": ["running", "waiting", "idle", "partial"] })
+    );
+    assert_eq!(ts.sessions(), Vec::<Value>::new());
+}
+
+#[test]
+fn remove_of_a_missing_id_is_an_error_and_removes_nothing() {
+    let ts = TestStore::new();
+    put_status(&ts, "a", "done");
+    let out = ts
+        .flow()
+        .args(["session", "remove", "--force", "a", "nope"])
+        .assert()
+        .code(1);
+    let body = error_body(&out);
+    assert!(body["error"].as_str().unwrap().contains("nope"), "{body}");
+    assert!(exists(&ts, "a"));
+}
+
+#[test]
+fn remove_with_no_ids_is_a_usage_error() {
+    let out = TestStore::new()
+        .flow()
+        .args(["session", "remove"])
+        .assert()
+        .code(2);
+    error_body(&out);
+}
+
+#[test]
+fn remove_is_hidden_from_help() {
+    let out = TestStore::new()
+        .flow()
+        .args(["session", "--help"])
+        .assert()
+        .success();
+    let help = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(help.contains("list"), "{help}");
+    assert!(!help.contains("remove"), "{help}");
+}

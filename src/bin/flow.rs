@@ -12,7 +12,7 @@ use jiff::Timestamp;
 use serde::Serialize;
 
 use flow::hook;
-use flow::services;
+use flow::services::{self, Refusal};
 use flow::store::Store;
 
 /// The agent note, `docs/agent-note.md`, printed by `flow guide`.
@@ -52,6 +52,17 @@ enum SessionCommand {
     Get {
         /// The Claude session id; defaults to `$CLAUDE_CODE_SESSION_ID`, the calling Session.
         id: Option<String>,
+    },
+    /// Delete Sessions from the Store, for clearing test Sessions by hand. Prints
+    /// `{"removed": [ids]}`. Removes nothing unless every Session exists and, without `--force`, is done.
+    #[command(hide = true)]
+    Remove {
+        /// Remove Sessions in any status, not only done ones.
+        #[arg(long)]
+        force: bool,
+        /// The Claude session ids to remove.
+        #[arg(required = true)]
+        ids: Vec<String>,
     },
 }
 
@@ -99,6 +110,9 @@ fn main() -> ExitCode {
             Err(err) => store_error(&err),
         },
         Some(Command::Session(SessionCommand::Get { id })) => session_get(&store, id),
+        Some(Command::Session(SessionCommand::Remove { force, ids })) => {
+            session_remove(&store, &ids, force)
+        }
         Some(Command::Pr(PrCommand::List)) => match services::pr_list(&store) {
             Ok(prs) => print_json(&prs),
             Err(err) => store_error(&err),
@@ -168,6 +182,23 @@ fn session_get(store: &Store, id: Option<String>) -> ExitCode {
             1,
             &format!("no Session with id {id:?}"),
             "run `flow session list` to see every Session",
+        ),
+        Err(err) => store_error(&err),
+    }
+}
+
+fn session_remove(store: &Store, ids: &[String], force: bool) -> ExitCode {
+    match services::session_remove(store, ids, force) {
+        Ok(Ok(())) => print_json(&serde_json::json!({ "removed": ids })),
+        Ok(Err(Refusal::Missing(id))) => error(
+            1,
+            &format!("no Session with id {id:?}; nothing was removed"),
+            "run `flow session list` to see every Session",
+        ),
+        Ok(Err(Refusal::NotDone(id))) => error(
+            1,
+            &format!("Session {id:?} is not done; nothing was removed"),
+            "pass --force to remove Sessions in any status",
         ),
         Err(err) => store_error(&err),
     }

@@ -29,6 +29,35 @@ pub fn session_get(store: &Store, id: &str) -> Result<Option<Session>> {
         .transpose()
 }
 
+/// Why `flow session remove` removed nothing.
+#[derive(Debug)]
+pub enum Refusal {
+    /// No Session has this id.
+    Missing(String),
+    /// This Session's status is not done (or it has none), and the removal was not forced.
+    NotDone(String),
+}
+
+/// `flow session remove`: deletes every Session in `ids` from the Store, or none of them if
+/// any is missing or, unless `force`, not done. Leaves their PRs and Branches to the sweep.
+pub fn session_remove(store: &Store, ids: &[String], force: bool) -> Result<Result<(), Refusal>> {
+    for id in ids {
+        let Some(session) = session_get(store, id)? else {
+            return Ok(Err(Refusal::Missing(id.clone())));
+        };
+        let done = session
+            .status
+            .is_some_and(|s| s.value.state == session::State::Done);
+        if !done && !force {
+            return Ok(Err(Refusal::NotDone(id.clone())));
+        }
+    }
+    for id in ids {
+        store.remove(session::KIND, id)?;
+    }
+    Ok(Ok(()))
+}
+
 /// Every PR whose owner is a listed Session, ordered by key, each with its derived `owner`.
 pub fn pr_list(store: &Store) -> Result<Vec<Pr>> {
     Ok(listing(store)?.1)
