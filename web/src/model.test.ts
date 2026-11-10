@@ -210,6 +210,7 @@ test("session views join Sessions to their Stacks and tolerate null facets", () 
   ];
   const [one, two] = sessionViews(sessions, [pr("s1", { number: 8, repo: "acme/api" })]);
   assert.equal(one.title, "Fix the flaky test");
+  assert.equal(one.untitled, false);
   assert.equal(one.status.lamp, "act");
   assert.equal(one.cde, "flow");
   assert.equal(one.repo, "acme/api");
@@ -217,7 +218,9 @@ test("session views join Sessions to their Stacks and tolerate null facets", () 
     one.stack.map((p) => [p.pos, p.number, p.jira, p.title]),
     [[1, 8, "ABC-12", "Add widgets"]],
   );
-  assert.equal(two.title, "s2");
+  // Until its first Stop writes a title, a Session shows a placeholder, not its id.
+  assert.equal(two.title, "New session");
+  assert.equal(two.untitled, true);
   assert.equal(two.repo, null);
   assert.deepEqual(two.stack, []);
   // Without PRs the repo falls back to the cwd's last segment.

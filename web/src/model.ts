@@ -85,7 +85,10 @@ export interface PrView {
 export interface SessionView {
   id: string;
   status: Light & { state: State | null; since: string | null };
+  /** The Session's title, or "New session" until its first Stop writes one. */
   title: string;
+  /** True while `title` is the placeholder. */
+  untitled: boolean;
   repo: string | null;
   cde: string | null;
   started: string | null;
@@ -230,10 +233,12 @@ export function sessionViews(sessions: Session[], prs: Pr[]): SessionView[] {
     const stack = stackOf(s.id, prs);
     const state = s.status?.state ?? null;
     const cwd = s.origin?.cwd;
+    const title = s.context?.title ?? null;
     return {
       id: s.id,
       status: { ...statusLight(state), state, since: s.status?.at ?? null },
-      title: s.context?.title ?? s.id,
+      title: title ?? "New session",
+      untitled: title == null,
       repo: stack[0]?.repo ?? (cwd ? cwd.split("/").filter(Boolean).pop() ?? null : null),
       cde: s.origin?.cde ?? null,
       started: s.origin?.at ?? null,

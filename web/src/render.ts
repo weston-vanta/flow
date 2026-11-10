@@ -35,13 +35,13 @@ function sessionRow(v: SessionView, i: number, collapsed: Set<string>): string {
     const s = stackLight(v.stack);
     return `<section class="srow folded" data-toggle="${esc(v.id)}" title="Show this Session">
       <div class="sidx">${idx}</div>
-      <div class="sline">${stat}<b>${esc(v.title)}</b><span class="cde">${esc(v.cde ?? "unknown CDE")}</span>${lamp(s.lamp, `Stack: ${s.tip}`)}</div>
+      <div class="sline">${stat}<b${v.untitled ? ' class="untitled"' : ""}>${esc(v.title)}</b><span class="cde">${esc(v.cde ?? "unknown CDE")}</span>${lamp(s.lamp, `Stack: ${s.tip}`)}</div>
     </section>`;
   }
   const head = `<div class="sidx">${idx}<button class="fold" data-toggle="${esc(v.id)}" title="Collapse this Session">−</button></div>
     <div class="sinfo">
       ${stat}
-      <h2>${esc(v.title)}</h2>
+      <h2${v.untitled ? ' class="untitled"' : ""}>${esc(v.title)}</h2>
       ${v.activity ? `<p class="activity" title="${esc(v.activity)}">${esc(v.activity)}</p>` : ""}
       <div class="smeta">
         ${v.repo ? `<span class="mono">${esc(v.repo)}</span>` : ""}
