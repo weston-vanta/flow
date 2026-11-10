@@ -189,7 +189,11 @@ fn read_facet(path: &Path) -> Result<Option<Facet>> {
             Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
             Err(err) => return Err(err.into()),
         };
-        let file: FacetFile = serde_json::from_slice(&bytes)?;
+        // Two writers racing in place can leave stray bytes after a complete document.
+        let file: FacetFile = serde_json::Deserializer::from_slice(&bytes)
+            .into_iter()
+            .next()
+            .context("empty facet file")??;
         Ok(Some(Facet {
             at: file.at.parse()?,
             value: file.value,

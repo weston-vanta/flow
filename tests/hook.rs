@@ -117,6 +117,24 @@ fn every_event_in_the_table_writes_its_facets() {
 }
 
 #[test]
+fn status_at_moves_only_when_the_state_changes() {
+    let ts = TestStore::new();
+    let repo = ts.scratch("repo");
+    hook(&ts, event("user-prompt-submit", ID, &repo), &[]);
+    let running_at = at(&ts.session(ID)["status"]);
+
+    hook(&ts, event("post-tool-use", ID, &repo), &[]);
+    let status = &ts.session(ID)["status"];
+    assert_eq!(status["state"], "running");
+    assert_eq!(at(status), running_at);
+
+    hook(&ts, event("stop", ID, &repo), &[]);
+    let status = &ts.session(ID)["status"];
+    assert_eq!(status["state"], "idle");
+    assert!(at(status) > running_at);
+}
+
+#[test]
 fn stop_rereads_the_branch() {
     let ts = TestStore::new();
     let repo = ts.scratch("repo");

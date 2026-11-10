@@ -103,3 +103,18 @@ fn hook_is_hidden_from_help() {
     assert!(help.contains("session"), "{help}");
     assert!(!help.contains("hook"), "{help}");
 }
+
+#[test]
+fn a_facet_file_with_trailing_bytes_reads_as_its_first_document() {
+    let ts = TestStore::new();
+    put_status(&ts, "torn", "idle");
+    // A longer racing write left its tail after the shorter one.
+    let path = ts.store_path().join("session/torn/status.json");
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes.extend_from_slice(b"ing\"}}");
+    std::fs::write(&path, bytes).unwrap();
+
+    let sessions = ts.sessions();
+    assert_eq!(sessions.len(), 1, "{sessions:?}");
+    assert_eq!(sessions[0]["status"]["state"], "idle");
+}

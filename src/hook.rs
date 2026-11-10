@@ -9,7 +9,7 @@ use anyhow::{Result, bail};
 use jiff::Timestamp;
 use serde::Deserialize;
 
-use crate::session::{Activity, Context, Origin, Session, State, Status};
+use crate::session::{self, Activity, Context, Origin, Session, SessionFacet, State, Status};
 use crate::store::{self, Store};
 use crate::transcript;
 
@@ -32,7 +32,16 @@ struct HookInput {
 pub fn handle_hook(store: &Store, stdin: &str, at: Timestamp) -> Result<()> {
     let input: HookInput = serde_json::from_str(stdin)?;
     let id = input.session_id.as_str();
-    let status = |state| Session::put(store, id, &Status { state }, at).map(drop);
+    // Only a change of state is written, so `status.at` is when the Session entered its state.
+    let status = |state| -> Result<()> {
+        let status = serde_json::to_value(Status { state })?;
+        let stored = store.get(session::KIND, id).ok().flatten();
+        let stored = stored.as_ref().and_then(|e| e.facets.get(Status::NAME));
+        if stored.map(|f| &f.value) != Some(&status) {
+            Session::put(store, id, &Status { state }, at)?;
+        }
+        Ok(())
+    };
     let transcript = || {
         input
             .transcript_path
@@ -43,7 +52,7 @@ pub fn handle_hook(store: &Store, stdin: &str, at: Timestamp) -> Result<()> {
     let branch = || git_branch(input.cwd.as_deref());
     match input.hook_event_name.as_str() {
         "SessionStart" => {
-            // Status first: it needs no lookup, so it lands even if the gitpod call below
+            // Status first: it is cheap, so it lands even if the gitpod call below
             // outlives the hook's timeout.
             status(State::Idle)?;
             let env = |name| std::env::var(name).ok().filter(|v: &String| !v.is_empty());
