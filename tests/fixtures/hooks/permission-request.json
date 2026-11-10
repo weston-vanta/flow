@@ -1,0 +1,25 @@
+{
+  "session_id": "8f2c1a7e-3b4d-4e5f-9a6b-1c2d3e4f5a6b",
+  "transcript_path": "/home/vscode/.claude/projects/-workspaces-obsidian/8f2c1a7e-3b4d-4e5f-9a6b-1c2d3e4f5a6b.jsonl",
+  "cwd": "/workspaces/obsidian",
+  "permission_mode": "default",
+  "hook_event_name": "PermissionRequest",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "rm -rf node_modules",
+    "description": "Remove node_modules directory"
+  },
+  "permission_suggestions": [
+    {
+      "type": "addRules",
+      "rules": [
+        {
+          "toolName": "Bash",
+          "ruleContent": "rm -rf node_modules"
+        }
+      ],
+      "behavior": "allow",
+      "destination": "localSettings"
+    }
+  ]
+}

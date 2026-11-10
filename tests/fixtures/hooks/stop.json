@@ -1,0 +1,11 @@
+{
+  "session_id": "8f2c1a7e-3b4d-4e5f-9a6b-1c2d3e4f5a6b",
+  "transcript_path": "/home/vscode/.claude/projects/-workspaces-obsidian/8f2c1a7e-3b4d-4e5f-9a6b-1c2d3e4f5a6b.jsonl",
+  "cwd": "/workspaces/obsidian",
+  "permission_mode": "default",
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "I fixed the flaky test and opened the PR.",
+  "background_tasks": [],
+  "session_crons": []
+}
