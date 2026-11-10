@@ -28,12 +28,24 @@ struct Args {
 /// How often the retention sweep runs after the one at start.
 const SWEEP_EVERY: Duration = Duration::from_secs(60 * 60);
 
-/// The frontend, embedded at build time: (path, content type, body).
-const ASSETS: &[(&str, &str, &[u8])] = &[(
-    "/",
-    "text/html; charset=utf-8",
-    include_bytes!("../../web/index.html"),
-)];
+/// The frontend bundle (`web/dist`), embedded at build time: (path, content type, body).
+const ASSETS: &[(&str, &str, &[u8])] = &[
+    (
+        "/",
+        "text/html; charset=utf-8",
+        include_bytes!("../../web/dist/index.html"),
+    ),
+    (
+        "/app.js",
+        "text/javascript; charset=utf-8",
+        include_bytes!("../../web/dist/app.js"),
+    ),
+    (
+        "/app.css",
+        "text/css; charset=utf-8",
+        include_bytes!("../../web/dist/app.css"),
+    ),
+];
 
 fn main() -> ExitCode {
     let args = Args::parse();
