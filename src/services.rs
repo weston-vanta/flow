@@ -1,5 +1,6 @@
 //! The reads the binaries call: the same functions back `flow` and `flowd`.
 
+use std::collections::HashSet;
 use std::process::{Command, ExitStatus};
 
 use anyhow::{Context as _, Result, bail};
@@ -7,19 +8,16 @@ use jiff::Timestamp;
 
 use crate::branch;
 use crate::pr::{self, Pr};
+use crate::retention;
 use crate::session::{self, Session};
 use crate::store::Store;
 
 /// The `help` of the `{error, help}` JSON both binaries return when a read of the Store fails.
 pub const STORE_ERROR_HELP: &str = "the Store could not be read or holds a malformed facet; the error names the path (FLOW_STORE, default /efs-home/flow/store)";
 
-/// Every Session in the Store, ordered by id. No listing rule yet.
+/// Every listed Session, ordered by id: see [`retention::is_listed`].
 pub fn session_list(store: &Store) -> Result<Vec<Session>> {
-    store
-        .list(session::KIND)?
-        .iter()
-        .map(Session::from_entity)
-        .collect()
+    Ok(listing(store)?.0)
 }
 
 /// The Session with `id`, if any of its facets has been written.
@@ -31,9 +29,13 @@ pub fn session_get(store: &Store, id: &str) -> Result<Option<Session>> {
         .transpose()
 }
 
-/// Every PR that has an owner, ordered by key, each with its derived `owner`. No listing
-/// rule yet.
+/// Every PR whose owner is a listed Session, ordered by key, each with its derived `owner`.
 pub fn pr_list(store: &Store) -> Result<Vec<Pr>> {
+    Ok(listing(store)?.1)
+}
+
+/// The listed Sessions and the PRs they own, under the listing rule at this moment.
+fn listing(store: &Store) -> Result<(Vec<Session>, Vec<Pr>)> {
     let owners = branch::owners(store)?;
     let mut prs = Vec::new();
     for entity in store.list(pr::KIND)? {
@@ -43,7 +45,17 @@ pub fn pr_list(store: &Store) -> Result<Vec<Pr>> {
             prs.push(pr);
         }
     }
-    Ok(prs)
+    let now = Timestamp::now();
+    let mut sessions = Vec::new();
+    for entity in store.list(session::KIND)? {
+        let session = Session::from_entity(&entity)?;
+        if retention::is_listed(&session, &prs, now) {
+            sessions.push(session);
+        }
+    }
+    let listed: HashSet<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
+    prs.retain(|pr| pr.owner.as_deref().is_some_and(|o| listed.contains(o)));
+    Ok((sessions, prs))
 }
 
 /// The PR keyed `key` (`owner/repo#number`), owned or not, with its derived `owner`.

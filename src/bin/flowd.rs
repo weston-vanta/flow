@@ -5,13 +5,16 @@
 
 use std::io::Cursor;
 use std::process::ExitCode;
+use std::thread;
+use std::time::Duration;
 
 use clap::Parser;
+use jiff::Timestamp;
 use serde::Serialize;
 use tiny_http::{Header, Method, Request, Response, Server};
 
-use flow::services;
 use flow::store::Store;
+use flow::{retention, services};
 
 /// Serve flow's read API and web app on 127.0.0.1.
 #[derive(Parser)]
@@ -21,6 +24,9 @@ struct Args {
     #[arg(long, env = "FLOWD_PORT", default_value_t = 7171)]
     port: u16,
 }
+
+/// How often the retention sweep runs after the one at start.
+const SWEEP_EVERY: Duration = Duration::from_secs(60 * 60);
 
 /// The frontend, embedded at build time: (path, content type, body).
 const ASSETS: &[(&str, &str, &[u8])] = &[(
@@ -46,6 +52,8 @@ fn main() -> ExitCode {
     println!("flowd listening on http://{addr}");
     // The PR Writer's poll loop and the retention sweep start here, each as a `std::thread`
     // over a clone of `store`, before serving takes over this thread.
+    let sweep_store = store.clone();
+    thread::spawn(move || sweep_loop(&sweep_store));
     for request in server.incoming_requests() {
         let response = respond(&store, &request);
         if let Err(err) = request.respond(response) {
@@ -53,6 +61,16 @@ fn main() -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+/// Runs the retention sweep now and then every [`SWEEP_EVERY`], forever. Errors go to stderr.
+fn sweep_loop(store: &Store) {
+    loop {
+        if let Err(err) = retention::sweep(store, Timestamp::now()) {
+            eprintln!("flowd: retention sweep failed: {err:#}");
+        }
+        thread::sleep(SWEEP_EVERY);
+    }
 }
 
 fn respond(store: &Store, request: &Request) -> Response<Cursor<Vec<u8>>> {

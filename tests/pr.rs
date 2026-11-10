@@ -85,6 +85,19 @@ fn put_pr(ts: &TestStore, repo: &str, number: u64, head: &str) {
         .unwrap();
 }
 
+/// Records Session `id` as running, so the PRs it owns are listed.
+fn put_session(ts: &TestStore, id: &str) {
+    ts.store()
+        .put_facet(
+            "session",
+            id,
+            "status",
+            &json!({ "state": "running" }),
+            Timestamp::now(),
+        )
+        .unwrap();
+}
+
 fn prs(ts: &TestStore) -> Vec<Value> {
     let out = ts.flow().args(["pr", "list"]).assert().success();
     serde_json::from_slice(&out.get_output().stdout).unwrap()
@@ -145,6 +158,8 @@ fn the_later_reporter_owns_the_pr() {
     let dir = repo(&ts, "git@github.com:acme/widgets.git");
     fake_wt(&ts, 0);
     put_pr(&ts, "acme/widgets", 7, "feat/x");
+    put_session(&ts, "first");
+    put_session(&ts, "second");
     wt_create(&ts, &dir, Some("first"), &["feat/x"]).success();
     assert_eq!(prs(&ts)[0]["owner"], "first");
     wt_create(&ts, &dir, Some("second"), &["feat/x"]).success();
@@ -201,6 +216,7 @@ fn unowned_prs_are_left_out_of_the_list_but_can_be_got() {
     put_pr(&ts, "acme/widgets", 7, "feat/x");
     put_pr(&ts, "acme/widgets", 8, "feat/y");
     put_pr(&ts, "acme/other", 7, "feat/x");
+    put_session(&ts, "s1");
     wt_create(&ts, &dir, Some("s1"), &["feat/x"]).success();
 
     let listed = prs(&ts);
