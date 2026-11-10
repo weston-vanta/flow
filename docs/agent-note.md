@@ -1,6 +1,7 @@
 ## flow
 
-flow records every Claude Code Session on every CDE and the PRs each one owns.
+flow records every Claude Code Session on every CDE and the PRs each one owns. `flow guide`
+prints this note.
 
 - Create worktrees with `flow wt create <branch> [wt args]`, never plain `wt create`: it runs
   `wt create` and records this Session as the owner of the branch's PRs.

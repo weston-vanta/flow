@@ -1,0 +1,13 @@
+{
+  "name": "flow",
+  "description": "flow's Claude Code hooks, which record every Session in the flow Store.",
+  "owner": {
+    "name": "flow"
+  },
+  "plugins": [
+    {
+      "name": "flow",
+      "source": "./plugin"
+    }
+  ]
+}

@@ -15,6 +15,9 @@ use flow::hook;
 use flow::services;
 use flow::store::Store;
 
+/// The agent note, `docs/agent-note.md`, printed by `flow guide`.
+const AGENT_NOTE: &str = include_str!("../../docs/agent-note.md");
+
 /// Every Session on every CDE, with the PRs each one owns.
 #[derive(Parser)]
 #[command(name = "flow")]
@@ -34,6 +37,8 @@ enum Command {
     /// Create worktrees through `wt`, recording the calling Session as the owner.
     #[command(subcommand)]
     Wt(WtCommand),
+    /// Print the agent note: how agents use flow.
+    Guide,
     /// Record a Claude Code hook event read from stdin. Run by Claude Code, not by hand.
     #[command(hide = true)]
     Hook,
@@ -108,6 +113,10 @@ fn main() -> ExitCode {
             Err(err) => store_error(&err),
         },
         Some(Command::Wt(WtCommand::Create { branch, args })) => wt_create(&store, &branch, &args),
+        Some(Command::Guide) => {
+            print!("{AGENT_NOTE}");
+            ExitCode::SUCCESS
+        }
         Some(Command::Hook) => run_hook(&store, started),
     }
 }

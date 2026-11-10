@@ -1,0 +1,4 @@
+{
+  "name": "flow",
+  "description": "Runs `flow hook` on every Session event so flow records the Session."
+}

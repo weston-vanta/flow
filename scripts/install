@@ -3,6 +3,10 @@
 # shared bin directory: the first argument, or /efs-home/flow/bin. Each binary is copied to
 # a temp file beside its destination and renamed over it, so a running `flowd` keeps its old
 # binary and a hook starting `flow` never sees a partial file.
+#
+# Also installs the Claude Code plugin marketplace in `claude/` (the `flow@flow` plugin, which
+# registers `flow hook`) to `claude` beside the bin directory: built in a temp directory, then
+# renamed into place.
 set -euo pipefail
 
 dest=${1:-/efs-home/flow/bin}
@@ -22,3 +26,17 @@ for bin in flow flowd; do
   mv -f "$tmp" "$dest/$bin"
   echo "installed $dest/$bin"
 done
+
+claude=$(dirname "$dest")/claude
+tmp=$(mktemp -d "$claude.XXXXXX")
+cp -R claude/. "$tmp"
+chmod -R a+rX "$tmp"
+if [[ -e "$claude" ]]; then
+  old=$(mktemp -d "$claude.old.XXXXXX")
+  mv "$claude" "$old/"
+  mv "$tmp" "$claude"
+  rm -rf "$old"
+else
+  mv "$tmp" "$claude"
+fi
+echo "installed $claude"

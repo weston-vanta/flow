@@ -11,6 +11,9 @@ hard-to-reverse choices in [docs/adr/](docs/adr/).
 
 On the Flow CDE, `scripts/install` builds the frontend and both release binaries and installs
 `flow` and `flowd` into `/efs-home/flow/bin` (or the directory given as its argument),
-replacing each by rename. A running `flowd` keeps its old binary until restarted. Each CDE's
-dotfiles put that directory on PATH and copy [the agent note](docs/agent-note.md) into the
-agents' instructions.
+replacing each by rename. A running `flowd` keeps its old binary until restarted. It also
+installs the Claude Code plugin marketplace in `claude/` to `/efs-home/flow/claude` (beside the
+bin directory): marketplace `flow`, plugin `flow`, whose hooks run `flow hook` on every Session
+event. Each CDE's dotfiles enable `flow@flow` through `extraKnownMarketplaces` (a `directory`
+source at `/efs-home/flow/claude`) and `enabledPlugins`, put the bin directory on PATH, and
+point agents at `flow guide`, which prints [the agent note](docs/agent-note.md).
