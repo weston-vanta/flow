@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Stdio};
 
 use assert_cmd::Command;
-use assert_cmd::cargo::CommandCargoExt as _;
+use assert_cmd::cargo::cargo_bin;
 use flow::store::Store;
 use serde_json::Value;
 use tempfile::TempDir;
@@ -42,8 +42,13 @@ impl TestStore {
 
     /// Starts `flowd` on a free loopback port over this Store; it is killed on drop.
     pub fn flowd(&self) -> Flowd {
+        self.flowd_at(&cargo_bin("flowd"))
+    }
+
+    /// Starts the `flowd` binary at `path` as `flowd()` does.
+    pub fn flowd_at(&self, path: &Path) -> Flowd {
         let mut child = self
-            .std_command("flowd")
+            .std_command(path)
             .args(["--port", "0"])
             .stdout(Stdio::piped())
             .spawn()
@@ -112,11 +117,11 @@ impl TestStore {
     }
 
     fn command(&self, bin: &str) -> Command {
-        Command::from_std(self.std_command(bin))
+        Command::from_std(self.std_command(&cargo_bin(bin)))
     }
 
-    fn std_command(&self, bin: &str) -> std::process::Command {
-        let mut cmd = std::process::Command::cargo_bin(bin).expect("binary built by cargo");
+    fn std_command(&self, program: &Path) -> std::process::Command {
+        let mut cmd = std::process::Command::new(program);
         cmd.env("FLOW_STORE", self.store_path());
         for name in INHERITED_ENV {
             cmd.env_remove(name);

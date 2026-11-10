@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Builds the frontend and both release binaries, then installs `flow` and `flowd` into a
+# shared bin directory: the first argument, or /efs-home/flow/bin. Each binary is copied to
+# a temp file beside its destination and renamed over it, so a running `flowd` keeps its old
+# binary and a hook starting `flow` never sees a partial file.
+set -euo pipefail
+
+dest=${1:-/efs-home/flow/bin}
+cd "$(dirname "$0")/.."
+
+if [[ -f web/package.json ]]; then
+  npm --prefix web ci
+  npm --prefix web run build
+fi
+cargo build --release
+
+mkdir -p "$dest"
+for bin in flow flowd; do
+  tmp=$(mktemp "$dest/.$bin.XXXXXX")
+  cp "${CARGO_TARGET_DIR:-target}/release/$bin" "$tmp"
+  chmod 755 "$tmp"
+  mv -f "$tmp" "$dest/$bin"
+  echo "installed $dest/$bin"
+done
