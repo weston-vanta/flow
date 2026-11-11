@@ -92,8 +92,10 @@
     return s.status?.state === "running" || a.reply == null ? a.prompt : a.reply;
   }
   function sessionViews(sessions2, prs2) {
-    const done = (s) => s.status?.state === "done";
-    return [...sessions2.filter((s) => !done(s)), ...sessions2.filter(done)].map((s) => {
+    const done = (s) => s.status?.state === "done" ? 1 : 0;
+    const started = (s) => s.origin ? Date.parse(s.origin.at) : -Infinity;
+    const sorted = [...sessions2].sort((a, b) => done(a) - done(b) || started(b) - started(a));
+    return sorted.map((s) => {
       const stack = stackOf(s.id, prs2);
       const state = s.status?.state ?? null;
       const cwd = s.origin?.cwd;

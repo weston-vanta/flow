@@ -225,13 +225,28 @@ test("session views join Sessions to their Stacks and tolerate null facets", () 
   assert.equal(sessionViews([sessions[0]], [])[0].repo, "obsidian");
 });
 
-test("done Sessions go last, in flowd's order otherwise", () => {
-  const st = (state: "running" | "done" | "idle") => ({ status: { at: AT, state } });
+test("done Sessions go last; each group newest first, unstarted last", () => {
+  const S = (id: string, state: "running" | "done" | "idle", startedMin: number | null) =>
+    session(id, {
+      status: { at: AT, state },
+      origin:
+        startedMin == null
+          ? null
+          : {
+              at: new Date(Date.parse(AT) - startedMin * 60_000).toISOString(),
+              cde: null,
+              cdeId: null,
+              pane: null,
+              herdrSocket: null,
+              cwd: null,
+              transcriptPath: null,
+            },
+    });
   const ids = sessionViews(
-    [session("a", st("done")), session("b", st("running")), session("c", st("done")), session("d", st("idle")), session("e")],
+    [S("a", "done", 5), S("b", "running", 30), S("c", "done", 1), S("d", "idle", 2), S("e", "running", null)],
     [],
   ).map((v) => v.id);
-  assert.deepEqual(ids, ["b", "d", "e", "a", "c"]);
+  assert.deepEqual(ids, ["d", "b", "e", "c", "a"]);
 });
 
 test("folded Session light: act if waiting or any PR needs attention, else fine", () => {

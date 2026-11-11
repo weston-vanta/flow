@@ -213,10 +213,13 @@ export function activityLine(s: Session): string | null {
   return s.status?.state === "running" || a.reply == null ? a.prompt : a.reply;
 }
 
-/** Sessions in flowd's order, done ones last. */
+/** Done Sessions last; within each group the most recently started first, then those with no
+ * start time. */
 export function sessionViews(sessions: Session[], prs: Pr[]): SessionView[] {
-  const done = (s: Session) => s.status?.state === "done";
-  return [...sessions.filter((s) => !done(s)), ...sessions.filter(done)].map((s) => {
+  const done = (s: Session) => (s.status?.state === "done" ? 1 : 0);
+  const started = (s: Session) => (s.origin ? Date.parse(s.origin.at) : -Infinity);
+  const sorted = [...sessions].sort((a, b) => done(a) - done(b) || started(b) - started(a));
+  return sorted.map((s) => {
     const stack = stackOf(s.id, prs);
     const state = s.status?.state ?? null;
     const cwd = s.origin?.cwd;
