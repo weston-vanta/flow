@@ -74,11 +74,12 @@ fn listing(store: &Store) -> Result<(Vec<Session>, Vec<Pr>)> {
             prs.push(pr);
         }
     }
+    let reporters: HashSet<&str> = owners.values().map(String::as_str).collect();
     let now = Timestamp::now();
     let mut sessions = Vec::new();
     for entity in store.list(session::KIND)? {
         let session = Session::from_entity(&entity)?;
-        if retention::is_listed(&session, &prs, now) {
+        if retention::is_listed(&session, &prs, reporters.contains(session.id.as_str()), now) {
             sessions.push(session);
         }
     }

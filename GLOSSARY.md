@@ -17,7 +17,7 @@ _Avoid_: supervisor host, main CDE
 ### Work
 
 **Session**:
-One Claude Code conversation running in a herdr pane on some CDE, identified by its Claude session id. Its record outlives the pane. Its status is one of running, waiting for you, idle (alive, not working) or done (the conversation ended: exited, cleared, or its pane closed). `/clear` ends one Session and starts another in the same pane; resuming a conversation continues the same Session. A done Session stays listed while it owns an open PR, and for a day after it has none.
+One Claude Code conversation running in a herdr pane on some CDE, identified by its Claude session id. Its record outlives the pane. Its status is one of running, waiting for you, idle (alive, not working) or done (the conversation ended: exited, cleared, or its pane closed). `/clear` ends one Session and starts another in the same pane; resuming a conversation continues the same Session. A done Session stays listed while it owns an open PR, and for a day after it has none; one that never created a worktree stays listed only five minutes.
 _Avoid_: agent, worker, task, conversation
 
 **Activity**:

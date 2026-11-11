@@ -14,18 +14,27 @@ use crate::store::{Entity, Store};
 /// How long a done Session that owns no open PR stays listed after its last news.
 pub const LISTED_FOR: SignedDuration = SignedDuration::from_hours(24);
 
+/// How long a done Session that reports no Branch (it never created a worktree, or every
+/// Branch it did was since taken over) stays listed after its `status.at`.
+pub const LISTED_WITHOUT_WORKTREE_FOR: SignedDuration = SignedDuration::from_mins(5);
+
 /// How old an entity's newest facet must be before the sweep removes it.
 pub const KEPT_FOR: SignedDuration = SignedDuration::from_hours(30 * 24);
 
-/// Whether `session` is listed at `now`, given `prs` with their derived owners. A non-done
-/// Session always is. A done one is while it owns an open PR, else until [`LISTED_FOR`]
-/// after the later of its `status.at` and the newest `github.at` of the PRs it owns.
-pub fn is_listed(session: &Session, prs: &[Pr], now: Timestamp) -> bool {
+/// Whether `session` is listed at `now`, given `prs` with their derived owners and whether
+/// it `reports_branch`. A non-done Session always is. A done one that reports no Branch is
+/// until [`LISTED_WITHOUT_WORKTREE_FOR`] after its `status.at`. Any other done one is while
+/// it owns an open PR, else until [`LISTED_FOR`] after the later of its `status.at` and the
+/// newest `github.at` of the PRs it owns.
+pub fn is_listed(session: &Session, prs: &[Pr], reports_branch: bool, now: Timestamp) -> bool {
     let Some(status) = &session.status else {
         return true;
     };
     if status.value.state != State::Done {
         return true;
+    }
+    if !reports_branch {
+        return now.duration_since(status.at) < LISTED_WITHOUT_WORKTREE_FOR;
     }
     let mut last = status.at;
     let owned = prs

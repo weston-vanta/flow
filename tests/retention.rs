@@ -18,6 +18,11 @@ fn ago(hours: i64) -> Timestamp {
     Timestamp::now() - SignedDuration::from_hours(hours)
 }
 
+/// `minutes` ago.
+fn ago_minutes(minutes: i64) -> Timestamp {
+    Timestamp::now() - SignedDuration::from_mins(minutes)
+}
+
 fn put_status(ts: &TestStore, id: &str, state: &str, at: Timestamp) {
     ts.store()
         .put_facet("session", id, "status", &json!({ "state": state }), at)
@@ -92,8 +97,11 @@ fn the_cli_and_flowd_list_the_same_sessions_and_prs() {
     put_status(&ts, "open-pr", "done", ago(2 * DAY));
     put_branch(&ts, "feat/open", "open-pr", ago(2 * DAY));
     put_pr(&ts, 1, "feat/open", "OPEN", ago(1));
-    // Done within 24 h.
+    // Done within 24 h, with a worktree but no PR.
     put_status(&ts, "recent", "done", ago(1));
+    put_branch(&ts, "feat/recent", "recent", ago(2));
+    // Done over 5 min ago, and never created a worktree.
+    put_status(&ts, "scratch", "done", ago_minutes(6));
     // Done past 24 h; its PR closed past 24 h too.
     put_status(&ts, "stale", "done", ago(2 * DAY));
     put_branch(&ts, "feat/stale", "stale", ago(3 * DAY));
@@ -139,6 +147,24 @@ fn session_start(ts: &TestStore, id: &str) {
 fn owner(ts: &TestStore, pr: &str) -> Value {
     let pr: Value = serde_json::from_str(&cli(ts, &["pr", "get", pr])).unwrap();
     pr["owner"].clone()
+}
+
+#[test]
+fn a_done_session_that_created_no_worktree_is_listed_for_five_minutes() {
+    let ts = TestStore::new();
+    put_status(&ts, "fresh", "done", ago_minutes(4));
+    put_status(&ts, "ended", "done", ago_minutes(6));
+    // Its Branch was taken over by a later Session's worktree, so it reports none.
+    put_status(&ts, "superseded", "done", ago_minutes(6));
+    put_branch(&ts, "feat/taken", "superseded", ago_minutes(30));
+    put_branch(&ts, "feat/taken", "fresh", ago_minutes(10));
+    // Reports a Branch with no PR: the 24 h window.
+    put_status(&ts, "worktree", "done", ago_minutes(6));
+    put_branch(&ts, "feat/wt", "worktree", ago_minutes(30));
+
+    let sessions = cli(&ts, &["session", "list"]);
+    assert_eq!(field(&sessions, "id"), ["fresh", "worktree"]);
+    assert!(exists(&ts, "session", "ended"));
 }
 
 #[test]
