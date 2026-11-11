@@ -10,7 +10,7 @@ test("web/dist matches a fresh build of web/src (run `npm --prefix web run build
   const fresh = mkdtempSync(join(tmpdir(), "flow-web-"));
   await build(fresh);
   const dist = new URL("../dist/", import.meta.url);
-  for (const file of ["index.html", "app.js", "app.css"]) {
+  for (const file of ["index.html", "favicon.svg", "app.js", "app.css"]) {
     assert.equal(
       readFileSync(new URL(file, dist), "utf8"),
       readFileSync(join(fresh, file), "utf8"),

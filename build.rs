@@ -2,7 +2,12 @@
 
 use std::path::Path;
 
-const BUNDLE: &[&str] = &["web/dist/index.html", "web/dist/app.js", "web/dist/app.css"];
+const BUNDLE: &[&str] = &[
+    "web/dist/index.html",
+    "web/dist/favicon.svg",
+    "web/dist/app.js",
+    "web/dist/app.css",
+];
 
 fn main() {
     println!("cargo::rerun-if-changed=web/dist");

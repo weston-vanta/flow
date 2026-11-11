@@ -1,4 +1,4 @@
-// Bundles src/ into dist/ (index.html, app.js, app.css), which flowd embeds at cargo build time.
+// Bundles src/ into dist/ (index.html, favicon.svg, app.js, app.css), which flowd embeds at cargo build time.
 import { build as esbuild } from "esbuild";
 import { copyFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -17,7 +17,7 @@ export async function build(outdir = join(here, "dist")) {
     outdir,
     logLevel: "warning",
   });
-  copyFileSync(join(here, "src/index.html"), join(outdir, "index.html"));
+  for (const file of ["index.html", "favicon.svg"]) copyFileSync(join(here, "src", file), join(outdir, file));
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) await build();

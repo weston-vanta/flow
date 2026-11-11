@@ -39,6 +39,11 @@ const ASSETS: &[(&str, &str, &[u8])] = &[
         include_bytes!("../../web/dist/index.html"),
     ),
     (
+        "/favicon.svg",
+        "image/svg+xml",
+        include_bytes!("../../web/dist/favicon.svg"),
+    ),
+    (
         "/app.js",
         "text/javascript; charset=utf-8",
         include_bytes!("../../web/dist/app.js"),

@@ -101,7 +101,7 @@ fn serves_the_embedded_page_and_404s_elsewhere() {
     let (status, body) = flowd.get("/");
     assert_eq!(status, 200);
     assert!(body.contains("<title>flow</title>"), "{body}");
-    for asset in ["/app.js", "/app.css"] {
+    for asset in ["/favicon.svg", "/app.js", "/app.css"] {
         let (status, body) = flowd.get(asset);
         assert_eq!(status, 200, "{asset}");
         assert!(!body.is_empty(), "{asset}");
