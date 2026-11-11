@@ -95,7 +95,6 @@ export interface SessionView {
   untitled: boolean;
   repo: string | null;
   cde: string | null;
-  started: string | null;
   activity: string | null;
   stack: PrView[];
 }
@@ -231,7 +230,6 @@ export function sessionViews(sessions: Session[], prs: Pr[]): SessionView[] {
       untitled: title == null,
       repo: stack[0]?.repo ?? (cwd ? cwd.split("/").filter(Boolean).pop() ?? null : null),
       cde: s.origin?.cde ?? null,
-      started: s.origin?.at ?? null,
       activity: activityLine(s),
       stack: stack.map((g, i) => prView(g, i + 1)),
     };

@@ -107,7 +107,6 @@
         untitled: title2 == null,
         repo: stack[0]?.repo ?? (cwd ? cwd.split("/").filter(Boolean).pop() ?? null : null),
         cde: s.origin?.cde ?? null,
-        started: s.origin?.at ?? null,
         activity: activityLine(s),
         stack: stack.map((g, i) => prView(g, i + 1))
       };
@@ -142,10 +141,6 @@
   function esc(s) {
     return String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
   }
-  var ago = (iso) => {
-    const a = age(iso);
-    return a === "just now" ? a : `${a} ago`;
-  };
   var lamp = (l, sm = false) => `<span class="lamp ${l.lamp}${sm ? " sm" : ""}" aria-hidden="true"></span>`;
   var cell = (l) => {
     const count = "count" in l && l.count != null;
@@ -156,41 +151,39 @@
     const tip = `#${p.number} \xB7 ${p.node === "open" ? p.draft ? "draft" : "not yet mergeable" : NODE_TIP[p.node]}`;
     return `<div class="grid grow" role="row">
     ${j > 0 ? '<div class="rule" aria-hidden="true"></div>' : ""}
-    <div class="gnode" role="cell">${j > 0 ? '<div class="up"></div>' : ""}${j < n - 1 ? '<div class="down"></div>' : ""}<a class="node ${p.node}" href="${esc(p.url)}" target="_blank" rel="noreferrer" title="${esc(tip)}" aria-label="Pull request ${esc(tip)}">${p.pos}</a></div>
+    <div class="gnode" role="cell">${j > 0 ? '<div class="up"></div>' : ""}${j < n - 1 ? '<div class="down"></div>' : ""}<a class="node ${p.node}" href="${esc(p.url)}" target="_blank" rel="noreferrer" title="${esc(tip)}" aria-label="Pull request ${esc(tip)}">${n > 1 ? p.pos : ""}</a></div>
     <div class="gtitle" role="cell"><a class="t ${p.node}" href="${esc(p.url)}" target="_blank" rel="noreferrer">${esc(p.title)}</a>${p.jira ? `<span class="jira mono">${esc(p.jira)}</span>` : ""}</div>
     <div class="glines mono" role="cell">+${p.additions} \u2212${p.deletions}</div>
     ${cell(p.base)}${cell(p.ci)}${cell(p.feedback)}${cell(p.review)}
   </div>`;
   }
-  var key = (v, idx, folded) => `<button type="button" class="skey${folded ? " up" : ""}" data-toggle="${esc(v.id)}" aria-expanded="${!folded}" aria-label="${folded ? "Expand" : "Collapse"} session ${idx}"><span>${idx}</span></button>`;
+  var statusTip = (v) => v.status.since ? `${v.status.tip}, ${age(v.status.since)}` : v.status.tip;
+  var key = (v, folded) => `<button type="button" class="skey${folded ? " up" : ""}" data-toggle="${esc(v.id)}" aria-expanded="${!folded}" title="${esc(statusTip(v))}" aria-label="${folded ? "Expand" : "Collapse"} session: ${esc(v.title)} (${esc(statusTip(v))})"><span>${lamp(v.status, true)}</span></button>`;
   var title = (v, tag) => `<${tag}${v.untitled || v.status.state === "done" ? ' class="muted"' : ""}>${esc(v.title)}</${tag}>`;
-  function status(v) {
-    const since = v.status.since ? ` \xB7 ${age(v.status.since)}` : "";
-    return `<div class="sstat">${lamp(v.status, true)}<span><b class="${v.status.lamp}">${esc(v.status.tip)}</b>${since}</span></div>`;
+  var DOT = '<span class="dot" aria-hidden="true">\xB7</span>';
+  function meta(v) {
+    const since = v.status.since ? ` ${age(v.status.since)}` : "";
+    return `<span class="smeta"><span>${esc(v.cde ?? "unknown CDE")}</span>${v.repo ? `${DOT}<span class="repo mono" title="${esc(v.repo)}">${esc(v.repo)}</span>` : ""}${DOT}<span title="${esc(statusTip(v))}"><span class="${v.status.lamp}">${esc(v.status.state ?? "unknown")}</span>${since}</span></span>`;
   }
-  function sessionRow(v, i, toggled2) {
-    const idx = String(i + 1).padStart(2, "0");
-    const cde = esc(v.cde ?? "unknown CDE");
+  function sessionRow(v, toggled2) {
     if (isFolded(v, toggled2)) {
       const a = attentionLight(v);
       return `<section class="srow folded" data-toggle="${esc(v.id)}" aria-label="${esc(v.title)}">
-      <div class="sidx">${key(v, idx, true)}</div>
-      <div class="sline">${title(v, "h2")}${status(v)}<span class="cde">${cde}</span><span class="attn" title="${esc(a.tip)}" aria-label="${esc(a.tip)}">${lamp(a)}</span></div>
+      <div class="sidx">${key(v, true)}</div>
+      <div class="sline">${title(v, "h2")}<span class="attn" title="${esc(a.tip)}" aria-label="${esc(a.tip)}">${lamp(a)}</span></div>
     </section>`;
     }
     const activity = v.activity?.replace(/\s+/g, " ");
-    const info = `<div class="sinfo">
-      <div class="smeta">
-        ${activity ? `<span class="activity" title="${esc(v.activity)}">${esc(activity)}</span>` : ""}
-        <span>${cde}${v.repo ? ` \xB7 <span class="mono">${esc(v.repo)}</span>` : ""}${v.started ? ` \xB7 started ${ago(v.started)}` : ""}</span>
-      </div>
-    </div>`;
+    const info = `<div class="sess">${title(v, "h2")}<div class="sctx">
+      ${activity ? `<span class="activity" title="${esc(v.activity)}">${esc(activity)}</span>` : ""}
+      ${meta(v)}
+    </div></div>`;
     const body = v.stack.length ? `<div class="scroll"><div role="table" aria-label="Pull requests">
         <div class="grid ghead" role="row"><span></span><span></span><span></span><span role="columnheader">base</span><span role="columnheader">CI</span><span role="columnheader">feedback</span><span role="columnheader">review</span></div>
         ${v.stack.map((p, j) => prRow(p, j, v.stack.length)).join("")}
       </div></div>` : `<div class="noprs"><span class="ring" aria-hidden="true"></span><span>No pull requests yet</span></div>`;
-    return `<section class="srow" aria-label="${esc(v.title)}"><div class="sidx">${key(v, idx, false)}</div>
-    <div class="sbody"><div class="shead">${title(v, "h2")}${status(v)}</div><div class="sdetail">${info}<div class="sprs">${body}</div></div></div>
+    return `<section class="srow" aria-label="${esc(v.title)}"><div class="sidx">${key(v, false)}</div>
+    ${info}<div class="sprs">${body}</div>
   </section>`;
   }
   var LEGEND = `<div class="legend" role="note" aria-label="Legend">
@@ -210,7 +203,7 @@
   function render(views, toggled2, notices, legend2) {
     return `<div class="page${notices.length ? " noticed" : ""}">
     <header class="top"><div class="logo" aria-hidden="true"><i></i></div><div class="brand"><b>flow</b><span>agent sessions and pull requests</span></div></header>
-    <main class="panel">${views.length ? views.map((v, i) => sessionRow(v, i, toggled2)).join("") : '<p class="empty">No Sessions.</p>'}</main>
+    <main class="panel">${views.length ? views.map((v) => sessionRow(v, toggled2)).join("") : '<p class="empty">No Sessions.</p>'}</main>
     <footer><button type="button" class="hint" data-legend aria-expanded="${legend2}" aria-keyshortcuts="h"><kbd class="${legend2 ? "down" : ""}">h</kbd><span>legend</span></button></footer>
   </div>
   <div class="dock">

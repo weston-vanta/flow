@@ -225,7 +225,7 @@ a.node:hover {
   background: #F7F4F5;
   box-shadow: inset 0 1px 1px rgba(36, 6, 66, .05);
 }
-.skey span {
+.skey > span {
   width: 24px;
   height: 24px;
   border-radius: 50%;
@@ -234,14 +234,6 @@ a.node:hover {
   justify-content: center;
   background: rgba(36, 6, 66, .02);
   box-shadow: inset 0 1px 1px rgba(36, 6, 66, .035);
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 1;
-  color: var(--ink);
-  transition: color .12s ease;
-}
-.skey.up span {
-  color: var(--ink2);
 }
 .folded {
   cursor: pointer;
@@ -267,54 +259,24 @@ a.node:hover {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.sline .cde {
-  flex: none;
-  margin-left: auto;
-  font-size: 12px;
-  color: var(--ink2);
-}
 .attn {
   flex: 0 0 64px;
+  margin-left: auto;
   display: flex;
   justify-content: center;
 }
 .muted {
   color: var(--ink3);
 }
-.sbody {
+.sess {
   flex: 1 1 0;
   min-width: 0;
+  padding: 11px 32px 28px 0;
   display: flex;
   flex-direction: column;
+  gap: 10px;
 }
-.shead {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 11px 28px 0 0;
-}
-.shead .sstat {
-  margin-top: 4px;
-}
-@media (max-width: 600px) {
-  .shead {
-    flex-wrap: wrap;
-    row-gap: 6px;
-  }
-}
-.sdetail {
-  display: flex;
-  flex-wrap: wrap;
-}
-.sinfo {
-  flex: 1 1 280px;
-  max-width: 360px;
-  min-width: 0;
-  padding: 10px 32px 28px 0;
-}
-.shead h2 {
-  flex: 0 1 auto;
-  min-width: 0;
+.sess h2 {
   margin: 0;
   font-size: 18px;
   line-height: 24px;
@@ -322,38 +284,56 @@ a.node:hover {
   letter-spacing: -.01em;
   overflow-wrap: anywhere;
 }
-.smeta {
+.sctx {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font-size: 12px;
-  line-height: 16px;
-  color: var(--ink2);
-}
-.sstat {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  line-height: 16px;
   color: var(--ink2);
 }
 .activity {
+  font-size: 13px;
+  line-height: 18px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.sstat b {
-  font-weight: 500;
+.smeta {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 16px;
+  white-space: nowrap;
 }
-.sstat b.act {
+.smeta > span {
+  flex: none;
+}
+.smeta > .repo {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.smeta .dot {
+  padding: 0 5px;
+}
+.smeta .act {
   color: var(--act);
 }
 .sprs {
-  flex: 999 1 640px;
+  flex: 3 1 0;
   min-width: 0;
-  padding: 10px 28px 28px 0;
+  padding: 15px 28px 28px 0;
+}
+@media (max-width: 900px) {
+  .sess {
+    flex-basis: calc(100% - 88px);
+    padding-bottom: 4px;
+  }
+  .sprs {
+    flex-basis: 100%;
+    padding-left: 88px;
+  }
 }
 .scroll {
   overflow-x: auto;
