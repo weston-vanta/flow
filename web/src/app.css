@@ -52,17 +52,21 @@ a.node:hover{box-shadow:0 0 0 4px #EFE6FB}
 .attn{flex:0 0 64px;display:flex;justify-content:center}
 .untitled{color:var(--ink3)}
 
-.sinfo{flex:1 1 280px;max-width:360px;min-width:0;padding:11px 32px 28px 0;display:flex;flex-direction:column;gap:10px}
-.shead{display:flex;flex-wrap:wrap;align-items:flex-start;column-gap:12px;row-gap:6px}
+/* An open Session: the title and status across the top, then its details beside its Stack. */
+.sbody{flex:1 1 0;min-width:0;display:flex;flex-direction:column}
+.shead{display:flex;align-items:flex-start;gap:12px;padding:11px 28px 0 0}
 .shead .sstat{margin-top:4px}
-.sinfo h2{flex:0 1 auto;min-width:0;margin:0;font-size:18px;line-height:24px;font-weight:600;letter-spacing:-.01em;overflow-wrap:anywhere}
+@media (max-width:600px){.shead{flex-wrap:wrap;row-gap:6px}}
+.sdetail{display:flex;flex-wrap:wrap}
+.sinfo{flex:1 1 280px;max-width:360px;min-width:0;padding:10px 32px 28px 0}
+.shead h2{flex:0 1 auto;min-width:0;margin:0;font-size:18px;line-height:24px;font-weight:600;letter-spacing:-.01em;overflow-wrap:anywhere}
 .smeta{display:flex;flex-direction:column;gap:4px;font-size:12px;line-height:16px;color:var(--ink2)}
 .sstat{flex:none;display:flex;align-items:center;gap:8px;font-size:12px;line-height:16px;color:var(--ink2)}
 .activity{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sstat b{font-weight:500}
 .sstat b.act{color:var(--act)}
 
-.sprs{flex:999 1 640px;min-width:0;padding:15px 28px 28px 0}
+.sprs{flex:999 1 640px;min-width:0;padding:10px 28px 28px 0}
 .scroll{overflow-x:auto}
 .grid{display:grid;grid-template-columns:40px minmax(0,1fr) 104px 64px 64px 64px 64px;min-width:680px}
 .ghead{height:15px;margin-bottom:4px;font-size:11px;line-height:15px;color:var(--ink2);text-align:center}

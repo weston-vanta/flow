@@ -177,7 +177,6 @@
     }
     const activity = v.activity?.replace(/\s+/g, " ");
     const info = `<div class="sinfo">
-      <div class="shead">${title(v, "h2")}${status(v)}</div>
       <div class="smeta">
         ${activity ? `<span class="activity" title="${esc(v.activity)}">${esc(activity)}</span>` : ""}
         <span>${cde}${v.repo ? ` \xB7 <span class="mono">${esc(v.repo)}</span>` : ""}${v.started ? ` \xB7 started ${ago(v.started)}` : ""}</span>
@@ -187,7 +186,9 @@
         <div class="grid ghead" role="row"><span></span><span></span><span></span><span role="columnheader">base</span><span role="columnheader">CI</span><span role="columnheader">feedback</span><span role="columnheader">review</span></div>
         ${v.stack.map((p, j) => prRow(p, j, v.stack.length)).join("")}
       </div></div>` : `<div class="noprs"><span class="ring" aria-hidden="true"></span><span>No pull requests yet</span></div>`;
-    return `<section class="srow" aria-label="${esc(v.title)}"><div class="sidx">${key(v, idx, false)}</div>${info}<div class="sprs">${body}</div></section>`;
+    return `<section class="srow" aria-label="${esc(v.title)}"><div class="sidx">${key(v, idx, false)}</div>
+    <div class="sbody"><div class="shead">${title(v, "h2")}${status(v)}</div><div class="sdetail">${info}<div class="sprs">${body}</div></div></div>
+  </section>`;
   }
   var LEGEND = `<div class="legend" role="note" aria-label="Legend">
     <div><span class="lh">lights</span>

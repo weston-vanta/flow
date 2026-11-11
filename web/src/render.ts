@@ -59,7 +59,6 @@ function sessionRow(v: SessionView, i: number, toggled: Set<string>): string {
   }
   const activity = v.activity?.replace(/\s+/g, " ");
   const info = `<div class="sinfo">
-      <div class="shead">${title(v, "h2")}${status(v)}</div>
       <div class="smeta">
         ${activity ? `<span class="activity" title="${esc(v.activity!)}">${esc(activity)}</span>` : ""}
         <span>${cde}${v.repo ? ` · <span class="mono">${esc(v.repo)}</span>` : ""}${v.started ? ` · started ${ago(v.started)}` : ""}</span>
@@ -71,7 +70,9 @@ function sessionRow(v: SessionView, i: number, toggled: Set<string>): string {
         ${v.stack.map((p, j) => prRow(p, j, v.stack.length)).join("")}
       </div></div>`
     : `<div class="noprs"><span class="ring" aria-hidden="true"></span><span>No pull requests yet</span></div>`;
-  return `<section class="srow" aria-label="${esc(v.title)}"><div class="sidx">${key(v, idx, false)}</div>${info}<div class="sprs">${body}</div></section>`;
+  return `<section class="srow" aria-label="${esc(v.title)}"><div class="sidx">${key(v, idx, false)}</div>
+    <div class="sbody"><div class="shead">${title(v, "h2")}${status(v)}</div><div class="sdetail">${info}<div class="sprs">${body}</div></div></div>
+  </section>`;
 }
 
 const LEGEND = `<div class="legend" role="note" aria-label="Legend">
