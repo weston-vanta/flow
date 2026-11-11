@@ -39,7 +39,9 @@ function prRow(p: PrView, j: number, n: number): string {
 const key = (v: SessionView, idx: string, folded: boolean) =>
   `<button type="button" class="skey${folded ? " up" : ""}" data-toggle="${esc(v.id)}" aria-expanded="${!folded}" aria-label="${folded ? "Expand" : "Collapse"} session ${idx}"><span>${idx}</span></button>`;
 
-const title = (v: SessionView, tag: string) => `<${tag}${v.untitled ? ' class="untitled"' : ""}>${esc(v.title)}</${tag}>`;
+/** Untitled and done Sessions show their title muted. */
+const title = (v: SessionView, tag: string) =>
+  `<${tag}${v.untitled || v.status.state === "done" ? ' class="muted"' : ""}>${esc(v.title)}</${tag}>`;
 
 /** The status lamp, its label and the time in status, shown beside the title. */
 function status(v: SessionView): string {

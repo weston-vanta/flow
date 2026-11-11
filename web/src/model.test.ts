@@ -225,6 +225,15 @@ test("session views join Sessions to their Stacks and tolerate null facets", () 
   assert.equal(sessionViews([sessions[0]], [])[0].repo, "obsidian");
 });
 
+test("done Sessions go last, in flowd's order otherwise", () => {
+  const st = (state: "running" | "done" | "idle") => ({ status: { at: AT, state } });
+  const ids = sessionViews(
+    [session("a", st("done")), session("b", st("running")), session("c", st("done")), session("d", st("idle")), session("e")],
+    [],
+  ).map((v) => v.id);
+  assert.deepEqual(ids, ["b", "d", "e", "a", "c"]);
+});
+
 test("folded Session light: act if waiting or any PR needs attention, else fine", () => {
   const view = (state: Session["status"], ...gs: Partial<Github>[]) =>
     sessionViews([session("s", { status: state })], gs.map((g, i) => pr("s", { number: i + 1, ...g })))[0];
@@ -237,10 +246,12 @@ test("folded Session light: act if waiting or any PR needs attention, else fine"
 });
 
 test("done Sessions start folded; a toggle flips the default", () => {
-  const [done, idle] = sessionViews(
+  const views = sessionViews(
     [session("d", { status: { at: AT, state: "done" } }), session("i", { status: { at: AT, state: "idle" } })],
     [],
   );
+  const done = views.find((v) => v.id === "d")!;
+  const idle = views.find((v) => v.id === "i")!;
   assert.equal(isFolded(done, new Set()), true);
   assert.equal(isFolded(idle, new Set()), false);
   assert.equal(isFolded(done, new Set(["d"])), false);

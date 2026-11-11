@@ -278,7 +278,7 @@ a.node:hover {
   display: flex;
   justify-content: center;
 }
-.untitled {
+.muted {
   color: var(--ink3);
 }
 .sbody {

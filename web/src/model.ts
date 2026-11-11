@@ -213,8 +213,10 @@ export function activityLine(s: Session): string | null {
   return s.status?.state === "running" || a.reply == null ? a.prompt : a.reply;
 }
 
+/** Sessions in flowd's order, done ones last. */
 export function sessionViews(sessions: Session[], prs: Pr[]): SessionView[] {
-  return sessions.map((s) => {
+  const done = (s: Session) => s.status?.state === "done";
+  return [...sessions.filter((s) => !done(s)), ...sessions.filter(done)].map((s) => {
     const stack = stackOf(s.id, prs);
     const state = s.status?.state ?? null;
     const cwd = s.origin?.cwd;

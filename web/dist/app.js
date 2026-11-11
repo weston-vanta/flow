@@ -92,7 +92,8 @@
     return s.status?.state === "running" || a.reply == null ? a.prompt : a.reply;
   }
   function sessionViews(sessions2, prs2) {
-    return sessions2.map((s) => {
+    const done = (s) => s.status?.state === "done";
+    return [...sessions2.filter((s) => !done(s)), ...sessions2.filter(done)].map((s) => {
       const stack = stackOf(s.id, prs2);
       const state = s.status?.state ?? null;
       const cwd = s.origin?.cwd;
@@ -160,7 +161,7 @@
   </div>`;
   }
   var key = (v, idx, folded) => `<button type="button" class="skey${folded ? " up" : ""}" data-toggle="${esc(v.id)}" aria-expanded="${!folded}" aria-label="${folded ? "Expand" : "Collapse"} session ${idx}"><span>${idx}</span></button>`;
-  var title = (v, tag) => `<${tag}${v.untitled ? ' class="untitled"' : ""}>${esc(v.title)}</${tag}>`;
+  var title = (v, tag) => `<${tag}${v.untitled || v.status.state === "done" ? ' class="muted"' : ""}>${esc(v.title)}</${tag}>`;
   function status(v) {
     const since = v.status.since ? ` \xB7 ${age(v.status.since)}` : "";
     return `<div class="sstat">${lamp(v.status, true)}<span><b class="${v.status.lamp}">${esc(v.status.tip)}</b>${since}</span></div>`;
