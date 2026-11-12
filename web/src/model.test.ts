@@ -14,8 +14,9 @@ import {
   sessionViews,
   stackOf,
   statusLight,
+  trayView,
 } from "./model.ts";
-import type { Check, Github, Pr, Session } from "./model.ts";
+import type { Check, Github, Pr, Session, Thread } from "./model.ts";
 
 const AT = "2026-11-10T12:00:00.000000Z";
 
@@ -33,12 +34,15 @@ function gh(o: Partial<Github> = {}): Github {
     mergeable: "MERGEABLE",
     reviewDecision: "APPROVED",
     reviewRequests: [],
-    checks: [{ name: "build", status: "COMPLETED", conclusion: "SUCCESS" }],
+    checks: [{ name: "build", status: "COMPLETED", conclusion: "SUCCESS", url: null }],
     stack: null,
     updatedAt: AT,
     additions: 10,
     deletions: 2,
+    changedFiles: 1,
+    reviews: [],
     threads: [],
+    behindSince: null,
     ...o,
   };
 }
@@ -62,6 +66,20 @@ const check = (status: string | null, conclusion: string | null, name = "build")
   name,
   status,
   conclusion,
+  url: `https://ci.example/${name}`,
+});
+
+const NOW = Date.parse(AT);
+const hoursAgo = (h: number) => new Date(NOW - h * 3_600_000).toISOString();
+
+const thread = (o: Partial<Thread> = {}): Thread => ({
+  login: "ana",
+  path: "src/a.ts",
+  line: 3,
+  body: "Rename this.",
+  url: "https://github.com/acme/widgets/pull/7#discussion_r1",
+  createdAt: AT,
+  ...o,
 });
 
 test("base: merged → fine; conflicting → act; else fine", () => {
@@ -69,6 +87,20 @@ test("base: merged → fine; conflicting → act; else fine", () => {
   assert.equal(baseLight(gh({ mergeable: "CONFLICTING" })).lamp, "act");
   assert.equal(baseLight(gh({ mergeable: "MERGEABLE" })).lamp, "fine");
   assert.equal(baseLight(gh({ mergeable: "UNKNOWN" })).lamp, "fine");
+});
+
+test("base: behind the default branch for more than 24h → act; the tip names each reason", () => {
+  const base = (o: Partial<Github>, below: number | null = null) => baseLight(gh(o), below, NOW);
+  assert.equal(base({ behindSince: hoursAgo(23) }).lamp, "fine");
+  assert.equal(base({ behindSince: hoursAgo(25) }).lamp, "act");
+  assert.equal(base({ behindSince: hoursAgo(25), state: "CLOSED" }).lamp, "fine");
+  assert.equal(base({ mergeable: "CONFLICTING" }).tip, "base: merge conflict with main");
+  assert.equal(base({ mergeable: "CONFLICTING" }, 9918).tip, "base: merge conflict with #9918");
+  assert.equal(base({ behindSince: hoursAgo(25) }).tip, "base: behind main since 1 d ago");
+  assert.equal(
+    base({ mergeable: "CONFLICTING", behindSince: hoursAgo(49) }).tip,
+    "base: merge conflict with main · behind main since 2 d ago",
+  );
 });
 
 test("CI: failing → act; not completed → run; else fine, even with no checks", () => {
@@ -84,10 +116,128 @@ test("CI: failing → act; not completed → run; else fine, even with no checks
   assert.match(ciLight(gh({ checks: [ok, check("COMPLETED", "FAILURE", "e2e")] })).tip, /e2e/);
 });
 
-test("feedback: unresolved threads → act unless merged", () => {
-  assert.equal(feedbackLight(gh({ threads: [{}, {}] })).lamp, "act");
-  assert.equal(feedbackLight(gh({ threads: [{}, {}], state: "MERGED" })).lamp, "fine");
+test("feedback: open threads → act unless merged or closed; the tip counts them", () => {
+  assert.equal(feedbackLight(gh({ threads: [thread(), thread()] })).lamp, "act");
+  assert.match(feedbackLight(gh({ threads: [thread(), thread()] })).tip, /2 unresolved threads/);
+  assert.equal(feedbackLight(gh({ threads: [thread(), thread()], state: "MERGED" })).lamp, "fine");
   assert.equal(feedbackLight(gh({ threads: [] })).lamp, "fine");
+});
+
+test("merged and closed PRs show all four lamps fine", () => {
+  const bad: Partial<Github> = {
+    mergeable: "CONFLICTING",
+    behindSince: hoursAgo(48),
+    checks: [check("COMPLETED", "FAILURE")],
+    threads: [thread()],
+    reviewDecision: "CHANGES_REQUESTED",
+  };
+  for (const state of ["MERGED", "CLOSED"] as const) {
+    const v = prView(gh({ ...bad, state }), 1, null, NOW);
+    assert.deepEqual([v.base.lamp, v.ci.lamp, v.feedback.lamp, v.review.lamp], ["fine", "fine", "fine", "fine"]);
+  }
+});
+
+test("size: files / lines changed, with the tip splitting the lines", () => {
+  const v = prView(gh({ changedFiles: 3, additions: 500, deletions: 40 }), 1);
+  assert.equal(v.size, "3 / 540");
+  assert.equal(v.sizeTip, "3 files, +500 −40");
+  assert.equal(prView(gh({ changedFiles: 1, additions: 2, deletions: 0 }), 1).sizeTip, "1 file, +2 −0");
+});
+
+test("tray: every section gives its fine statement when nothing is wrong", () => {
+  const t = trayView(gh(), null, NOW);
+  assert.deepEqual(t.base, { fine: "no conflict, up to date", items: null });
+  assert.deepEqual(t.ci, { fine: "passing", items: null });
+  assert.deepEqual(t.feedback, { fine: "no open threads", items: null });
+  assert.deepEqual(t.review, { fine: "approved", items: null });
+  assert.equal(trayView(gh(), 9918, NOW).base.fine, "no conflict");
+  assert.equal(trayView(gh({ checks: [check("IN_PROGRESS", null)] }), null, NOW).ci.fine, "running");
+  assert.equal(trayView(gh({ reviewDecision: "REVIEW_REQUIRED" }), null, NOW).review.fine, "required, none requested");
+  assert.equal(trayView(gh({ reviewDecision: null }), null, NOW).review.fine, "not required");
+  // Behind for less than a day is not a base problem yet.
+  assert.equal(trayView(gh({ behindSince: hoursAgo(23) }), null, NOW).base.fine, "no conflict, up to date");
+});
+
+test("tray: merged and closed PRs give every section's fine statement", () => {
+  const bad: Partial<Github> = {
+    mergeable: "CONFLICTING",
+    checks: [check("COMPLETED", "FAILURE")],
+    threads: [thread()],
+    reviewRequests: [{ login: "ana", asCodeOwner: false }],
+  };
+  assert.deepEqual(
+    Object.values(trayView(gh({ ...bad, state: "MERGED" }), null, NOW)).map((s) => s.fine),
+    ["merged", "passed", "no open threads", "merged"],
+  );
+  assert.deepEqual(
+    Object.values(trayView(gh({ ...bad, state: "CLOSED" }), null, NOW)).map((s) => s.fine),
+    ["closed", "passed", "no open threads", "closed"],
+  );
+});
+
+test("tray base: conflict named by the PR below or the base branch, and behind since", () => {
+  const g = gh({ mergeable: "CONFLICTING", behindSince: hoursAgo(26) });
+  assert.deepEqual(trayView(g, null, NOW).base.items, ["Merge conflict with main", "Behind main since 1 d ago"]);
+  assert.deepEqual(trayView(gh({ mergeable: "CONFLICTING" }), 9918, NOW).base.items, ["Merge conflict with #9918"]);
+});
+
+test("tray CI: only failing required checks, with their links", () => {
+  const g = gh({
+    checks: [check("COMPLETED", "SUCCESS", "lint"), check("COMPLETED", "FAILURE", "e2e"), check("IN_PROGRESS", null, "unit")],
+  });
+  assert.deepEqual(trayView(g, null, NOW).ci.items, [{ name: "e2e", url: "https://ci.example/e2e" }]);
+});
+
+test("tray feedback: threads oldest first, by path:line or the path alone", () => {
+  const g = gh({
+    threads: [
+      thread({ login: "bo", createdAt: hoursAgo(1), path: "b.ts", line: null }),
+      thread({ login: "ana", createdAt: hoursAgo(3), path: "a.ts", line: 12 }),
+    ],
+  });
+  const items = trayView(g, null, NOW).feedback.items!;
+  assert.deepEqual(
+    items.map((t) => [t.author, t.where, t.ago]),
+    [
+      ["ana", "a.ts:12", "3 h"],
+      ["bo", "b.ts", "1 h"],
+    ],
+  );
+  assert.equal(items[0].body, "Rename this.");
+  assert.equal(items[0].url, "https://github.com/acme/widgets/pull/7#discussion_r1");
+});
+
+test("tray review: each reviewer once; a pending request wins over an earlier review", () => {
+  const g = gh({
+    reviewDecision: "CHANGES_REQUESTED",
+    reviewRequests: [
+      { login: "ana", asCodeOwner: false },
+      { team: "frontend", asCodeOwner: true },
+      { team: "docs", asCodeOwner: false },
+    ],
+    reviews: [
+      { login: "ana", state: "CHANGES_REQUESTED", teams: [] },
+      { login: "rina", state: "APPROVED", teams: ["platform-infra", "node-runtime"] },
+      { login: "sam", state: "CHANGES_REQUESTED", teams: [] },
+    ],
+  });
+  assert.deepEqual(trayView(g, null, NOW).review.items, [
+    { name: "ana", team: false, state: "requested", codeOwner: false, teams: [] },
+    { name: "frontend", team: true, state: "requested", codeOwner: true, teams: [] },
+    { name: "docs", team: true, state: "requested", codeOwner: false, teams: [] },
+    { name: "rina", team: false, state: "approved", codeOwner: false, teams: ["platform-infra", "node-runtime"] },
+    { name: "sam", team: false, state: "changes requested", codeOwner: false, teams: [] },
+  ]);
+});
+
+test("session views name a stacked PR's base by the PR below it", () => {
+  const prs = [
+    pr("s", { number: 2, stack: { position: 2 }, headRefName: "b", baseRefName: "a", mergeable: "CONFLICTING" }),
+    pr("s", { number: 1, stack: { position: 1 }, headRefName: "a", baseRefName: "main" }),
+  ];
+  const [, top] = sessionViews([session("s")], prs, NOW)[0].stack;
+  assert.equal(top.number, 2);
+  assert.deepEqual(top.tray.base.items, ["Merge conflict with #1"]);
 });
 
 test("review: changes requested or nobody requested → act; pending requests → count; else fine", () => {
@@ -97,9 +247,9 @@ test("review: changes requested or nobody requested → act; pending requests �
   };
   assert.deepEqual(r({ state: "MERGED", reviewDecision: "CHANGES_REQUESTED" }), ["fine", null]);
   assert.deepEqual(r({ state: "CLOSED", reviewDecision: "REVIEW_REQUIRED" }), ["fine", null]);
-  assert.deepEqual(r({ reviewDecision: "CHANGES_REQUESTED", reviewRequests: [{ login: "ana" }] }), ["act", null]);
-  assert.deepEqual(r({ reviewDecision: "REVIEW_REQUIRED", reviewRequests: [{ login: "ana" }, { team: "acme/web" }] }), ["fine", 2]);
-  assert.deepEqual(r({ reviewDecision: null, reviewRequests: [{ login: "ana" }] }), ["fine", 1]);
+  assert.deepEqual(r({ reviewDecision: "CHANGES_REQUESTED", reviewRequests: [{ login: "ana", asCodeOwner: false }] }), ["act", null]);
+  assert.deepEqual(r({ reviewDecision: "REVIEW_REQUIRED", reviewRequests: [{ login: "ana", asCodeOwner: false }, { team: "acme/web", asCodeOwner: false }] }), ["fine", 2]);
+  assert.deepEqual(r({ reviewDecision: null, reviewRequests: [{ login: "ana", asCodeOwner: false }] }), ["fine", 1]);
   assert.deepEqual(r({ reviewDecision: "REVIEW_REQUIRED" }), ["act", null]);
   // Drafts follow the same rules.
   assert.deepEqual(r({ isDraft: true, reviewDecision: "REVIEW_REQUIRED" }), ["act", null]);
@@ -109,7 +259,7 @@ test("review: changes requested or nobody requested → act; pending requests �
 
 test("review tooltip names the requested people and teams", () => {
   const tip = reviewLight(
-    gh({ reviewDecision: "REVIEW_REQUIRED", reviewRequests: [{ login: "ana" }, { team: "acme/web" }] }),
+    gh({ reviewDecision: "REVIEW_REQUIRED", reviewRequests: [{ login: "ana", asCodeOwner: false }, { team: "acme/web", asCodeOwner: false }] }),
   ).tip;
   assert.match(tip, /ana, acme\/web/);
 });
@@ -135,10 +285,10 @@ test("attention: an open PR that is mergeable or has a lit lamp", () => {
   assert.equal(prView(gh(), 1).attention, true);
   assert.equal(prView(gh({ mergeable: "CONFLICTING" }), 1).attention, true);
   assert.equal(prView(gh({ reviewDecision: "REVIEW_REQUIRED" }), 1).attention, true);
-  assert.equal(prView(gh({ reviewRequests: [{ login: "ana" }] }), 1).attention, false);
+  assert.equal(prView(gh({ reviewRequests: [{ login: "ana", asCodeOwner: false }] }), 1).attention, false);
   assert.equal(prView(gh({ checks: [check("IN_PROGRESS", null)] }), 1).attention, false);
   assert.equal(prView(gh({ isDraft: true }), 1).attention, false);
-  assert.equal(prView(gh({ state: "CLOSED", threads: [{}, {}] }), 1).attention, false);
+  assert.equal(prView(gh({ state: "CLOSED", threads: [thread(), thread()] }), 1).attention, false);
   assert.equal(prView(gh({ state: "MERGED" }), 1).attention, false);
 });
 
@@ -148,10 +298,10 @@ test("mergeable: open, not a draft, no review outstanding, all four lamps fine",
   assert.equal(node({ reviewDecision: null }), "ready");
   assert.equal(node({ checks: [] }), "ready");
   assert.equal(node({ isDraft: true }), "open");
-  assert.equal(node({ reviewRequests: [{ login: "ana" }] }), "open");
+  assert.equal(node({ reviewRequests: [{ login: "ana", asCodeOwner: false }] }), "open");
   assert.equal(node({ reviewDecision: "REVIEW_REQUIRED" }), "open");
   assert.equal(node({ checks: [check("IN_PROGRESS", null)] }), "open");
-  assert.equal(node({ threads: [{}] }), "open");
+  assert.equal(node({ threads: [thread()] }), "open");
   assert.equal(node({ state: "MERGED" }), "merged");
   assert.equal(node({ state: "CLOSED" }), "closed");
 });
@@ -255,9 +405,9 @@ test("folded Session light: act if waiting or any PR needs attention, else fine"
   const st = (state: "running" | "waiting" | "idle" | "done") => ({ at: AT, state });
   assert.equal(attentionLight(view(st("waiting"))).lamp, "act");
   assert.equal(attentionLight(view(st("running"))).lamp, "fine");
-  assert.equal(attentionLight(view(st("running"), { reviewRequests: [{ login: "a" }] })).lamp, "fine");
-  assert.equal(attentionLight(view(st("idle"), { reviewRequests: [{ login: "a" }] }, {})).lamp, "act");
-  assert.equal(attentionLight(view(st("idle"), { mergeable: "CONFLICTING", reviewRequests: [{ login: "a" }] })).lamp, "act");
+  assert.equal(attentionLight(view(st("running"), { reviewRequests: [{ login: "a", asCodeOwner: false }] })).lamp, "fine");
+  assert.equal(attentionLight(view(st("idle"), { reviewRequests: [{ login: "a", asCodeOwner: false }] }, {})).lamp, "act");
+  assert.equal(attentionLight(view(st("idle"), { mergeable: "CONFLICTING", reviewRequests: [{ login: "a", asCodeOwner: false }] })).lamp, "act");
 });
 
 test("done Sessions start folded; a toggle flips the default", () => {

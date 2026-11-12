@@ -25,6 +25,27 @@ export interface Check {
   name: string;
   status: string | null;
   conclusion: string | null;
+  url: string | null;
+}
+
+export type ReviewRequest = { login: string; asCodeOwner: boolean } | { team: string; asCodeOwner: boolean };
+
+/** A reviewer's latest review that approved or requested changes. */
+export interface Review {
+  login: string;
+  state: "APPROVED" | "CHANGES_REQUESTED";
+  /** Slugs of the teams the review was given on behalf of. */
+  teams: string[];
+}
+
+/** An unresolved, not-outdated review thread, by its first comment. */
+export interface Thread {
+  login: string;
+  path: string;
+  line: number | null;
+  body: string;
+  url: string;
+  createdAt: string;
 }
 
 export interface Github {
@@ -39,13 +60,17 @@ export interface Github {
   baseRefName: string;
   mergeable: string;
   reviewDecision: string | null;
-  reviewRequests: ({ login: string } | { team: string })[];
+  reviewRequests: ReviewRequest[];
   checks: Check[];
   stack: { position: number } | null;
   updatedAt: string;
   additions: number;
   deletions: number;
-  threads: unknown[];
+  changedFiles: number;
+  reviews: Review[];
+  threads: Thread[];
+  /** When the oldest default-branch commit the head lacks landed; null unless open and behind. */
+  behindSince: string | null;
 }
 
 export interface Pr {
@@ -73,8 +98,10 @@ export interface PrView {
   /** The title without its Jira prefix. */
   title: string;
   jira: string | null;
-  additions: number;
-  deletions: number;
+  /** `files / lines`, e.g. `3 / 540`. */
+  size: string;
+  /** `3 files, +500 −40`. */
+  sizeTip: string;
   /** ready: mergeable (open, not a draft, all four columns fine). */
   node: "merged" | "closed" | "ready" | "open";
   draft: boolean;
@@ -84,6 +111,7 @@ export interface PrView {
   review: ReviewLight;
   /** True if the user should act on this PR: it is mergeable or a lamp is lit. */
   attention: boolean;
+  tray: Tray;
 }
 
 export interface SessionView {
@@ -115,15 +143,43 @@ const FAILING = new Set([
 ]);
 const PENDING = new Set(["PENDING", "EXPECTED"]);
 
-export function baseLight(g: Github): Light {
-  if (g.state === "MERGED") return { lamp: "fine", tip: "base: merged" };
-  if (g.mergeable === "CONFLICTING") return { lamp: "act", tip: "base: conflict" };
-  return { lamp: "fine", tip: "base: no conflict" };
+const DAY = 24 * 60 * 60_000;
+
+/** What the PR's base is called: the PR below it in the Stack, else its base branch. */
+const baseName = (g: Github, below: number | null) => (below != null ? `#${below}` : g.baseRefName);
+
+/** The PR's base problems, worded for the tray; empty when there are none or it is not open. */
+function baseProblems(g: Github, below: number | null, now: number): string[] {
+  if (g.state !== "OPEN") return [];
+  const out: string[] = [];
+  if (g.mergeable === "CONFLICTING") out.push(`Merge conflict with ${baseName(g, below)}`);
+  if (g.behindSince && now - Date.parse(g.behindSince) > DAY) {
+    out.push(`Behind ${g.baseRefName} since ${age(g.behindSince, now)} ago`);
+  }
+  return out;
 }
+
+/** A merged or closed PR shows every lamp fine. */
+const done = (g: Github, column: string): Light | null =>
+  g.state === "OPEN" ? null : { lamp: "fine", tip: `${column}: ${g.state === "MERGED" ? "merged" : "closed"}` };
+
+/** Act on a conflict, or on being behind the default branch for more than a day.
+ * `below` is the number of the PR below this one in its Stack, if any. */
+export function baseLight(g: Github, below: number | null = null, now = Date.now()): Light {
+  const problems = baseProblems(g, below, now);
+  if (problems.length) {
+    return { lamp: "act", tip: `base: ${problems.map((p) => p[0].toLowerCase() + p.slice(1)).join(" · ")}` };
+  }
+  return done(g, "base") ?? { lamp: "fine", tip: "base: no conflict" };
+}
+
+const failingChecks = (g: Github) => g.checks.filter((c) => c.conclusion && FAILING.has(c.conclusion));
 
 /** From the required checks only, as the PR Writer stores them. */
 export function ciLight(g: Github): Light {
-  const failing = g.checks.filter((c) => c.conclusion && FAILING.has(c.conclusion));
+  const closed = done(g, "CI");
+  if (closed) return closed;
+  const failing = failingChecks(g);
   if (failing.length) {
     return { lamp: "act", tip: `CI failing: ${failing.map((c) => c.name).join(", ")}` };
   }
@@ -137,10 +193,10 @@ export function ciLight(g: Github): Light {
 
 export function feedbackLight(g: Github): Light {
   const n = g.threads.length;
-  if (g.state !== "MERGED" && n > 0) {
+  if (g.state === "OPEN" && n > 0) {
     return { lamp: "act", tip: `feedback: ${n} unresolved thread${n === 1 ? "" : "s"}` };
   }
-  return { lamp: "fine", tip: "feedback: none open" };
+  return done(g, "feedback") ?? { lamp: "fine", tip: "feedback: none open" };
 }
 
 /** Changes requested or nobody asked to review → act; pending requests → their count;
@@ -148,7 +204,8 @@ export function feedbackLight(g: Github): Light {
  * `reviewRequests`, so that decision is shown as a lamp rather than counted. */
 export function reviewLight(g: Github): ReviewLight {
   const light = (lamp: Lamp, tip: string, count: number | null = null): ReviewLight => ({ lamp, tip, count });
-  if (g.state !== "OPEN") return light("fine", `review: ${g.state === "MERGED" ? "merged" : "closed"}`);
+  const closed = done(g, "review");
+  if (closed) return { ...closed, count: null };
   if (g.reviewDecision === "CHANGES_REQUESTED") return light("act", "review: changes requested");
   const names = g.reviewRequests.map((r) => ("login" in r ? r.login : r.team));
   if (names.length) return light("fine", `review needed: ${names.join(", ")}`, names.length);
@@ -156,8 +213,9 @@ export function reviewLight(g: Github): ReviewLight {
   return light("fine", g.reviewDecision === "APPROVED" ? "review: approved" : "review: none required");
 }
 
-export function prView(g: Github, pos: number): PrView {
-  const base = baseLight(g);
+/** `below` is the number of the PR below this one in its Stack, if any. */
+export function prView(g: Github, pos: number, below: number | null = null, now = Date.now()): PrView {
+  const base = baseLight(g, below, now);
   const ci = ciLight(g);
   const feedback = feedbackLight(g);
   const review = reviewLight(g);
@@ -169,8 +227,8 @@ export function prView(g: Github, pos: number): PrView {
     url: g.url,
     number: g.number,
     ...parseJira(g.title),
-    additions: g.additions,
-    deletions: g.deletions,
+    size: `${g.changedFiles} / ${g.additions + g.deletions}`,
+    sizeTip: `${g.changedFiles} file${g.changedFiles === 1 ? "" : "s"}, +${g.additions} −${g.deletions}`,
     node: g.state === "MERGED" ? "merged" : g.state === "CLOSED" ? "closed" : ready ? "ready" : "open",
     draft: g.isDraft,
     base,
@@ -178,6 +236,113 @@ export function prView(g: Github, pos: number): PrView {
     feedback,
     review,
     attention: open && (ready || lamps.some((l) => l.lamp === "act")),
+    tray: trayView(g, below, now),
+  };
+}
+
+/** One tray section: its one-line fine statement, or the items behind its lamp. */
+export type Section<T> = { fine: string; items: null } | { fine: null; items: T[] };
+
+export interface TrayCheck {
+  name: string;
+  url: string | null;
+}
+
+export interface TrayThread {
+  author: string;
+  /** `path:line`, or the path alone for a file-level comment. */
+  where: string;
+  body: string;
+  url: string;
+  /** When the comment was posted, and how long ago that was ("3 h"). */
+  at: string;
+  ago: string;
+}
+
+export interface TrayReviewer {
+  /** A login, or a team's slug when `team` is true. */
+  name: string;
+  team: boolean;
+  state: "requested" | "approved" | "changes requested";
+  /** True when CODEOWNERS made the pending request. */
+  codeOwner: boolean;
+  /** Slugs of the teams a review was given on behalf of. */
+  teams: string[];
+}
+
+/** The tray's four sections, one per lamp. */
+export interface Tray {
+  /** Each item is a sentence: "Merge conflict with #9918", "Behind main since 2 d ago". */
+  base: Section<string>;
+  ci: Section<TrayCheck>;
+  feedback: Section<TrayThread>;
+  review: Section<TrayReviewer>;
+}
+
+function section<T>(items: T[], fine: string): Section<T> {
+  return items.length ? { fine: null, items } : { fine, items: null };
+}
+
+/** Each reviewer once: a pending request wins over an earlier review, since GitHub drops a
+ * request once someone reviews, so a person in both was re-requested. */
+function reviewers(g: Github): TrayReviewer[] {
+  const requested = g.reviewRequests.map((r) => ({
+    name: "login" in r ? r.login : r.team,
+    team: !("login" in r),
+    state: "requested" as const,
+    codeOwner: r.asCodeOwner,
+    teams: [],
+  }));
+  const pending = new Set(g.reviewRequests.flatMap((r) => ("login" in r ? [r.login] : [])));
+  const reviewed = g.reviews
+    .filter((r) => !pending.has(r.login))
+    .map((r) => ({
+      name: r.login,
+      team: false,
+      state: r.state === "APPROVED" ? ("approved" as const) : ("changes requested" as const),
+      codeOwner: false,
+      teams: r.teams,
+    }));
+  return [...requested, ...reviewed];
+}
+
+/** The tray for one PR. `below` is the number of the PR below it in its Stack, if any. A
+ * merged or closed PR shows every section's fine statement. */
+export function trayView(g: Github, below: number | null = null, now = Date.now()): Tray {
+  const word = g.state === "MERGED" ? "merged" : "closed";
+  if (g.state !== "OPEN") {
+    return {
+      base: section([], word),
+      ci: section([], "passed"),
+      feedback: section([], "no open threads"),
+      review: section([], word),
+    };
+  }
+  const running = g.checks.some((c) => !c.conclusion || PENDING.has(c.conclusion));
+  const threads = [...g.threads]
+    .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
+    .map((t) => ({
+      author: t.login,
+      where: t.line == null ? t.path : `${t.path}:${t.line}`,
+      body: t.body,
+      url: t.url,
+      at: t.createdAt,
+      ago: age(t.createdAt, now),
+    }));
+  const review =
+    g.reviewDecision === "REVIEW_REQUIRED"
+      ? "required, none requested"
+      : g.reviewDecision === "APPROVED"
+        ? "approved"
+        : "not required";
+  return {
+    base: section(baseProblems(g, below, now), below == null ? "no conflict, up to date" : "no conflict"),
+    ci: section(
+      failingChecks(g).map((c) => ({ name: c.name, url: c.url })),
+      running ? "running" : "passing",
+    ),
+    feedback: section(threads, "no open threads"),
+    review: section(reviewers(g), review),
   };
 }
 
@@ -214,7 +379,7 @@ export function activityLine(s: Session): string | null {
 
 /** Done Sessions last; within each group the most recently started first, then those with no
  * start time. */
-export function sessionViews(sessions: Session[], prs: Pr[]): SessionView[] {
+export function sessionViews(sessions: Session[], prs: Pr[], now = Date.now()): SessionView[] {
   const done = (s: Session) => (s.status?.state === "done" ? 1 : 0);
   const started = (s: Session) => (s.origin ? Date.parse(s.origin.at) : -Infinity);
   const sorted = [...sessions].sort((a, b) => done(a) - done(b) || started(b) - started(a));
@@ -231,7 +396,10 @@ export function sessionViews(sessions: Session[], prs: Pr[]): SessionView[] {
       repo: stack[0]?.repo ?? (cwd ? cwd.split("/").filter(Boolean).pop() ?? null : null),
       cde: s.origin?.cde ?? null,
       activity: activityLine(s),
-      stack: stack.map((g, i) => prView(g, i + 1)),
+      stack: stack.map((g, i) => {
+        const below = stack.find((o) => o.headRefName === g.baseRefName)?.number ?? null;
+        return prView(g, i + 1, below, now);
+      }),
     };
   });
 }

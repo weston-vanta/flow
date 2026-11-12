@@ -26,7 +26,7 @@ function prRow(p: PrView, j: number, n: number): string {
     ${j > 0 ? '<div class="rule" aria-hidden="true"></div>' : ""}
     <div class="gnode" role="cell">${j > 0 ? '<div class="up"></div>' : ""}${j < n - 1 ? '<div class="down"></div>' : ""}<a class="node ${p.node}" href="${esc(p.url)}" target="_blank" rel="noreferrer" title="${esc(tip)}" aria-label="Pull request ${esc(tip)}">${n > 1 ? p.pos : ""}</a></div>
     <div class="gtitle" role="cell"><a class="t ${p.node}" href="${esc(p.url)}" target="_blank" rel="noreferrer">${esc(p.title)}</a>${p.jira ? `<span class="jira mono">${esc(p.jira)}</span>` : ""}</div>
-    <div class="glines mono" role="cell">+${p.additions} −${p.deletions}</div>
+    <div class="glines mono" role="cell" title="${esc(p.sizeTip)}" aria-label="${esc(p.sizeTip)}">${esc(p.size)}</div>
     ${cell(p.base)}${cell(p.ci)}${cell(p.feedback)}${cell(p.review)}
   </div>`;
 }

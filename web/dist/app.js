@@ -13,13 +13,30 @@
     "STARTUP_FAILURE"
   ]);
   var PENDING = /* @__PURE__ */ new Set(["PENDING", "EXPECTED"]);
-  function baseLight(g) {
-    if (g.state === "MERGED") return { lamp: "fine", tip: "base: merged" };
-    if (g.mergeable === "CONFLICTING") return { lamp: "act", tip: "base: conflict" };
-    return { lamp: "fine", tip: "base: no conflict" };
+  var DAY = 24 * 60 * 6e4;
+  var baseName = (g, below) => below != null ? `#${below}` : g.baseRefName;
+  function baseProblems(g, below, now) {
+    if (g.state !== "OPEN") return [];
+    const out = [];
+    if (g.mergeable === "CONFLICTING") out.push(`Merge conflict with ${baseName(g, below)}`);
+    if (g.behindSince && now - Date.parse(g.behindSince) > DAY) {
+      out.push(`Behind ${g.baseRefName} since ${age(g.behindSince, now)} ago`);
+    }
+    return out;
   }
+  var done = (g, column) => g.state === "OPEN" ? null : { lamp: "fine", tip: `${column}: ${g.state === "MERGED" ? "merged" : "closed"}` };
+  function baseLight(g, below = null, now = Date.now()) {
+    const problems = baseProblems(g, below, now);
+    if (problems.length) {
+      return { lamp: "act", tip: `base: ${problems.map((p) => p[0].toLowerCase() + p.slice(1)).join(" \xB7 ")}` };
+    }
+    return done(g, "base") ?? { lamp: "fine", tip: "base: no conflict" };
+  }
+  var failingChecks = (g) => g.checks.filter((c) => c.conclusion && FAILING.has(c.conclusion));
   function ciLight(g) {
-    const failing2 = g.checks.filter((c) => c.conclusion && FAILING.has(c.conclusion));
+    const closed = done(g, "CI");
+    if (closed) return closed;
+    const failing2 = failingChecks(g);
     if (failing2.length) {
       return { lamp: "act", tip: `CI failing: ${failing2.map((c) => c.name).join(", ")}` };
     }
@@ -32,22 +49,23 @@
   }
   function feedbackLight(g) {
     const n = g.threads.length;
-    if (g.state !== "MERGED" && n > 0) {
+    if (g.state === "OPEN" && n > 0) {
       return { lamp: "act", tip: `feedback: ${n} unresolved thread${n === 1 ? "" : "s"}` };
     }
-    return { lamp: "fine", tip: "feedback: none open" };
+    return done(g, "feedback") ?? { lamp: "fine", tip: "feedback: none open" };
   }
   function reviewLight(g) {
     const light = (lamp2, tip, count = null) => ({ lamp: lamp2, tip, count });
-    if (g.state !== "OPEN") return light("fine", `review: ${g.state === "MERGED" ? "merged" : "closed"}`);
+    const closed = done(g, "review");
+    if (closed) return { ...closed, count: null };
     if (g.reviewDecision === "CHANGES_REQUESTED") return light("act", "review: changes requested");
     const names = g.reviewRequests.map((r) => "login" in r ? r.login : r.team);
     if (names.length) return light("fine", `review needed: ${names.join(", ")}`, names.length);
     if (g.reviewDecision === "REVIEW_REQUIRED") return light("act", "review: no reviewers requested");
     return light("fine", g.reviewDecision === "APPROVED" ? "review: approved" : "review: none required");
   }
-  function prView(g, pos) {
-    const base = baseLight(g);
+  function prView(g, pos, below = null, now = Date.now()) {
+    const base = baseLight(g, below, now);
     const ci = ciLight(g);
     const feedback = feedbackLight(g);
     const review = reviewLight(g);
@@ -59,15 +77,67 @@
       url: g.url,
       number: g.number,
       ...parseJira(g.title),
-      additions: g.additions,
-      deletions: g.deletions,
+      size: `${g.changedFiles} / ${g.additions + g.deletions}`,
+      sizeTip: `${g.changedFiles} file${g.changedFiles === 1 ? "" : "s"}, +${g.additions} \u2212${g.deletions}`,
       node: g.state === "MERGED" ? "merged" : g.state === "CLOSED" ? "closed" : ready ? "ready" : "open",
       draft: g.isDraft,
       base,
       ci,
       feedback,
       review,
-      attention: open && (ready || lamps.some((l) => l.lamp === "act"))
+      attention: open && (ready || lamps.some((l) => l.lamp === "act")),
+      tray: trayView(g, below, now)
+    };
+  }
+  function section(items, fine) {
+    return items.length ? { fine: null, items } : { fine, items: null };
+  }
+  function reviewers(g) {
+    const requested = g.reviewRequests.map((r) => ({
+      name: "login" in r ? r.login : r.team,
+      team: !("login" in r),
+      state: "requested",
+      codeOwner: r.asCodeOwner,
+      teams: []
+    }));
+    const pending = new Set(g.reviewRequests.flatMap((r) => "login" in r ? [r.login] : []));
+    const reviewed = g.reviews.filter((r) => !pending.has(r.login)).map((r) => ({
+      name: r.login,
+      team: false,
+      state: r.state === "APPROVED" ? "approved" : "changes requested",
+      codeOwner: false,
+      teams: r.teams
+    }));
+    return [...requested, ...reviewed];
+  }
+  function trayView(g, below = null, now = Date.now()) {
+    const word = g.state === "MERGED" ? "merged" : "closed";
+    if (g.state !== "OPEN") {
+      return {
+        base: section([], word),
+        ci: section([], "passed"),
+        feedback: section([], "no open threads"),
+        review: section([], word)
+      };
+    }
+    const running = g.checks.some((c) => !c.conclusion || PENDING.has(c.conclusion));
+    const threads = [...g.threads].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt)).map((t) => ({
+      author: t.login,
+      where: t.line == null ? t.path : `${t.path}:${t.line}`,
+      body: t.body,
+      url: t.url,
+      at: t.createdAt,
+      ago: age(t.createdAt, now)
+    }));
+    const review = g.reviewDecision === "REVIEW_REQUIRED" ? "required, none requested" : g.reviewDecision === "APPROVED" ? "approved" : "not required";
+    return {
+      base: section(baseProblems(g, below, now), below == null ? "no conflict, up to date" : "no conflict"),
+      ci: section(
+        failingChecks(g).map((c) => ({ name: c.name, url: c.url })),
+        running ? "running" : "passing"
+      ),
+      feedback: section(threads, "no open threads"),
+      review: section(reviewers(g), review)
     };
   }
   function stackOf(session, prs2) {
@@ -91,10 +161,10 @@
     if (!a) return null;
     return s.status?.state === "running" || a.reply == null ? a.prompt : a.reply;
   }
-  function sessionViews(sessions2, prs2) {
-    const done = (s) => s.status?.state === "done" ? 1 : 0;
+  function sessionViews(sessions2, prs2, now = Date.now()) {
+    const done2 = (s) => s.status?.state === "done" ? 1 : 0;
     const started = (s) => s.origin ? Date.parse(s.origin.at) : -Infinity;
-    const sorted = [...sessions2].sort((a, b) => done(a) - done(b) || started(b) - started(a));
+    const sorted = [...sessions2].sort((a, b) => done2(a) - done2(b) || started(b) - started(a));
     return sorted.map((s) => {
       const stack = stackOf(s.id, prs2);
       const state = s.status?.state ?? null;
@@ -108,7 +178,10 @@
         repo: stack[0]?.repo ?? (cwd ? cwd.split("/").filter(Boolean).pop() ?? null : null),
         cde: s.origin?.cde ?? null,
         activity: activityLine(s),
-        stack: stack.map((g, i) => prView(g, i + 1))
+        stack: stack.map((g, i) => {
+          const below = stack.find((o) => o.headRefName === g.baseRefName)?.number ?? null;
+          return prView(g, i + 1, below, now);
+        })
       };
     });
   }
@@ -153,7 +226,7 @@
     ${j > 0 ? '<div class="rule" aria-hidden="true"></div>' : ""}
     <div class="gnode" role="cell">${j > 0 ? '<div class="up"></div>' : ""}${j < n - 1 ? '<div class="down"></div>' : ""}<a class="node ${p.node}" href="${esc(p.url)}" target="_blank" rel="noreferrer" title="${esc(tip)}" aria-label="Pull request ${esc(tip)}">${n > 1 ? p.pos : ""}</a></div>
     <div class="gtitle" role="cell"><a class="t ${p.node}" href="${esc(p.url)}" target="_blank" rel="noreferrer">${esc(p.title)}</a>${p.jira ? `<span class="jira mono">${esc(p.jira)}</span>` : ""}</div>
-    <div class="glines mono" role="cell">+${p.additions} \u2212${p.deletions}</div>
+    <div class="glines mono" role="cell" title="${esc(p.sizeTip)}" aria-label="${esc(p.sizeTip)}">${esc(p.size)}</div>
     ${cell(p.base)}${cell(p.ci)}${cell(p.feedback)}${cell(p.review)}
   </div>`;
   }
