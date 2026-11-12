@@ -207,6 +207,15 @@ test("tray feedback: threads oldest first, by path:line or the path alone", () =
   assert.equal(items[0].url, "https://github.com/acme/widgets/pull/7#discussion_r1");
 });
 
+test("tray feedback: a body over 280 characters or 4 lines is long", () => {
+  const long = (body: string) => trayView(gh({ threads: [thread({ body })] }), null, NOW).feedback.items![0].long;
+  assert.equal(long("Rename this."), false);
+  assert.equal(long("x".repeat(280)), false);
+  assert.equal(long("x".repeat(281)), true);
+  assert.equal(long("a\nb\nc\nd"), false);
+  assert.equal(long("a\nb\nc\nd\ne"), true);
+});
+
 test("tray review: each reviewer once; a pending request wins over an earlier review", () => {
   const g = gh({
     reviewDecision: "CHANGES_REQUESTED",

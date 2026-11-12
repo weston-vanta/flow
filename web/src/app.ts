@@ -2,6 +2,7 @@
 import { prDataAge, sessionViews } from "./model.ts";
 import type { Pr, Session } from "./model.ts";
 import { render } from "./render.ts";
+import type { Column, TrayState } from "./render.ts";
 
 const POLL_MS = 3000;
 
@@ -15,6 +16,8 @@ let failing = false;
  * in memory only, so a reload resets them. */
 const toggled = new Set<string>();
 let legend = false;
+/** The tray's PR stays after it closes, so the tray can slide out with its content. */
+let tray: TrayState | null = null;
 const root = document.getElementById("root")!;
 
 async function get<T>(path: string): Promise<T> {
@@ -23,7 +26,8 @@ async function get<T>(path: string): Promise<T> {
   return r.json();
 }
 
-function draw() {
+/** The page for the current state. Drops the tray once its PR leaves the list. */
+function page(): string {
   const notices: string[] = [];
   if (failing) {
     notices.push(
@@ -34,9 +38,49 @@ function draw() {
   }
   const stale = prDataAge(prs);
   if (stale != null) notices.push(`PR data ${stale} min old`);
+  const views = sessionViews(sessions, prs);
+  if (tray && !views.some((v) => v.stack.some((p) => p.url === tray!.url))) tray = null;
+  return render(views, toggled, notices, legend, tray);
+}
+
+const $ = <T extends HTMLElement>(sel: string) => root.querySelector<T>(sel);
+
+function draw() {
   // Redraw only on change, so hover tooltips and selections survive quiet polls.
-  const html = render(sessionViews(sessions, prs), toggled, notices, legend);
-  if (html !== drawn) root.innerHTML = drawn = html;
+  const html = page();
+  if (html === drawn) return;
+  const top = $(".tscroll")?.scrollTop ?? 0;
+  root.innerHTML = drawn = html;
+  $(".tscroll")!.scrollTop = top;
+}
+
+/** Makes `change` to the state and, with `dom`, the same change to the drawn page, so its CSS
+ * transitions run instead of a redraw replacing it. */
+function morph(change: () => void, dom: () => void) {
+  draw();
+  change();
+  dom();
+  drawn = page();
+}
+
+/** Slides the tray in for the PR at `url`, scrolled to `col`'s section (tinted briefly) or the top. */
+function openTray(url: string, col: Column | null) {
+  tray = { url, open: false, focus: col, expanded: tray?.expanded ?? new Set() };
+  draw();
+  const deck = $(".deck")!;
+  void deck.offsetWidth; // Lay out the closed tray first, so opening it slides.
+  morph(() => (tray!.open = true), () => deck.classList.add("open"));
+  $(".tscroll")!.scrollTop = col ? $(`[data-sec="${col}"]`)!.offsetTop : 0;
+  $(".tclose")!.focus({ preventScroll: true });
+  if (col) {
+    setTimeout(() => {
+      if (tray?.focus === col) morph(() => (tray!.focus = null), () => $(".tsec.focus")?.classList.remove("focus"));
+    }, 1000);
+  }
+}
+
+function closeTray() {
+  morph(() => (tray!.open = false), () => $(".deck")!.classList.remove("open"));
 }
 
 async function poll() {
@@ -53,6 +97,15 @@ async function poll() {
 
 root.addEventListener("click", (e) => {
   const target = e.target as Element;
+  if (target.closest("[data-close]")) return closeTray();
+  const thread = target.closest<HTMLElement>("[data-thread]");
+  if (thread && tray) {
+    const url = thread.dataset.thread!;
+    if (!tray.expanded.delete(url)) tray.expanded.add(url);
+    return draw();
+  }
+  const pr = target.closest<HTMLElement>("[data-open]");
+  if (pr) return openTray(pr.dataset.open!, (pr.dataset.col as Column | undefined) ?? null);
   if (target.closest("[data-legend]")) {
     legend = !legend;
     return draw();
@@ -64,10 +117,11 @@ root.addEventListener("click", (e) => {
   draw();
 });
 
-// `h` toggles the legend and Esc closes it. Listening on the document means the page
-// needs no focus first.
+// `h` toggles the legend; Esc closes the tray, else the legend. Listening on the document
+// means the page needs no focus first.
 document.addEventListener("keydown", (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
+  if (e.key === "Escape" && tray?.open) return closeTray();
   if (e.key === "h" || e.key === "H") legend = !legend;
   else if (e.key === "Escape" && legend) legend = false;
   else return;

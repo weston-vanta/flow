@@ -253,6 +253,8 @@ export interface TrayThread {
   /** `path:line`, or the path alone for a file-level comment. */
   where: string;
   body: string;
+  /** True when the body runs past the tray's clamp (about 4 lines), so it gets a toggle. */
+  long: boolean;
   url: string;
   /** When the comment was posted, and how long ago that was ("3 h"). */
   at: string;
@@ -325,6 +327,7 @@ export function trayView(g: Github, below: number | null = null, now = Date.now(
       author: t.login,
       where: t.line == null ? t.path : `${t.path}:${t.line}`,
       body: t.body,
+      long: t.body.length > 280 || t.body.split("\n").length > 4,
       url: t.url,
       at: t.createdAt,
       ago: age(t.createdAt, now),
