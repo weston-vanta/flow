@@ -28,6 +28,14 @@ _Avoid_: summary, recap, status
 One GitHub pull request, identified by its repository and number. Only PRs a Session owns are shown.
 _Avoid_: pull, change, diff
 
+**Feedback**:
+A PR's review threads that are unresolved and not outdated: what is still left to address. Resolved threads, threads on code that has since changed, top-level comments and review bodies are not feedback.
+_Avoid_: comments, threads
+
+**Behind**:
+A PR is behind when the oldest commit on its repository's default branch that its head lacks landed there more than 24 hours ago. Only PRs based on the default branch can be behind; one based on another PR's branch never is. Measured by when that commit landed, not by how many commits are missing.
+_Avoid_: stale, out of date
+
 **Owner**:
 The Session that owns a Stack: responsible for seeing it through, even while other agents write, review or fix its PRs. A Session owns a PR by creating the worktree for its branch; when several Sessions have, the most recent one owns it. Each PR has at most one owner, and a Session owns at most one Stack. Owning is a relationship between a Session and its PRs, not a kind of Session; any Session can own a Stack.
 _Avoid_: supervisor, lead, stack agent
