@@ -26,6 +26,9 @@ struct Args {
     /// The hard timeout on each `gh` call, in seconds.
     #[arg(long, env = "FLOWD_GH_TIMEOUT", default_value_t = github::TIMEOUT.as_secs(), hide = true)]
     gh_timeout: u64,
+    /// Seconds between the starts of PR poll cycles.
+    #[arg(long, env = "FLOWD_POLL_INTERVAL", default_value_t = github::INTERVAL.as_secs(), hide = true)]
+    poll_interval: u64,
 }
 
 /// How often the retention sweep runs after the one at start.
@@ -77,7 +80,8 @@ fn main() -> ExitCode {
     thread::spawn({
         let store = store.clone();
         let timeout = Duration::from_secs(args.gh_timeout);
-        move || poll_loop(&store, timeout)
+        let interval = Duration::from_secs(args.poll_interval);
+        move || poll_loop(&store, timeout, interval)
     });
     for request in server.incoming_requests() {
         let response = respond(&store, &request);
@@ -98,12 +102,13 @@ fn sweep_loop(store: &Store) {
     }
 }
 
-/// The PR Writer: polls at once, then every [`github::INTERVAL`]. Errors go to stderr; one
-/// summary line per cycle goes to stdout.
-fn poll_loop(store: &Store, timeout: Duration) -> ! {
+/// The PR Writer: polls at once, then every `interval`. Errors go to stderr; one summary line
+/// per cycle goes to stdout.
+fn poll_loop(store: &Store, timeout: Duration, interval: Duration) -> ! {
+    let branches = github::DefaultBranches::default();
     loop {
         let started = Instant::now();
-        let cycle = github::poll_prs(store, timeout);
+        let cycle = github::poll_prs(store, timeout, &branches);
         for err in &cycle.errors {
             eprintln!("flowd: pr poll: {err:#}");
         }
@@ -114,7 +119,7 @@ fn poll_loop(store: &Store, timeout: Duration) -> ! {
             cycle.cost,
             cycle.errors.len()
         );
-        thread::sleep(github::INTERVAL.saturating_sub(started.elapsed()));
+        thread::sleep(interval.saturating_sub(started.elapsed()));
     }
 }
 

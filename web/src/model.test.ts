@@ -38,7 +38,7 @@ function gh(o: Partial<Github> = {}): Github {
     updatedAt: AT,
     additions: 10,
     deletions: 2,
-    unresolvedReviewThreads: 0,
+    threads: [],
     ...o,
   };
 }
@@ -85,9 +85,9 @@ test("CI: failing → act; not completed → run; else fine, even with no checks
 });
 
 test("feedback: unresolved threads → act unless merged", () => {
-  assert.equal(feedbackLight(gh({ unresolvedReviewThreads: 2 })).lamp, "act");
-  assert.equal(feedbackLight(gh({ unresolvedReviewThreads: 2, state: "MERGED" })).lamp, "fine");
-  assert.equal(feedbackLight(gh({ unresolvedReviewThreads: 0 })).lamp, "fine");
+  assert.equal(feedbackLight(gh({ threads: [{}, {}] })).lamp, "act");
+  assert.equal(feedbackLight(gh({ threads: [{}, {}], state: "MERGED" })).lamp, "fine");
+  assert.equal(feedbackLight(gh({ threads: [] })).lamp, "fine");
 });
 
 test("review: changes requested or nobody requested → act; pending requests → count; else fine", () => {
@@ -138,7 +138,7 @@ test("attention: an open PR that is mergeable or has a lit lamp", () => {
   assert.equal(prView(gh({ reviewRequests: [{ login: "ana" }] }), 1).attention, false);
   assert.equal(prView(gh({ checks: [check("IN_PROGRESS", null)] }), 1).attention, false);
   assert.equal(prView(gh({ isDraft: true }), 1).attention, false);
-  assert.equal(prView(gh({ state: "CLOSED", unresolvedReviewThreads: 2 }), 1).attention, false);
+  assert.equal(prView(gh({ state: "CLOSED", threads: [{}, {}] }), 1).attention, false);
   assert.equal(prView(gh({ state: "MERGED" }), 1).attention, false);
 });
 
@@ -151,7 +151,7 @@ test("mergeable: open, not a draft, no review outstanding, all four lamps fine",
   assert.equal(node({ reviewRequests: [{ login: "ana" }] }), "open");
   assert.equal(node({ reviewDecision: "REVIEW_REQUIRED" }), "open");
   assert.equal(node({ checks: [check("IN_PROGRESS", null)] }), "open");
-  assert.equal(node({ unresolvedReviewThreads: 1 }), "open");
+  assert.equal(node({ threads: [{}] }), "open");
   assert.equal(node({ state: "MERGED" }), "merged");
   assert.equal(node({ state: "CLOSED" }), "closed");
 });

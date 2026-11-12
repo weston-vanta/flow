@@ -11,8 +11,8 @@ use serde_json::{Value, json};
 const CYCLE: &str = "flowd: pr poll wrote";
 
 /// A fake `gh` that logs each query to `calls.log` in the scratch dir and answers from the
-/// fixtures by what the query asks for. `gadgets` is the shell to run for `acme/gadgets`'s
-/// detail query.
+/// fixtures by what the query asks for. Both repos' default branch is `main`. `gadgets` is the
+/// shell to run for `acme/gadgets`'s detail query.
 fn fake_gh(ts: &TestStore, search: &str, gadgets: &str) -> std::path::PathBuf {
     let fixtures = format!("{}/tests/fixtures/github", env!("CARGO_MANIFEST_DIR"));
     let log = ts.scratch("gh").join("calls.log");
@@ -22,6 +22,7 @@ fn fake_gh(ts: &TestStore, search: &str, gadgets: &str) -> std::path::PathBuf {
             r#"printf '%s\n' "$*" >> '{log}'
 case "$*" in
   *'search('*) {search} ;;
+  *defaultBranchRef*) cat '{fixtures}/default-branch.json' ;;
   *'name: "widgets"'*'after: '*) cat '{fixtures}/widgets-contexts-2.json' ;;
   *'name: "widgets"'*) cat '{fixtures}/widgets.json' ;;
   *'name: "gadgets"'*) {gadgets} ;;
@@ -77,8 +78,8 @@ fn a_poll_writes_every_field_of_each_pr() {
     let before = Timestamp::now();
     let mut flowd = ts.flowd();
     let line = flowd.wait_for_line(CYCLE);
-    assert!(line.contains("wrote 3 PRs"), "{line}");
-    assert!(line.contains("for 5 points, 0 errors"), "{line}");
+    assert!(line.contains("wrote 5 PRs"), "{line}");
+    assert!(line.contains("for 7 points, 0 errors"), "{line}");
 
     let pr = pr_get(&ts, "acme/widgets#7");
     assert_eq!(pr["key"], "acme/widgets#7");
@@ -92,18 +93,42 @@ fn a_poll_writes_every_field_of_each_pr() {
             "title": "[ABC-123] Add widgets", "state": "OPEN", "isDraft": false,
             "headRefName": "feat/x", "headRefOid": "0123456789abcdef0123456789abcdef01234567",
             "baseRefName": "main", "mergeable": "MERGEABLE", "reviewDecision": "REVIEW_REQUIRED",
-            "reviewRequests": [{"login": "alice"}, {"team": "platform"}],
+            "reviewRequests": [
+                {"login": "alice", "asCodeOwner": false},
+                {"team": "platform", "asCodeOwner": true},
+            ],
             // Required only: the cancelled `lint` and the failed `ci/optional` are not
             // required. `build`'s failed run is replaced by its later rerun, from page 2.
             "checks": [
-                {"name": "build", "status": "COMPLETED", "conclusion": "SUCCESS"},
-                {"name": "ci/legacy", "status": "PENDING", "conclusion": null},
-                {"name": "security", "status": "COMPLETED", "conclusion": "SUCCESS"},
-                {"name": "test", "status": "IN_PROGRESS", "conclusion": null},
+                {"name": "build", "status": "COMPLETED", "conclusion": "SUCCESS",
+                 "url": "https://github.com/acme/widgets/actions/runs/2/job/105"},
+                {"name": "ci/legacy", "status": "PENDING", "conclusion": null,
+                 "url": "https://ci.example.com/acme/widgets/7"},
+                {"name": "security", "status": "COMPLETED", "conclusion": "SUCCESS", "url": null},
+                {"name": "test", "status": "IN_PROGRESS", "conclusion": null,
+                 "url": "https://github.com/acme/widgets/actions/runs/2/job/104"},
             ],
             "stack": {"position": 2},
             "updatedAt": "2026-11-10T11:00:00Z", "additions": 120, "deletions": 4,
-            "unresolvedReviewThreads": 2,
+            "changedFiles": 6,
+            // The dismissed and commented reviews are dropped.
+            "reviews": [
+                {"login": "bob", "state": "APPROVED", "teams": ["platform", "web"]},
+                {"login": "carol", "state": "CHANGES_REQUESTED", "teams": []},
+            ],
+            // The resolved and the outdated threads are dropped. A deleted author is `ghost`.
+            "threads": [
+                {"login": "carol", "path": "src/widget.rs", "line": 42,
+                 "body": "This unwrap can panic on an empty widget.\nReturn an error instead.",
+                 "url": "https://github.com/acme/widgets/pull/7#discussion_r1",
+                 "createdAt": "2026-11-09T15:00:00Z"},
+                {"login": "ghost", "path": "README.md", "line": null,
+                 "body": "Document the new widget.",
+                 "url": "https://github.com/acme/widgets/pull/7#discussion_r4",
+                 "createdAt": "2026-11-09T16:00:00Z"},
+            ],
+            // The oldest missing commit's PR merged then; it was committed hours earlier.
+            "behindSince": "2026-11-09T08:30:00Z",
         })
     );
 
@@ -118,6 +143,58 @@ fn a_poll_writes_every_field_of_each_pr() {
     assert_eq!(draft["github"]["reviewDecision"], Value::Null);
 }
 
+#[test]
+fn behind_since_is_when_the_oldest_missing_default_branch_commit_landed() {
+    let ts = TestStore::new();
+    let log = fake_gh(&ts, &search_ok(), &gadgets_ok());
+    let mut flowd = ts.flowd();
+    flowd.wait_for_line(CYCLE);
+
+    assert!(
+        calls(&log).contains(r#"compare(headRef: "main")"#),
+        "{}",
+        calls(&log)
+    );
+    let behind = |key: &str| pr_get(&ts, key)["github"]["behindSince"].clone();
+    // The oldest missing commit has no PR: its commit date.
+    assert_eq!(behind("acme/gadgets#3"), "2026-11-08T06:00:00Z");
+    // 0 behind.
+    assert_eq!(behind("acme/gadgets#4"), Value::Null);
+    // Based on another PR's branch, though its head lacks commits on `main`.
+    assert_eq!(behind("acme/widgets#8"), Value::Null);
+    // Merged, though its head lacks commits on `main`.
+    assert_eq!(behind("acme/widgets#5"), Value::Null);
+}
+
+#[test]
+fn the_default_branch_is_looked_up_once_per_repo_not_once_per_poll() {
+    let ts = TestStore::new();
+    let log = fake_gh(&ts, &search_ok(), &gadgets_ok());
+    let mut flowd = ts.flowd_with_env(&[("FLOWD_POLL_INTERVAL", "0")]);
+    flowd.wait_for_line(CYCLE);
+    // The second poll skips the merged PR, whose `updatedAt` is unchanged.
+    let line = flowd.wait_for_line(CYCLE);
+    assert!(line.contains("wrote 4 PRs"), "{line}");
+    assert!(line.contains("0 errors"), "{line}");
+
+    let calls = calls(&log);
+    let lookups: Vec<&str> = calls
+        .lines()
+        .filter(|call| call.contains("defaultBranchRef"))
+        .collect();
+    assert_eq!(lookups.len(), 2, "{calls}");
+    assert!(
+        lookups
+            .iter()
+            .any(|call| call.contains(r#"name: "widgets""#))
+    );
+    assert!(
+        lookups
+            .iter()
+            .any(|call| call.contains(r#"name: "gadgets""#))
+    );
+}
+
 /// Polls with `acme/gadgets`'s batch running `gadgets`, over a stored `acme/gadgets#3`, and
 /// asserts that PR keeps its old facet while `acme/widgets`'s batch still writes.
 fn failed_batch_keeps_the_last_facet(gadgets: &str, env: &[(&str, &str)]) {
@@ -130,13 +207,13 @@ fn failed_batch_keeps_the_last_facet(gadgets: &str, env: &[(&str, &str)]) {
         "headRefOid": "1111111111111111111111111111111111111111", "baseRefName": "main",
         "mergeable": "MERGEABLE", "reviewDecision": null, "reviewRequests": [], "checks": [],
         "stack": null, "updatedAt": "2026-11-09T07:00:00Z", "additions": 1, "deletions": 0,
-        "unresolvedReviewThreads": 0,
+        "changedFiles": 1, "reviews": [], "threads": [], "behindSince": null,
     });
     seed(&ts, "acme/gadgets#3", &old, old_at);
 
     let mut flowd = ts.flowd_with_env(env);
     let line = flowd.wait_for_line(CYCLE);
-    assert!(line.contains("wrote 2 PRs"), "{line}");
+    assert!(line.contains("wrote 3 PRs"), "{line}");
     assert!(line.contains("1 errors"), "{line}");
 
     let kept = pr_get(&ts, "acme/gadgets#3");
@@ -169,7 +246,7 @@ fn a_closed_pr_with_an_unchanged_updated_at_is_not_refetched() {
         "headRefOid": "89abcdef0123456789abcdef0123456789abcdef", "baseRefName": "main",
         "mergeable": "UNKNOWN", "reviewDecision": "APPROVED", "reviewRequests": [], "checks": [],
         "stack": null, "updatedAt": "2026-11-01T09:00:00Z", "additions": 30, "deletions": 0,
-        "unresolvedReviewThreads": 0,
+        "changedFiles": 3, "reviews": [], "threads": [], "behindSince": null,
     });
     seed(&ts, "acme/widgets#5", &merged, merged_at);
     // An open PR is refetched even when its `updatedAt` is unchanged.
@@ -182,7 +259,7 @@ fn a_closed_pr_with_an_unchanged_updated_at_is_not_refetched() {
 
     let mut flowd = ts.flowd();
     let line = flowd.wait_for_line(CYCLE);
-    assert!(line.contains("wrote 2 PRs"), "{line}");
+    assert!(line.contains("wrote 4 PRs"), "{line}");
 
     let calls = calls(&log);
     assert!(calls.contains("pullRequest(number: 7)"), "{calls}");

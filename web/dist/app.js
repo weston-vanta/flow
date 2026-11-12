@@ -31,7 +31,7 @@
     return { lamp: "fine", tip: "CI: passing" };
   }
   function feedbackLight(g) {
-    const n = g.unresolvedReviewThreads;
+    const n = g.threads.length;
     if (g.state !== "MERGED" && n > 0) {
       return { lamp: "act", tip: `feedback: ${n} unresolved thread${n === 1 ? "" : "s"}` };
     }

@@ -45,7 +45,7 @@ export interface Github {
   updatedAt: string;
   additions: number;
   deletions: number;
-  unresolvedReviewThreads: number;
+  threads: unknown[];
 }
 
 export interface Pr {
@@ -136,7 +136,7 @@ export function ciLight(g: Github): Light {
 }
 
 export function feedbackLight(g: Github): Light {
-  const n = g.unresolvedReviewThreads;
+  const n = g.threads.length;
   if (g.state !== "MERGED" && n > 0) {
     return { lamp: "act", tip: `feedback: ${n} unresolved thread${n === 1 ? "" : "s"}` };
   }

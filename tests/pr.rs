@@ -66,13 +66,23 @@ fn put_pr(ts: &TestStore, repo: &str, number: u64, head: &str) {
         "baseRefName": "main",
         "mergeable": "MERGEABLE",
         "reviewDecision": "REVIEW_REQUIRED",
-        "reviewRequests": [{ "login": "alice" }, { "team": "acme/reviewers" }],
-        "checks": [{ "name": "ci", "status": "COMPLETED", "conclusion": "SUCCESS" }],
+        "reviewRequests": [
+            { "login": "alice", "asCodeOwner": false },
+            { "team": "acme/reviewers", "asCodeOwner": true },
+        ],
+        "checks": [{ "name": "ci", "status": "COMPLETED", "conclusion": "SUCCESS", "url": null }],
         "stack": { "position": 1 },
         "updatedAt": "2026-11-10T12:00:00Z",
         "additions": 10,
         "deletions": 2,
-        "unresolvedReviewThreads": 1,
+        "changedFiles": 3,
+        "reviews": [{ "login": "bob", "state": "APPROVED", "teams": ["acme/reviewers"] }],
+        "threads": [{
+            "login": "bob", "path": "src/lib.rs", "line": 3, "body": "Why?",
+            "url": format!("https://github.com/{repo}/pull/{number}#discussion_r1"),
+            "createdAt": "2026-11-10T11:00:00Z",
+        }],
+        "behindSince": "2026-11-09T12:00:00Z",
     });
     ts.store()
         .put_facet(
@@ -240,12 +250,18 @@ fn a_pr_carries_its_github_facet_in_full() {
     assert_eq!(github["isDraft"], false);
     assert_eq!(
         github["reviewRequests"],
-        json!([{ "login": "alice" }, { "team": "acme/reviewers" }])
+        json!([
+            { "login": "alice", "asCodeOwner": false },
+            { "team": "acme/reviewers", "asCodeOwner": true },
+        ])
     );
     assert_eq!(github["stack"], json!({ "position": 1 }));
     assert_eq!(github["additions"], 10);
     assert_eq!(github["deletions"], 2);
-    assert_eq!(github["unresolvedReviewThreads"], 1);
+    assert_eq!(github["changedFiles"], 3);
+    assert_eq!(github["reviews"][0]["teams"], json!(["acme/reviewers"]));
+    assert_eq!(github["threads"][0]["line"], 3);
+    assert_eq!(github["behindSince"], "2026-11-09T12:00:00Z");
 }
 
 #[test]

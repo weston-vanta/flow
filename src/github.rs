@@ -5,6 +5,8 @@
 //! in the last [`RECENT_DAYS`] days. Detail fetches every open PR, plus each closed or merged
 //! PR whose `updatedAt` differs from the stored one, in per-repo batches of at most
 //! [`BATCH`] PRs, [`PARALLEL`] batches at a time. A batch that fails writes nothing.
+//! Detail compares each PR's head with its repository's default branch, whose name is looked
+//! up once per repository and kept in [`DefaultBranches`].
 
 use std::collections::{BTreeMap, HashMap};
 use std::process::{Command, Stdio};
@@ -18,7 +20,7 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::pr::{self, Check, Github, PrState, ReviewRequest, StackPosition};
+use crate::pr::{self, Check, Github, PrState, Review, ReviewRequest, StackPosition, Thread};
 use crate::store::Store;
 
 /// How often `flowd` polls.
@@ -44,8 +46,32 @@ pub struct Cycle {
     pub errors: Vec<anyhow::Error>,
 }
 
+/// Each repository's default branch name by `owner/name`, kept across cycles for the daemon's
+/// life.
+#[derive(Default)]
+pub struct DefaultBranches(Mutex<HashMap<String, String>>);
+
+impl DefaultBranches {
+    /// `repo`'s default branch, looked up through `gh` the first time it is asked for. The lock
+    /// is held over the lookup so concurrent batches of one repository look it up once.
+    fn get(&self, gh: &Gh, owner: &str, name: &str, repo: &str) -> Result<String> {
+        let mut known = self.0.lock().unwrap();
+        if let Some(branch) = known.get(repo) {
+            return Ok(branch.clone());
+        }
+        let data = gh.query(&format!(
+            "repo: repository(owner: {}, name: {}) {{ defaultBranchRef {{ name }} }} ",
+            literal(owner),
+            literal(name)
+        ))?;
+        let branch: String = field(&data, &["repo", "defaultBranchRef", "name"])?;
+        known.insert(repo.to_owned(), branch.clone());
+        Ok(branch)
+    }
+}
+
 /// One poll cycle: discovery, then detail, with `gh` killed after `timeout`.
-pub fn poll_prs(store: &Store, timeout: Duration) -> Cycle {
+pub fn poll_prs(store: &Store, timeout: Duration, branches: &DefaultBranches) -> Cycle {
     let gh = Gh {
         timeout,
         cost: Default::default(),
@@ -67,9 +93,13 @@ pub fn poll_prs(store: &Store, timeout: Duration) -> Cycle {
                                 .skip(i)
                                 .step_by(PARALLEL)
                                 .map(|(repo, numbers)| {
-                                    write_batch(store, gh, repo, numbers).with_context(|| {
-                                        format!("batch {repo} {numbers:?} failed; nothing written")
-                                    })
+                                    write_batch(store, gh, branches, repo, numbers).with_context(
+                                        || {
+                                            format!(
+                                                "batch {repo} {numbers:?} failed; nothing written"
+                                            )
+                                        },
+                                    )
                                 })
                                 .collect::<Vec<_>>()
                         })
@@ -194,11 +224,23 @@ fn discover(gh: &Gh) -> Result<Vec<Found>> {
     Ok(found)
 }
 
-/// The PR fields fetched in detail, other than check contexts.
+/// The PR fields fetched in detail, other than check contexts and the default-branch compare.
 const PR_FIELDS: &str = "number url title state isDraft headRefName headRefOid baseRefName \
-    mergeable reviewDecision updatedAt additions deletions stackEntry { position } \
-    reviewRequests(first: 20) { nodes { requestedReviewer { ... on User { login } ... on Bot { login } ... on Mannequin { login } ... on Team { slug } } } } \
-    reviewThreads(first: 100) { nodes { isResolved } }";
+    mergeable reviewDecision updatedAt additions deletions changedFiles stackEntry { position } \
+    reviewRequests(first: 20) { nodes { asCodeOwner requestedReviewer { ... on User { login } ... on Bot { login } ... on Mannequin { login } ... on Team { slug } } } } \
+    latestOpinionatedReviews(first: 20, writersOnly: true) { nodes { author { login } state onBehalfOf(first: 5) { nodes { slug } } } } \
+    reviewThreads(first: 100) { nodes { isResolved isOutdated path line comments(first: 1) { nodes { author { login } bodyText url createdAt } } } }";
+
+/// The selection comparing the PR's head with `default_branch`: how far that branch is ahead,
+/// and its oldest commit the head lacks, with the PR that landed it. `associatedPullRequests`
+/// is asked of that one commit only; across many commits GitHub answers HTTP 502.
+fn compare(default_branch: &str) -> String {
+    format!(
+        "headRef {{ compare(headRef: {}) {{ aheadBy commits(first: 1) {{ nodes {{ committedDate \
+         associatedPullRequests(first: 1) {{ nodes {{ mergedAt }} }} }} }} }} }}",
+        literal(default_branch)
+    )
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -216,28 +258,93 @@ struct RawPr {
     updated_at: String,
     additions: u64,
     deletions: u64,
+    changed_files: u64,
     stack_entry: Option<StackPosition>,
     review_requests: Connection<RequestNode>,
-    review_threads: Connection<Thread>,
+    latest_opinionated_reviews: Connection<RawReview>,
+    review_threads: Connection<RawThread>,
+    head_ref: Option<HeadRef>,
     status_check_rollup: Option<Rollup>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RequestNode {
+    as_code_owner: bool,
     requested_reviewer: Option<Reviewer>,
+}
+
+#[derive(Deserialize)]
+struct Author {
+    login: String,
+}
+
+/// The login of `author`, or `ghost` (as GitHub shows it) for a deleted account.
+fn login(author: Option<Author>) -> String {
+    author.map_or_else(|| "ghost".to_owned(), |author| author.login)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawReview {
+    author: Option<Author>,
+    state: String,
+    on_behalf_of: Connection<Slug>,
+}
+
+#[derive(Deserialize)]
+struct Slug {
+    slug: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawThread {
+    is_resolved: bool,
+    is_outdated: bool,
+    path: String,
+    line: Option<u64>,
+    comments: Connection<Comment>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Comment {
+    author: Option<Author>,
+    body_text: String,
+    url: String,
+    created_at: String,
+}
+
+#[derive(Deserialize)]
+struct HeadRef {
+    compare: Option<Comparison>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Comparison {
+    ahead_by: u64,
+    commits: Connection<Commit>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Commit {
+    committed_date: String,
+    associated_pull_requests: Connection<Merged>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Merged {
+    merged_at: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct Reviewer {
     login: Option<String>,
     slug: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Thread {
-    is_resolved: bool,
 }
 
 #[derive(Deserialize)]
@@ -254,11 +361,13 @@ enum Context {
         status: Option<String>,
         conclusion: Option<String>,
         database_id: Option<u64>,
+        details_url: Option<String>,
         is_required: bool,
     },
     StatusContext {
         context: String,
         state: String,
+        target_url: Option<String>,
         is_required: bool,
     },
 }
@@ -267,19 +376,27 @@ enum Context {
 fn contexts(number: u64, after: Option<&str>) -> String {
     format!(
         "statusCheckRollup {{ contexts(first: 100{}) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ __typename \
-         ... on CheckRun {{ name status conclusion databaseId isRequired(pullRequestNumber: {number}) }} \
-         ... on StatusContext {{ context state isRequired(pullRequestNumber: {number}) }} }} }} }}",
+         ... on CheckRun {{ name status conclusion databaseId detailsUrl isRequired(pullRequestNumber: {number}) }} \
+         ... on StatusContext {{ context state targetUrl isRequired(pullRequestNumber: {number}) }} }} }} }}",
         after_arg(after)
     )
 }
 
 /// Fetches PRs `numbers` of `repo` in one query, pages through their check contexts, and
 /// writes them all, stamped with the time the fetch began. Returns how many were written.
-fn write_batch(store: &Store, gh: &Gh, repo: &str, numbers: &[u64]) -> Result<usize> {
+fn write_batch(
+    store: &Store,
+    gh: &Gh,
+    branches: &DefaultBranches,
+    repo: &str,
+    numbers: &[u64],
+) -> Result<usize> {
     let at = Timestamp::now();
     let (owner, name) = repo
         .split_once('/')
         .ok_or_else(|| anyhow!("repo {repo:?} is not owner/name"))?;
+    let default_branch = branches.get(gh, owner, name, repo)?;
+    let compare = compare(&default_branch);
     let in_repo = |prs: String| {
         format!(
             "repo: repository(owner: {}, name: {}) {{ {prs} }}",
@@ -291,7 +408,7 @@ fn write_batch(store: &Store, gh: &Gh, repo: &str, numbers: &[u64]) -> Result<us
         .iter()
         .map(|n| {
             format!(
-                "p{n}: pullRequest(number: {n}) {{ {PR_FIELDS} {} }} ",
+                "p{n}: pullRequest(number: {n}) {{ {PR_FIELDS} {compare} {} }} ",
                 contexts(*n, None)
             )
         })
@@ -341,7 +458,10 @@ fn write_batch(store: &Store, gh: &Gh, repo: &str, numbers: &[u64]) -> Result<us
         }
     }
 
-    let githubs: Vec<Github> = prs.into_iter().map(|raw| github(repo, raw)).collect();
+    let githubs: Vec<Github> = prs
+        .into_iter()
+        .map(|raw| github(repo, &default_branch, raw))
+        .collect();
     for github in &githubs {
         let key = pr::key(repo, github.number);
         store.put_facet(
@@ -355,11 +475,28 @@ fn write_batch(store: &Store, gh: &Gh, repo: &str, numbers: &[u64]) -> Result<us
     Ok(githubs.len())
 }
 
-fn github(repo: &str, raw: RawPr) -> Github {
+fn github(repo: &str, default_branch: &str, raw: RawPr) -> Github {
     let contexts = raw
         .status_check_rollup
         .map(|rollup| rollup.contexts.nodes)
         .unwrap_or_default();
+    // When the oldest commit the head lacks landed: its PR's merge, as a merge queue commits
+    // hours before landing, else its commit date. Past 1,000 commits behind GitHub lists only
+    // the newest 1,000, so this is then an upper bound.
+    let behind_since = raw
+        .head_ref
+        .and_then(|head| head.compare)
+        .filter(|_| raw.state == PrState::Open && raw.base_ref_name == default_branch)
+        .filter(|compare| compare.ahead_by > 0)
+        .and_then(|compare| compare.commits.nodes.into_iter().next())
+        .map(|commit| {
+            commit
+                .associated_pull_requests
+                .nodes
+                .into_iter()
+                .find_map(|pr| pr.merged_at)
+                .unwrap_or(commit.committed_date)
+        });
     Github {
         repo: repo.to_owned(),
         number: raw.number,
@@ -378,11 +515,34 @@ fn github(repo: &str, raw: RawPr) -> Github {
             .into_iter()
             .filter_map(|node| {
                 let reviewer = node.requested_reviewer?;
+                let as_code_owner = node.as_code_owner;
                 match (reviewer.login, reviewer.slug) {
-                    (Some(login), _) => Some(ReviewRequest::Login { login }),
-                    (None, Some(team)) => Some(ReviewRequest::Team { team }),
+                    (Some(login), _) => Some(ReviewRequest::Login {
+                        login,
+                        as_code_owner,
+                    }),
+                    (None, Some(team)) => Some(ReviewRequest::Team {
+                        team,
+                        as_code_owner,
+                    }),
                     (None, None) => None,
                 }
+            })
+            .collect(),
+        reviews: raw
+            .latest_opinionated_reviews
+            .nodes
+            .into_iter()
+            .filter(|review| matches!(review.state.as_str(), "APPROVED" | "CHANGES_REQUESTED"))
+            .map(|review| Review {
+                login: login(review.author),
+                state: review.state,
+                teams: review
+                    .on_behalf_of
+                    .nodes
+                    .into_iter()
+                    .map(|team| team.slug)
+                    .collect(),
             })
             .collect(),
         checks: required_checks(contexts),
@@ -390,12 +550,25 @@ fn github(repo: &str, raw: RawPr) -> Github {
         updated_at: raw.updated_at,
         additions: raw.additions,
         deletions: raw.deletions,
-        unresolved_review_threads: raw
+        changed_files: raw.changed_files,
+        threads: raw
             .review_threads
             .nodes
-            .iter()
-            .filter(|thread| !thread.is_resolved)
-            .count() as u64,
+            .into_iter()
+            .filter(|thread| !thread.is_resolved && !thread.is_outdated)
+            .filter_map(|thread| {
+                let comment = thread.comments.nodes.into_iter().next()?;
+                Some(Thread {
+                    login: login(comment.author),
+                    path: thread.path,
+                    line: thread.line,
+                    body: comment.body_text,
+                    url: comment.url,
+                    created_at: comment.created_at,
+                })
+            })
+            .collect(),
+        behind_since,
     }
 }
 
@@ -412,6 +585,7 @@ fn required_checks(contexts: Vec<Context>) -> Vec<Check> {
                 status,
                 conclusion,
                 database_id,
+                details_url,
                 is_required: true,
             } => (
                 database_id.unwrap_or(0),
@@ -419,11 +593,13 @@ fn required_checks(contexts: Vec<Context>) -> Vec<Check> {
                     name,
                     status,
                     conclusion,
+                    url: details_url,
                 },
             ),
             Context::StatusContext {
                 context,
                 state,
+                target_url,
                 is_required: true,
             } => {
                 let pending = matches!(state.as_str(), "PENDING" | "EXPECTED");
@@ -435,6 +611,7 @@ fn required_checks(contexts: Vec<Context>) -> Vec<Check> {
                         "COMPLETED".to_owned()
                     }),
                     conclusion: (!pending).then_some(state),
+                    url: target_url,
                 };
                 (0, check)
             }

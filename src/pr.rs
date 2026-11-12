@@ -59,9 +59,18 @@ pub struct Github {
     pub additions: u64,
     #[serde(default)]
     pub deletions: u64,
-    /// How many review threads are not resolved.
     #[serde(default)]
-    pub unresolved_review_threads: u64,
+    pub changed_files: u64,
+    /// The latest reviews that approved or requested changes.
+    #[serde(default)]
+    pub reviews: Vec<Review>,
+    /// The Feedback: unresolved, not-outdated review threads, each by its first comment.
+    #[serde(default)]
+    pub threads: Vec<Thread>,
+    /// When the oldest default-branch commit the head lacks landed there; `None` unless the
+    /// PR is open, based on the default branch, and behind it by at least one commit.
+    #[serde(default)]
+    pub behind_since: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,10 +83,42 @@ pub enum PrState {
 
 /// A pending review request, for a person or a team.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(untagged, rename_all_fields = "camelCase")]
 pub enum ReviewRequest {
-    Login { login: String },
-    Team { team: String },
+    Login {
+        login: String,
+        #[serde(default)]
+        as_code_owner: bool,
+    },
+    Team {
+        team: String,
+        #[serde(default)]
+        as_code_owner: bool,
+    },
+}
+
+/// A reviewer's latest review that approved or requested changes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Review {
+    pub login: String,
+    /// `APPROVED` or `CHANGES_REQUESTED`.
+    pub state: String,
+    /// The slugs of the teams the review was given on behalf of.
+    pub teams: Vec<String>,
+}
+
+/// A review thread, by its first comment.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Thread {
+    pub login: String,
+    pub path: String,
+    /// `None` for a comment on the whole file.
+    pub line: Option<u64>,
+    /// The comment as plain text, in full.
+    pub body: String,
+    pub url: String,
+    pub created_at: String,
 }
 
 /// A required check, with GitHub's raw `status` and `conclusion`.
@@ -86,6 +127,9 @@ pub struct Check {
     pub name: String,
     pub status: Option<String>,
     pub conclusion: Option<String>,
+    /// The check run's `detailsUrl` or the commit status's `targetUrl`.
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

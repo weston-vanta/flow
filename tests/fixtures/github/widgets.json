@@ -4,31 +4,73 @@
       "number": 7, "url": "https://github.com/acme/widgets/pull/7", "title": "[ABC-123] Add widgets",
       "state": "OPEN", "isDraft": false, "headRefName": "feat/x", "headRefOid": "0123456789abcdef0123456789abcdef01234567",
       "baseRefName": "main", "mergeable": "MERGEABLE", "reviewDecision": "REVIEW_REQUIRED",
-      "updatedAt": "2026-11-10T11:00:00Z", "additions": 120, "deletions": 4,
+      "updatedAt": "2026-11-10T11:00:00Z", "additions": 120, "deletions": 4, "changedFiles": 6,
       "stackEntry": {"position": 2},
       "reviewRequests": {"nodes": [
-        {"requestedReviewer": {"login": "alice"}},
-        {"requestedReviewer": {"slug": "platform"}}
+        {"asCodeOwner": false, "requestedReviewer": {"login": "alice"}},
+        {"asCodeOwner": true, "requestedReviewer": {"slug": "platform"}}
       ]},
-      "reviewThreads": {"nodes": [{"isResolved": false}, {"isResolved": true}, {"isResolved": false}]},
+      "latestOpinionatedReviews": {"nodes": [
+        {"author": {"login": "bob"}, "state": "APPROVED", "onBehalfOf": {"nodes": [{"slug": "platform"}, {"slug": "web"}]}},
+        {"author": {"login": "carol"}, "state": "CHANGES_REQUESTED", "onBehalfOf": {"nodes": []}},
+        {"author": {"login": "dave"}, "state": "DISMISSED", "onBehalfOf": {"nodes": []}},
+        {"author": {"login": "erin"}, "state": "COMMENTED", "onBehalfOf": {"nodes": []}}
+      ]},
+      "reviewThreads": {"nodes": [
+        {"isResolved": false, "isOutdated": false, "path": "src/widget.rs", "line": 42, "comments": {"nodes": [
+          {"author": {"login": "carol"}, "bodyText": "This unwrap can panic on an empty widget.\nReturn an error instead.", "url": "https://github.com/acme/widgets/pull/7#discussion_r1", "createdAt": "2026-11-09T15:00:00Z"}
+        ]}},
+        {"isResolved": true, "isOutdated": false, "path": "src/widget.rs", "line": 10, "comments": {"nodes": [
+          {"author": {"login": "carol"}, "bodyText": "Resolved already.", "url": "https://github.com/acme/widgets/pull/7#discussion_r2", "createdAt": "2026-11-09T15:01:00Z"}
+        ]}},
+        {"isResolved": false, "isOutdated": true, "path": "src/old.rs", "line": null, "comments": {"nodes": [
+          {"author": {"login": "carol"}, "bodyText": "On code that has since changed.", "url": "https://github.com/acme/widgets/pull/7#discussion_r3", "createdAt": "2026-11-09T15:02:00Z"}
+        ]}},
+        {"isResolved": false, "isOutdated": false, "path": "README.md", "line": null, "comments": {"nodes": [
+          {"author": null, "bodyText": "Document the new widget.", "url": "https://github.com/acme/widgets/pull/7#discussion_r4", "createdAt": "2026-11-09T16:00:00Z"}
+        ]}}
+      ]},
+      "headRef": {"compare": {"aheadBy": 3, "commits": {"nodes": [
+        {"committedDate": "2026-11-09T04:00:00Z", "associatedPullRequests": {"nodes": [{"mergedAt": "2026-11-09T08:30:00Z"}]}}
+      ]}}},
       "statusCheckRollup": {"contexts": {
         "pageInfo": {"hasNextPage": true, "endCursor": "Y3Vyc29yOjEwMA=="},
         "nodes": [
-          {"__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "FAILURE", "databaseId": 100, "isRequired": true},
-          {"__typename": "CheckRun", "name": "lint", "status": "COMPLETED", "conclusion": "CANCELLED", "databaseId": 101, "isRequired": false},
-          {"__typename": "StatusContext", "context": "ci/legacy", "state": "PENDING", "isRequired": true},
-          {"__typename": "StatusContext", "context": "ci/optional", "state": "FAILURE", "isRequired": false}
+          {"__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "FAILURE", "databaseId": 100, "detailsUrl": "https://github.com/acme/widgets/actions/runs/1/job/100", "isRequired": true},
+          {"__typename": "CheckRun", "name": "lint", "status": "COMPLETED", "conclusion": "CANCELLED", "databaseId": 101, "detailsUrl": "https://github.com/acme/widgets/actions/runs/1/job/101", "isRequired": false},
+          {"__typename": "StatusContext", "context": "ci/legacy", "state": "PENDING", "targetUrl": "https://ci.example.com/acme/widgets/7", "isRequired": true},
+          {"__typename": "StatusContext", "context": "ci/optional", "state": "FAILURE", "targetUrl": null, "isRequired": false}
         ]
       }}
+    },
+    "p8": {
+      "number": 8, "url": "https://github.com/acme/widgets/pull/8", "title": "[ABC-124] Polish widgets",
+      "state": "OPEN", "isDraft": false, "headRefName": "feat/y", "headRefOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "baseRefName": "feat/x", "mergeable": "MERGEABLE", "reviewDecision": "REVIEW_REQUIRED",
+      "updatedAt": "2026-11-10T11:30:00Z", "additions": 8, "deletions": 2, "changedFiles": 2,
+      "stackEntry": {"position": 3},
+      "reviewRequests": {"nodes": []},
+      "latestOpinionatedReviews": {"nodes": []},
+      "reviewThreads": {"nodes": []},
+      "headRef": {"compare": {"aheadBy": 3, "commits": {"nodes": [
+        {"committedDate": "2026-11-09T04:00:00Z", "associatedPullRequests": {"nodes": [{"mergedAt": "2026-11-09T08:30:00Z"}]}}
+      ]}}},
+      "statusCheckRollup": null
     },
     "p5": {
       "number": 5, "url": "https://github.com/acme/widgets/pull/5", "title": "Widget base",
       "state": "MERGED", "isDraft": false, "headRefName": "feat/base", "headRefOid": "89abcdef0123456789abcdef0123456789abcdef",
       "baseRefName": "main", "mergeable": "UNKNOWN", "reviewDecision": "APPROVED",
-      "updatedAt": "2026-11-01T09:00:00Z", "additions": 30, "deletions": 0,
+      "updatedAt": "2026-11-01T09:00:00Z", "additions": 30, "deletions": 0, "changedFiles": 3,
       "stackEntry": null,
       "reviewRequests": {"nodes": []},
+      "latestOpinionatedReviews": {"nodes": [
+        {"author": {"login": "bob"}, "state": "APPROVED", "onBehalfOf": {"nodes": []}}
+      ]},
       "reviewThreads": {"nodes": []},
+      "headRef": {"compare": {"aheadBy": 40, "commits": {"nodes": [
+        {"committedDate": "2026-11-01T10:00:00Z", "associatedPullRequests": {"nodes": [{"mergedAt": "2026-11-01T12:00:00Z"}]}}
+      ]}}},
       "statusCheckRollup": null
     }
   },

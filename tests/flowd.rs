@@ -38,7 +38,7 @@ fn owned_pr(ts: &TestStore, owner: &str) {
         "headRefOid": "0123456789abcdef0123456789abcdef01234567", "baseRefName": "main",
         "mergeable": "MERGEABLE", "reviewDecision": "REVIEW_REQUIRED", "reviewRequests": [],
         "checks": [], "stack": null, "updatedAt": "2026-11-10T12:00:00Z",
-        "additions": 10, "deletions": 2, "unresolvedReviewThreads": 0,
+        "additions": 10, "deletions": 2, "changedFiles": 1, "reviews": [], "threads": [], "behindSince": null,
     });
     ts.store()
         .put_facet("pr", "acme/widgets#7", "github", &github, Timestamp::now())
