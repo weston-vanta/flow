@@ -24,7 +24,7 @@ Cut the approved `spec.md` into PRs the Director can review, and give each PR a 
            └─ 5 docs
      ```
    - one line per PR saying what it achieves (in words, not by requirement number);
-   - the Review passes, from `flow:review`: by default intent + correctness + standards per PR, tests per PR, and reviewability + simplicity + architecture per Stack; a light Task gets one pass with every dimension;
+   - the Review passes, picked with `flow:review`;
    - the external records, once the Director has asked for any.
 2. **Write the builder briefs** once the plan is approved: one `prs/<nn>-<name>.md` per PR, numbered as in the picture. A brief has no fixed format, only a test: could a fresh agent with this brief and the repo finish the PR without asking? Point at `spec.md`, the repo's guidance and the code by path rather than pasting them, and say what the PR leaves to its siblings.
 3. **Revise a brief** only when a reshape or a Revise round changes its PR, and `plan.md` whenever the plan changes.
