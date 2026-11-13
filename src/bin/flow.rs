@@ -55,7 +55,7 @@ enum SessionCommand {
         /// The Claude session id; defaults to `$CLAUDE_CODE_SESSION_ID`, the calling Session.
         id: Option<String>,
     },
-    /// Start an IC Session in a new, unfocused herdr tab on this CDE, running
+    /// Start an IC Session in a new, unfocused herdr tab on this CDE (or `--cde`), running
     /// `/flow:ic <brief>`. Prints `{id, name, cde, pane}`.
     Start {
         /// The Task slug: the Session's name and the tab's label (`[a-z][a-z0-9_-]`, at most 32).
@@ -68,6 +68,9 @@ enum SessionCommand {
         /// Session's title, else its id.
         #[arg(long)]
         workspace: Option<String>,
+        /// Launch on this other running CDE, by name, over ssh; flow never starts a CDE.
+        #[arg(long)]
+        cde: Option<String>,
         /// The IC's Session id; flow chooses a fresh UUID by default.
         #[arg(long, hide = true)]
         id: Option<String>,
@@ -139,9 +142,10 @@ fn main() -> ExitCode {
             name,
             brief,
             workspace,
+            cde,
             id,
             repo,
-        })) => session_start(&store, &name, &brief, workspace, id, &repo),
+        })) => session_start(&store, &name, &brief, workspace, cde, id, &repo),
         Some(Command::Session(SessionCommand::Remove { force, ids })) => {
             session_remove(&store, &ids, force)
         }
@@ -228,6 +232,7 @@ fn session_start(
     name: &str,
     brief: &Path,
     workspace: Option<String>,
+    cde: Option<String>,
     id: Option<String>,
     repo: &Path,
 ) -> ExitCode {
@@ -281,6 +286,15 @@ fn session_start(
         brief,
         repo,
     };
+    if let Some(cde) = cde {
+        return match launch::start_remote(&cde, &request) {
+            Ok(outcome) => {
+                println!("{}", outcome.output);
+                ExitCode::from(outcome.code)
+            }
+            Err(failure) => error(1, &failure.error, &failure.help),
+        };
+    }
     match launch::start(store, &request) {
         Ok(started) => print_json(&started),
         Err(failure) => error(1, &failure.error, &failure.help),
