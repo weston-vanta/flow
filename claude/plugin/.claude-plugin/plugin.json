@@ -1,4 +1,4 @@
 {
   "name": "flow",
-  "description": "Runs `flow hook` on every Session event so flow records the Session."
+  "description": "Records every Session in the flow Store through `flow hook`, and gives the Manager and IC skills that turn a Task into draft PRs."
 }
