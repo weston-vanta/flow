@@ -180,7 +180,7 @@ export function render(
   legend: boolean,
   t: TrayState | null,
 ): string {
-  const p = t && views.flatMap((v) => v.stacks.flat()).find((x) => x.url === t.url);
+  const p = t && views.flatMap((v) => v.prs).find((x) => x.url === t.url);
   return `<div class="page${notices.length ? " noticed" : ""}">
     <header class="top"><div class="logo" aria-hidden="true"><i></i></div><div class="brand"><b>flow</b><span>agent sessions and pull requests</span></div></header>
     <div class="deck${p && t?.open ? " open" : ""}">

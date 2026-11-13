@@ -4,7 +4,7 @@
 use std::io::Read as _;
 use std::os::unix::process::ExitStatusExt as _;
 use std::panic;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::error::ErrorKind;
@@ -68,8 +68,8 @@ enum SessionCommand {
         #[arg(long)]
         brief: PathBuf,
         /// The herdr workspace the tab goes in, created if missing; defaults to the calling
-        /// Session's title, else its id.
-        #[arg(long)]
+        /// Session's title, else its id. Set by the remote form, which has no calling Session.
+        #[arg(long, hide = true)]
         workspace: Option<String>,
         /// Launch on this other running CDE, by name, over ssh; flow never starts a CDE.
         #[arg(long)]
@@ -155,7 +155,17 @@ fn main() -> ExitCode {
             cde,
             id,
             repo,
-        })) => session_start(&store, &name, &brief, workspace, cde, id, &repo),
+        })) => session_start(
+            &store,
+            launch::Request {
+                name: &name,
+                brief: &brief,
+                workspace,
+                cde,
+                id,
+                repo: &repo,
+            },
+        ),
         Some(Command::Session(SessionCommand::Remove { force, ids })) => {
             session_remove(&store, &ids, force)
         }
@@ -241,77 +251,13 @@ fn session_get(store: &Store, id: Option<String>) -> ExitCode {
     }
 }
 
-fn session_start(
-    store: &Store,
-    name: &str,
-    brief: &Path,
-    workspace: Option<String>,
-    cde: Option<String>,
-    id: Option<String>,
-    repo: &Path,
-) -> ExitCode {
-    if !launch::is_agent_name(name) {
-        return error(
-            2,
-            &format!("--name {name:?} is not a usable Task slug"),
-            "use lowercase letters, digits, `-` and `_`, starting with a letter, at most 32 characters",
-        );
-    }
-    let workspace = match workspace {
-        Some(workspace) => workspace,
-        None => match std::env::var("CLAUDE_CODE_SESSION_ID") {
-            Ok(manager) if !manager.is_empty() => match launch::workspace_for(store, &manager) {
-                Ok(workspace) => workspace,
-                Err(err) => return store_error(&err),
-            },
-            _ => {
-                return error(
-                    2,
-                    "no --workspace given and CLAUDE_CODE_SESSION_ID is not set",
-                    "run it from a Manager Session or pass --workspace <label>",
-                );
-            }
-        },
-    };
-    let id = match id {
-        Some(id) if launch::is_uuid(&id) => id,
-        Some(id) => {
-            return error(
-                2,
-                &format!("--id {id:?} is not a UUID"),
-                "leave out --id to have flow choose one",
-            );
+fn session_start(store: &Store, request: launch::Request) -> ExitCode {
+    match launch::session_start(store, request) {
+        Ok(outcome) => {
+            println!("{}", outcome.output);
+            ExitCode::from(outcome.code)
         }
-        None => match launch::new_id() {
-            Ok(id) => id,
-            Err(err) => {
-                return error(
-                    1,
-                    &format!("cannot generate a Session id: {err}"),
-                    "this is a bug in flow",
-                );
-            }
-        },
-    };
-    let request = launch::Launch {
-        id: &id,
-        name,
-        workspace: &workspace,
-        brief,
-        repo,
-    };
-    if let Some(cde) = cde {
-        return match launch::start_remote(&cde, &request) {
-            Ok(outcome) => {
-                println!("{}", outcome.output);
-                ExitCode::from(outcome.code)
-            }
-            Err(failure) => error(1, &failure.error, &failure.help),
-        };
-    }
-    match launch::start(store, &request) {
-        Ok(started) => print_json(&started),
-        Err(failure) => error(1, &failure.error, &failure.help),
+        Err(failure) => error(failure.code, &failure.error, &failure.help),
     }
 }
 

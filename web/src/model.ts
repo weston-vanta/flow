@@ -136,6 +136,8 @@ export interface SessionView {
   activity: string | null;
   /** The Session's Stacks, oldest first, each bottom first. */
   stacks: PrView[][];
+  /** The PRs of `stacks`, flattened in the same order. */
+  prs: PrView[];
   /** Names of the Session's Branches that head no PR, oldest worktree first. */
   branches: string[];
 }
@@ -406,7 +408,13 @@ export function sessionViews(sessions: Session[], prs: Pr[], branches: Branch[] 
   const started = (s: Session) => (s.origin ? Date.parse(s.origin.at) : -Infinity);
   const sorted = [...sessions].sort((a, b) => done(a) - done(b) || started(b) - started(a));
   return sorted.map((s) => {
-    const stacks = stacksOf(s.id, prs);
+    const raw = stacksOf(s.id, prs);
+    const stacks = raw.map((stack) =>
+      stack.map((g, i) => {
+        const below = stack.find((o) => o.headRefName === g.baseRefName)?.number ?? null;
+        return prView(g, stack.length > 1 ? i + 1 : null, below, now);
+      }),
+    );
     const own = loose.filter((b) => b.owner === s.id);
     const state = s.status?.state ?? null;
     const cwd = s.origin?.cwd;
@@ -416,15 +424,11 @@ export function sessionViews(sessions: Session[], prs: Pr[], branches: Branch[] 
       status: { ...statusLight(state), state, since: s.status?.at ?? null },
       title: title ?? "New session",
       untitled: title == null,
-      repo: stacks[0]?.[0].repo ?? own[0]?.repo ?? (cwd ? cwd.split("/").filter(Boolean).pop() ?? null : null),
+      repo: raw[0]?.[0].repo ?? own[0]?.repo ?? (cwd ? cwd.split("/").filter(Boolean).pop() ?? null : null),
       cde: s.origin?.cde ?? null,
       activity: activityLine(s),
-      stacks: stacks.map((stack) =>
-        stack.map((g, i) => {
-          const below = stack.find((o) => o.headRefName === g.baseRefName)?.number ?? null;
-          return prView(g, stack.length > 1 ? i + 1 : null, below, now);
-        }),
-      ),
+      stacks,
+      prs: stacks.flat(),
       branches: own.map((b) => b.branch),
     };
   });
@@ -443,11 +447,10 @@ export function age(iso: string, now = Date.now()): string {
 /** The one light on a folded Session: act if it is waiting for you or any PR needs
  * attention, else fine. */
 export function attentionLight(v: SessionView): Light {
-  const all = v.stacks.flat();
-  const n = all.length;
+  const n = v.prs.length;
   const prs = n ? `${n} pull request${n === 1 ? "" : "s"}` : "No pull requests";
   if (v.status.state === "waiting") return { lamp: "act", tip: `${prs}: waiting for you` };
-  if (all.some((p) => p.attention)) return { lamp: "act", tip: `${prs}: something needs action` };
+  if (v.prs.some((p) => p.attention)) return { lamp: "act", tip: `${prs}: something needs action` };
   return { lamp: "fine", tip: `${prs}: nothing needs action` };
 }
 

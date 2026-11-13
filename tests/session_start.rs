@@ -27,6 +27,10 @@ const ANSWERS: &[(&str, &str)] = &[
         r#"echo '{"id":"cli:tab:create","result":{"tab":{"tab_id":"w2:t2"},"root_pane":{"pane_id":"w2:p4"}}}'"#,
     ),
     (
+        "tab rename",
+        r#"echo '{"id":"cli:tab:rename","result":{"tab":{"tab_id":"w3:t1"}}}'"#,
+    ),
+    (
         "agent start",
         r#"echo '{"id":"cli:agent:start","result":{"agent_status":"idle"}}'"#,
     ),
@@ -198,7 +202,9 @@ fn creates_the_managers_workspace_when_it_is_missing() {
             path(&l.repo)
         )
     );
-    assert!(calls[2].starts_with("agent start widgets --kind claude --pane w3:p1 "));
+    // The new workspace's first tab is labelled with the slug, as a created tab is.
+    assert_eq!(calls[2], "tab rename w3:t1 widgets");
+    assert!(calls[3].starts_with("agent start widgets --kind claude --pane w3:p1 "));
     assert_eq!(out["pane"], "w3:p1");
 }
 

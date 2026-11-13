@@ -9,6 +9,7 @@ use anyhow::{Result, anyhow, bail};
 use jiff::Timestamp;
 use serde::Deserialize;
 
+use crate::cde;
 use crate::session::{
     self, Activity, Context, Origin, Session, SessionFacet, State, Status, Subagents,
 };
@@ -84,9 +85,9 @@ pub fn handle_hook(store: &Store, stdin: &str, at: Timestamp) -> Result<()> {
             status(State::Idle)?;
             subagents(&|s| *s = Subagents::default())?;
             let env = |name| std::env::var(name).ok().filter(|v: &String| !v.is_empty());
-            let cde_id = env("ONA_ID");
+            let cde_id = cde::id();
             let origin = Origin {
-                cde: cde_id.as_deref().and_then(cde_name),
+                cde: cde_id.as_deref().and_then(cde::name),
                 cde_id,
                 pane: env("HERDR_PANE_ID"),
                 herdr_socket: env("HERDR_SOCKET_PATH"),
@@ -166,20 +167,6 @@ pub fn log_error(store: &Store, at: Timestamp, message: &str) {
         .append(true)
         .open(store.root().with_file_name("hook.log"))
         .and_then(|mut file| file.write_all(line.as_bytes()));
-}
-
-/// The CDE's name for `ona_id`, from `gitpod environment get`; `None` on any failure.
-pub fn cde_name(ona_id: &str) -> Option<String> {
-    let args = [
-        "environment",
-        "get",
-        ona_id,
-        "--field",
-        "name",
-        "--timeout",
-        "3s",
-    ];
-    output(Command::new("gitpod").args(args))
 }
 
 /// The branch checked out in `cwd`; `None` outside a git repo or on a detached HEAD.

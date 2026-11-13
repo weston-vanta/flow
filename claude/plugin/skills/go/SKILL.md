@@ -19,7 +19,7 @@ You are the Manager. Turn `$ARGUMENTS` (a Jira link, a PRD link, a question or a
 
 1. **Clarify.** Ask your one round, if any, and collect pointers to the tickets, docs, files and PRs the Task needs.
 2. **Propose a slug:** 2–4 words of kebab-case from the goal, starting with a letter, at most 32 characters, whose `/efs-home/flow/tasks/<slug>/` doesn't exist yet.
-3. **Propose a CDE.** The repo is your own: its main checkout is the first entry of `git worktree list`. A candidate is a running CDE from `gitpod environment list -r` that has the repo checked out (its repository matches the repo's remote, or `flow session list` shows a Session there with its `cwd` in the repo). Propose the candidate with the fewest active (not done) Sessions in `flow session list`, falling back to your own CDE. Never start a CDE.
+3. **Propose a CDE:** of the running CDEs in `gitpod environment list -r` with your repo checked out (its main checkout is the first entry of `git worktree list`), the one with the fewest active Sessions in `flow session list`, else your own.
 4. **Show the draft** `brief.md`, with the slug and CDE, and ask the Director to confirm or edit them:
 
    ```markdown

@@ -31,25 +31,11 @@ The Director sees your last reply as one line of Activity on the dashboard and a
 
 ## Phases
 
-Align settles the deliverable: PRs, a spec, or an answer. Stop where that deliverable is done.
+Align settles the deliverable: PRs, a spec, or an answer. Stop once it is done: a spec when `spec.md` is approved, an answer when the Director accepts `answer.md`.
 
-1. **Align.** Run `flow:align`. It ends with an approved `spec.md`, and for PRs an approved `plan.md` and one builder brief per PR under `prs/`.
-   - A spec deliverable is done once `spec.md` is approved.
-   - An answer deliverable: find the answer, dispatching Subagents for heavy reading, write it to `answer.md`, and present it. It is done once the Director accepts it.
-2. **Draft.** Run `flow guide` once for the `flow` commands. Start every PR as soon as its base is done, with no cap on how many build at once:
-   1. Create its worktree with `flow wt create`, so that you own the PR.
-   2. Dispatch a Builder with `flow:build`.
-   3. Run the PR's Review passes with `flow:review`, and continue the same Builder with `flow:revise` on the findings, for at most two rounds.
-   4. Open it as a draft at once, as `flow:build` describes, so CI runs and the Director can start reviewing.
+1. **Align.** Run `flow:align`. It ends with an approved `spec.md`, and for PRs an approved `plan.md` and one builder brief per PR under `prs/`. For an answer, find it (Subagents do the heavy reading) and write `answer.md`.
+2. **Draft.** Run `flow guide` once. Start each PR as soon as its base is done, with no cap on how many build at once: create its worktree with `flow wt create`, so you own the PR, build it with `flow:build`, run its Review passes with `flow:review` and `flow:revise` (at most two rounds), and open it as a draft. Once a Stack's PRs are all open, run its per-Stack pass and bring the findings to the Director with `flow:explain`. On their confirmation, reshape the Stack with `flow:revise` while every PR is a draft, else add follow-up PRs, so nothing under the Director's review is rewritten. Stop early only for a false assumption, a plan that contradicts other guidance, or a material concern planning didn't foresee.
+3. **Revise.** When the Director has reviewed on GitHub, give each PR with comments to a fresh Builder with `flow:build` and `flow:revise`, and report the outcomes in your pane. A comment that changes a requirement goes back to the Director as a spec change.
+4. **Done**, on the Director's word: once every PR is merged or closed, `wt remove` each clean worktree, bring the external records to their final state, and report that the Session can be ended.
 
-   Once all of a Stack's PRs are open, run its per-Stack pass, bring the findings to the Director (written with `flow:explain`) and wait. On their confirmation, reshape the Stack through `flow:revise` if every PR is still a draft, or add follow-up PRs otherwise, so that nothing the Director has started reviewing is rewritten under them. Then update the plan as below.
-
-   Otherwise keep going. Stop only when an assumption proves false, the plan contradicts other guidance, or a material concern comes up that planning didn't foresee.
-3. **Revise.** When the Director says they have reviewed on GitHub, give each PR with comments to a fresh Builder with `flow:build` and `flow:revise`. Step in only for a comment conflict it reports; a comment that changes a requirement goes back to the Director as a spec change. Update each PR as `flow:build` describes, and report the outcomes in your pane.
-4. **Done**, when the Director says the Task is done:
-   1. Check that every PR is merged or closed. If any isn't, list them and stop.
-   2. `wt remove` each worktree. Leave any dirty one in place and name it.
-   3. Bring the external records to their final state.
-   4. Report that the Session can be ended.
-
-When the plan changes, bring `plan.md` and the builder briefs up to date with `flow:plan`. Keep the external records listed in `plan.md` current, through Subagents, as the plan changes, PRs open and Revise rounds finish.
+Keep `plan.md` and the builder briefs current with `flow:plan`, and the external records listed in `plan.md` current through Subagents, as the plan changes and PRs move.

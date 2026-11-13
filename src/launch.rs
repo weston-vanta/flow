@@ -7,7 +7,7 @@ use std::process::{Command, Stdio};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::hook;
+use crate::cde;
 use crate::services::STORE_ERROR_HELP;
 use crate::session;
 use crate::store::Store;
@@ -15,8 +15,19 @@ use crate::store::Store;
 /// How long `herdr agent start` may wait for Claude to be ready, in milliseconds.
 const AGENT_START_TIMEOUT_MS: &str = "60000";
 
+/// What `flow session start` was asked for, as parsed: the id and workspace may be left out.
+pub struct Request<'a> {
+    pub name: &'a str,
+    pub brief: &'a Path,
+    pub workspace: Option<String>,
+    /// The CDE to launch on over ssh; `None` for this one.
+    pub cde: Option<String>,
+    pub id: Option<String>,
+    pub repo: &'a Path,
+}
+
 /// What to launch. Every field is a plain value, so the remote form can pass them over ssh.
-pub struct Launch<'a> {
+struct Launch<'a> {
     /// The IC's Claude session id, a UUID.
     pub id: &'a str,
     /// The Task slug: Claude's `--name`, herdr's agent name and the tab's label.
@@ -38,29 +49,100 @@ pub struct Started {
     pub pane: String,
 }
 
-/// Why a launch stopped: printed as `{error, help}` with exit 1.
+/// Why a launch stopped: printed as `{error, help}` with exit `code`, 1 (error) or 2 (usage).
 #[derive(Debug)]
 pub struct Failure {
+    pub code: u8,
     pub error: String,
     pub help: String,
 }
 
 fn fail(error: impl Into<String>, help: impl Into<String>) -> Failure {
     Failure {
+        code: 1,
         error: error.into(),
         help: help.into(),
     }
 }
 
+fn usage(error: impl Into<String>, help: impl Into<String>) -> Failure {
+    Failure {
+        code: 2,
+        ..fail(error, help)
+    }
+}
+
+/// What a launch ended with: the JSON to print and the exit code.
+pub struct Outcome {
+    pub code: u8,
+    pub output: Value,
+}
+
+/// Runs `flow session start`: checks the slug and id (choosing a fresh id if none is given),
+/// defaults the workspace to the calling Session's, then launches here or on `request.cde`.
+pub fn session_start(store: &Store, request: Request) -> Result<Outcome, Failure> {
+    let name = request.name;
+    if !is_agent_name(name) {
+        return Err(usage(
+            format!("--name {name:?} is not a usable Task slug"),
+            "use lowercase letters, digits, `-` and `_`, starting with a letter, at most 32 characters",
+        ));
+    }
+    let workspace = match request.workspace {
+        Some(workspace) => workspace,
+        None => match std::env::var("CLAUDE_CODE_SESSION_ID") {
+            Ok(manager) if !manager.is_empty() => workspace_for(store, &manager)
+                .map_err(|err| fail(format!("{err:#}"), STORE_ERROR_HELP))?,
+            _ => {
+                return Err(usage(
+                    "no --workspace given and CLAUDE_CODE_SESSION_ID is not set",
+                    "run it from a Manager Session",
+                ));
+            }
+        },
+    };
+    let id = match request.id {
+        Some(id) if is_uuid(&id) => id,
+        Some(id) => {
+            return Err(usage(
+                format!("--id {id:?} is not a UUID"),
+                "leave out --id to have flow choose one",
+            ));
+        }
+        None => new_id().map_err(|err| {
+            fail(
+                format!("cannot generate a Session id: {err}"),
+                "this is a bug in flow",
+            )
+        })?,
+    };
+    let launch = Launch {
+        id: &id,
+        name,
+        workspace: &workspace,
+        brief: request.brief,
+        repo: request.repo,
+    };
+    match request.cde {
+        Some(cde) => start_remote(&cde, &launch),
+        None => {
+            let started = start(store, &launch)?;
+            let output = serde_json::to_value(started)
+                .map_err(|err| fail(err.to_string(), "this is a bug in flow"))?;
+            Ok(Outcome { code: 0, output })
+        }
+    }
+}
+
 /// A fresh version 4 UUID, from the kernel.
-pub fn new_id() -> std::io::Result<String> {
+fn new_id() -> std::io::Result<String> {
     Ok(std::fs::read_to_string("/proc/sys/kernel/random/uuid")?
         .trim()
         .to_owned())
 }
 
 /// Whether `id` is a UUID in its hyphenated form, as `claude --session-id` requires.
-pub fn is_uuid(id: &str) -> bool {
+fn is_uuid(id: &str) -> bool {
     id.len() == 36
         && id.char_indices().all(|(i, c)| match i {
             8 | 13 | 18 | 23 => c == '-',
@@ -69,7 +151,7 @@ pub fn is_uuid(id: &str) -> bool {
 }
 
 /// Whether `name` is usable as a herdr agent name: `[a-z][a-z0-9_-]{0,31}`.
-pub fn is_agent_name(name: &str) -> bool {
+fn is_agent_name(name: &str) -> bool {
     let mut chars = name.chars();
     chars.next().is_some_and(|c| c.is_ascii_lowercase())
         && name.len() <= 32
@@ -78,7 +160,7 @@ pub fn is_agent_name(name: &str) -> bool {
 
 /// The workspace label for ICs launched by the Session `manager`: its title in the Store,
 /// else its id.
-pub fn workspace_for(store: &Store, manager: &str) -> anyhow::Result<String> {
+fn workspace_for(store: &Store, manager: &str) -> anyhow::Result<String> {
     let session = store
         .get(session::KIND, manager)?
         .as_ref()
@@ -90,7 +172,7 @@ pub fn workspace_for(store: &Store, manager: &str) -> anyhow::Result<String> {
 
 /// Checks the repo, brief and id, then opens the tab, starts Claude in it and sends
 /// `/flow:ic <brief>`. Stops at the first failure, leaving any pane as it is.
-pub fn start(store: &Store, launch: &Launch) -> Result<Started, Failure> {
+fn start(store: &Store, launch: &Launch) -> Result<Started, Failure> {
     let repo = checkout(launch.repo)?;
     let brief = launch.brief.canonicalize().map_err(|err| {
         fail(
@@ -116,32 +198,27 @@ pub fn start(store: &Store, launch: &Launch) -> Result<Started, Failure> {
         .flatten()
         .find(|w| w["label"] == launch.workspace)
         .and_then(|w| w["workspace_id"].as_str());
-    let created = match workspace {
-        Some(id) => herdr(&[
-            "tab",
-            "create",
-            "--workspace",
-            id,
-            "--cwd",
-            &repo,
-            "--label",
-            launch.name,
-            "--no-focus",
-        ])?,
-        None => herdr(&[
-            "workspace",
-            "create",
-            "--cwd",
-            &repo,
-            "--label",
-            launch.workspace,
-            "--no-focus",
-        ])?,
+    // A new tab is labelled with the slug. A new workspace takes the workspace's label, and
+    // its first tab is renamed to the slug below.
+    let (mut args, label) = match workspace {
+        Some(id) => (vec!["tab", "create", "--workspace", id], launch.name),
+        None => (vec!["workspace", "create"], launch.workspace),
     };
+    args.extend(["--cwd", &repo, "--label", label, "--no-focus"]);
+    let created = herdr(&args)?;
     let pane = created["result"]["root_pane"]["pane_id"]
         .as_str()
         .ok_or_else(|| fail("herdr returned no pane id for the new tab", HERDR_BUG_HELP))?
         .to_owned();
+    if workspace.is_none() {
+        let tab = created["result"]["tab"]["tab_id"].as_str().ok_or_else(|| {
+            fail(
+                "herdr returned no tab id for the new workspace",
+                HERDR_BUG_HELP,
+            )
+        })?;
+        herdr(&["tab", "rename", tab, launch.name]).map_err(|f| in_pane(f, &pane))?;
+    }
     herdr(&[
         "agent",
         "start",
@@ -161,14 +238,10 @@ pub fn start(store: &Store, launch: &Launch) -> Result<Started, Failure> {
     .map_err(|f| in_pane(f, &pane))?;
     let prompt = format!("/flow:ic {}", brief.display());
     herdr(&["agent", "prompt", &pane, &prompt]).map_err(|f| in_pane(f, &pane))?;
-    let cde = std::env::var("ONA_ID")
-        .ok()
-        .filter(|id| !id.is_empty())
-        .and_then(|id| hook::cde_name(&id));
     Ok(Started {
         id: launch.id.to_owned(),
         name: launch.name.to_owned(),
-        cde,
+        cde: cde::this_name(),
         pane,
     })
 }
@@ -176,17 +249,11 @@ pub fn start(store: &Store, launch: &Launch) -> Result<Started, Failure> {
 /// The installed `flow` every CDE shares, which a remote launch runs.
 const INSTALLED_FLOW: &str = "/efs-home/flow/bin/flow";
 
-/// What a remote launch ended with: the target's JSON output and exit code.
-pub struct RemoteOutcome {
-    pub code: u8,
-    pub output: Value,
-}
-
 /// Launches on the CDE named `cde`: resolves its environment id through `gitpod`, checks it
 /// is running (it never starts one), then runs the local form of `flow session start` there
 /// over ssh with every value explicit. The target's `{error, help}` and exit code pass through
 /// unchanged; on success `cde` is set to `cde`.
-pub fn start_remote(cde: &str, launch: &Launch) -> Result<RemoteOutcome, Failure> {
+fn start_remote(cde: &str, launch: &Launch) -> Result<Outcome, Failure> {
     let env_id = running_environment(cde)?;
     let absolute = |p: &Path| std::path::absolute(p).unwrap_or_else(|_| p.to_owned());
     let (brief, repo) = (absolute(launch.brief), absolute(launch.repo));
@@ -219,7 +286,7 @@ pub fn start_remote(cde: &str, launch: &Launch) -> Result<RemoteOutcome, Failure
             if code == 0 {
                 output["cde"] = cde.into();
             }
-            Ok(RemoteOutcome {
+            Ok(Outcome {
                 code: code as u8,
                 output,
             })

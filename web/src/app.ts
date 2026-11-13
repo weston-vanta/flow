@@ -40,7 +40,7 @@ function page(): string {
   const stale = prDataAge(prs);
   if (stale != null) notices.push(`PR data ${stale} min old`);
   const views = sessionViews(sessions, prs, branches);
-  if (tray && !views.some((v) => v.stacks.some((s) => s.some((p) => p.url === tray!.url)))) tray = null;
+  if (tray && !views.some((v) => v.prs.some((p) => p.url === tray!.url))) tray = null;
   return render(views, toggled, notices, legend, tray);
 }
 

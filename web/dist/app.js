@@ -173,7 +173,13 @@
     const started = (s) => s.origin ? Date.parse(s.origin.at) : -Infinity;
     const sorted = [...sessions2].sort((a, b) => done2(a) - done2(b) || started(b) - started(a));
     return sorted.map((s) => {
-      const stacks = stacksOf(s.id, prs2);
+      const raw = stacksOf(s.id, prs2);
+      const stacks = raw.map(
+        (stack) => stack.map((g, i) => {
+          const below = stack.find((o) => o.headRefName === g.baseRefName)?.number ?? null;
+          return prView(g, stack.length > 1 ? i + 1 : null, below, now);
+        })
+      );
       const own = loose.filter((b) => b.owner === s.id);
       const state = s.status?.state ?? null;
       const cwd = s.origin?.cwd;
@@ -183,15 +189,11 @@
         status: { ...statusLight(state), state, since: s.status?.at ?? null },
         title: title2 ?? "New session",
         untitled: title2 == null,
-        repo: stacks[0]?.[0].repo ?? own[0]?.repo ?? (cwd ? cwd.split("/").filter(Boolean).pop() ?? null : null),
+        repo: raw[0]?.[0].repo ?? own[0]?.repo ?? (cwd ? cwd.split("/").filter(Boolean).pop() ?? null : null),
         cde: s.origin?.cde ?? null,
         activity: activityLine(s),
-        stacks: stacks.map(
-          (stack) => stack.map((g, i) => {
-            const below = stack.find((o) => o.headRefName === g.baseRefName)?.number ?? null;
-            return prView(g, stack.length > 1 ? i + 1 : null, below, now);
-          })
-        ),
+        stacks,
+        prs: stacks.flat(),
         branches: own.map((b) => b.branch)
       };
     });
@@ -205,11 +207,10 @@
     return `${Math.floor(h / 24)} d`;
   }
   function attentionLight(v) {
-    const all = v.stacks.flat();
-    const n = all.length;
+    const n = v.prs.length;
     const prs2 = n ? `${n} pull request${n === 1 ? "" : "s"}` : "No pull requests";
     if (v.status.state === "waiting") return { lamp: "act", tip: `${prs2}: waiting for you` };
-    if (all.some((p) => p.attention)) return { lamp: "act", tip: `${prs2}: something needs action` };
+    if (v.prs.some((p) => p.attention)) return { lamp: "act", tip: `${prs2}: something needs action` };
     return { lamp: "fine", tip: `${prs2}: nothing needs action` };
   }
   function isFolded(v, toggled2) {
@@ -343,7 +344,7 @@
     </div>
   </div>`;
   function render(views, toggled2, notices, legend2, t) {
-    const p = t && views.flatMap((v) => v.stacks.flat()).find((x) => x.url === t.url);
+    const p = t && views.flatMap((v) => v.prs).find((x) => x.url === t.url);
     return `<div class="page${notices.length ? " noticed" : ""}">
     <header class="top"><div class="logo" aria-hidden="true"><i></i></div><div class="brand"><b>flow</b><span>agent sessions and pull requests</span></div></header>
     <div class="deck${p && t?.open ? " open" : ""}">
@@ -386,7 +387,7 @@
     const stale = prDataAge(prs);
     if (stale != null) notices.push(`PR data ${stale} min old`);
     const views = sessionViews(sessions, prs, branches);
-    if (tray2 && !views.some((v) => v.stacks.some((s) => s.some((p) => p.url === tray2.url)))) tray2 = null;
+    if (tray2 && !views.some((v) => v.prs.some((p) => p.url === tray2.url))) tray2 = null;
     return render(views, toggled, notices, legend, tray2);
   }
   var $ = (sel) => root.querySelector(sel);
