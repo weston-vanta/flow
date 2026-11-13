@@ -18,3 +18,34 @@ bin directory): marketplace `flow`, plugin `flow`, whose hooks run `flow hook` o
 event. Each CDE's dotfiles enable `flow@flow` through `extraKnownMarketplaces` (a `directory`
 source at `/efs-home/flow/claude`) and `enabledPlugins`, put the bin directory on PATH, and
 point agents at `flow guide`, which prints [the agent note](docs/agent-note.md).
+
+## Usage
+
+You (the Director) talk to one Claude Code Session, which delegates each piece of work (a
+Task) to a new Session of its own, an IC. The IC asks you what it needs to know, and its
+helpers write the code and open draft PRs. You watch everything on the dashboard and answer
+each Session in its own herdr pane. You need a running herdr server on every CDE you use, and a
+`gitpod` login wherever you delegate from.
+
+1. **Delegate.** In any Session in the repo's main checkout, run `/flow:go <ask>`. The ask can
+   be a Jira link, a PRD link, a question or a sentence. The Session becomes your Manager. It
+   asks at most one round of questions, then shows a short brief, a Task name and a CDE to run
+   on. Once you confirm, it starts the IC with `flow session start` in a new herdr tab, without
+   switching you to it.
+2. **Align.** Go to the IC's tab. It questions you until you approve a `spec.md`, then shows
+   a plan of the PRs, which you approve separately. The Task's files live in
+   `/efs-home/flow/tasks/<name>/`.
+3. **Let it build.** The IC never writes code. Its Subagents (helpers inside the same Session)
+   build each PR test-first in its own worktree, and others review it. It opens each PR as a
+   draft once it passes review, and comes back to you only when it needs a decision. The first
+   line of its reply says what it needs, and the dashboard shows that line.
+4. **Review.** Review the drafts on GitHub as usual, then tell the IC in its pane. It addresses
+   your comments and posts nothing on GitHub. It never marks a PR ready and never merges one.
+   Once the PRs are merged or closed, tell it you're done, and it removes its worktrees.
+5. **Check in.** Run `/flow:standup` in the Manager for what waits for you, where each Task
+   stands, and everything else. The Manager reads state only when you ask; nothing wakes it.
+
+The dashboard is the web app `flowd` serves (port 7171 by default). It lists every Session on
+every CDE with its status and its PRs, grouped into Stacks, plus any branches it hasn't opened a
+PR for yet. Agents read the same data as JSON through `flow session list`, `flow pr list` and
+`flow branch list`.
