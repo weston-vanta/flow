@@ -289,3 +289,57 @@ fn a_failed_discovery_skips_detail() {
         .assert()
         .failure();
 }
+
+fn pr_keys(ts: &TestStore, args: &[&str]) -> Vec<(String, Value)> {
+    let out = ts.flow().args(args).assert().success();
+    let prs: Vec<Value> = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    prs.iter()
+        .map(|pr| (pr["key"].as_str().unwrap().to_owned(), pr["owner"].clone()))
+        .collect()
+}
+
+#[test]
+fn pr_list_all_adds_the_polled_prs_no_session_owns() {
+    let ts = TestStore::new();
+    fake_gh(&ts, &search_ok(), &gadgets_ok());
+    let mut flowd = ts.flowd();
+    flowd.wait_for_line(CYCLE);
+    let now = Timestamp::now();
+    let store = ts.store();
+    store
+        .put_facet(
+            "session",
+            "s1",
+            "status",
+            &json!({ "state": "running" }),
+            now,
+        )
+        .unwrap();
+    store
+        .put_facet(
+            "branch",
+            "acme/widgets:feat/x",
+            "reporter",
+            &json!({ "session": "s1" }),
+            now,
+        )
+        .unwrap();
+
+    let owned = vec![("acme/widgets#7".to_owned(), json!("s1"))];
+    assert_eq!(pr_keys(&ts, &["pr", "list"]), owned);
+    assert_eq!(
+        pr_keys(&ts, &["pr", "list", "--all"]),
+        [
+            ("acme/gadgets#3", Value::Null),
+            ("acme/gadgets#4", Value::Null),
+            ("acme/widgets#5", Value::Null),
+            ("acme/widgets#7", json!("s1")),
+            ("acme/widgets#8", Value::Null),
+        ]
+        .map(|(key, owner)| (key.to_owned(), owner))
+    );
+    let (status, body) = flowd.get("/api/prs");
+    assert_eq!(status, 200);
+    let api: Vec<Value> = serde_json::from_str(&body).unwrap();
+    assert_eq!(api.len(), 1, "{body}");
+}

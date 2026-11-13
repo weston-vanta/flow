@@ -1,6 +1,6 @@
 //! The reads the binaries call: the same functions back `flow` and `flowd`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::process::{Command, ExitStatus};
 
 use anyhow::{Context as _, Result, bail};
@@ -61,6 +61,25 @@ pub fn session_remove(store: &Store, ids: &[String], force: bool) -> Result<Resu
 /// Every PR whose owner is a listed Session, ordered by key, each with its derived `owner`.
 pub fn pr_list(store: &Store) -> Result<Vec<Pr>> {
     Ok(listing(store)?.1)
+}
+
+/// `flow pr list --all`: every stored PR, ordered by key; `owner` is null unless a listed
+/// Session owns it.
+pub fn pr_list_all(store: &Store) -> Result<Vec<Pr>> {
+    let owned: HashMap<String, Option<String>> = listing(store)?
+        .1
+        .into_iter()
+        .map(|pr| (pr.key, pr.owner))
+        .collect();
+    store
+        .list(pr::KIND)?
+        .iter()
+        .map(|entity| {
+            let mut pr = Pr::from_entity(entity)?;
+            pr.owner = owned.get(&pr.key).cloned().flatten();
+            Ok(pr)
+        })
+        .collect()
 }
 
 /// The listed Sessions and the PRs they own, under the listing rule at this moment.
