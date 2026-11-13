@@ -1,6 +1,8 @@
 //! The Session: one Claude Code conversation, keyed by its Claude session id, and its facets.
 //! Every Session facet has one Writer, `flow hook`.
 
+use std::collections::BTreeSet;
+
 use anyhow::{Context as _, Result};
 use jiff::Timestamp;
 use serde::de::DeserializeOwned;
@@ -62,6 +64,17 @@ pub enum State {
     Done,
 }
 
+/// The Subagents a Session has running and whether its own turn has stopped, which together
+/// decide when it goes idle. Writer: `flow hook`. `flow session get` does not print it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Subagents {
+    /// Agent ids from `SubagentStart` with no `SubagentStop` yet.
+    pub running: BTreeSet<String>,
+    /// Set by `Stop` and `StopFailure`, cleared by `UserPromptSubmit`.
+    pub turn_stopped: bool,
+}
+
 /// What a Session is working on. Writer: `flow hook`, on `SessionStart`, `Stop` and
 /// `StopFailure`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -108,6 +121,10 @@ impl SessionFacet for Origin {
 
 impl SessionFacet for Status {
     const NAME: &'static str = "status";
+}
+
+impl SessionFacet for Subagents {
+    const NAME: &'static str = "subagents";
 }
 
 impl SessionFacet for Context {
