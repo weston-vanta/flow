@@ -1,0 +1,322 @@
+<title>Subject name</title>
+<!--
+  flow:explainer starter template.
+
+  Everything here is optional and replaceable. Keep what helps, delete what doesn't,
+  and restyle freely. The script only cares about three conventions:
+
+    1. SVG elements with data-part="<id>" are components. Clicking one shows its detail.
+    2. SVG elements with data-edge="<id>" are arrows, so they can be highlighted.
+    3. The JSON block #explainer-data gives the content: parts (detail per component)
+       and, optionally, flows (stepped walkthroughs) and groups (sets to highlight).
+
+  Script API, for controls you build yourself in the controls region:
+    explainer.focus(partIds, edgeIds)   highlight these, dim everything else
+    explainer.clear()                   back to rest (also: Escape, or a click outside any component)
+    explainer.showDetail(html)          put html in the detail panel
+    explainer.startFlow(flowId)         begin stepping a flow (needs the step bar)
+    explainer.highlightGroup(groupId)   focus a group from the data and show its detail
+
+  Hash state: #part=<id>, #flow=<id>&step=<n>, #group=<id>.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  /* Layout: header, controls, full-width diagram, step bar and detail panel below it, collapsed sections last. */
+  :root {
+    --bg: #f6f6f3; --surface: #ffffff; --ink: #1d2126; --muted: #5d6670;
+    --line: #c9cdd2; --accent: #2b5fd9; --accent-soft: #e4ecfb;
+    --font-body: "IBM Plex Sans", system-ui, sans-serif;
+    --font-code: "IBM Plex Mono", ui-monospace, monospace;
+    --dim: 0.22;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #15181c; --surface: #1d2126; --ink: #e6e8eb; --muted: #9aa3ad;
+      --line: #3a4048; --accent: #7aa2ff; --accent-soft: #23304d; color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #15181c; --surface: #1d2126; --ink: #e6e8eb; --muted: #9aa3ad;
+    --line: #3a4048; --accent: #7aa2ff; --accent-soft: #23304d; color-scheme: dark;
+  }
+  body {
+    background: var(--bg); color: var(--ink); font: 15px/1.55 var(--font-body);
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  .page { max-width: 1240px; margin: 0 auto; padding-block: 20px 48px; display: grid; gap: 16px; }
+  code, .code { font-family: var(--font-code); font-size: 0.92em; }
+  h1 { font-size: 24px; line-height: 1.25; margin: 0; text-wrap: balance; }
+  .narrative { max-width: 68ch; display: grid; gap: 8px; }
+  .narrative p, .narrative ol { margin: 0; }
+  /* One row directly above the diagram. Each group is a short label followed by its options. */
+  .controls { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: center; margin-bottom: -8px; }
+  .controls .group { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .controls .group-label { font-size: 12px; color: var(--muted); margin-right: 2px; }
+  .controls:empty { display: none; }
+
+  .stage { display: grid; gap: 12px; }
+  .figure { overflow-x: auto; }
+  .figure svg { display: block; width: 100%; height: auto; max-width: 100%; }
+  .panel {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+    padding: 12px 16px; font-size: 14px; max-width: 80ch;
+  }
+  .panel h2 { font-size: 15px; margin: 0 0 6px; }
+  .panel .hint { color: var(--muted); }
+
+  /* Focus: the figure dims everything except marked parts and edges. */
+  .figure [data-part], .figure [data-edge] { transition: opacity 160ms ease; }
+  .figure.is-focused [data-part], .figure.is-focused [data-edge] { opacity: var(--dim); }
+  .figure.is-focused .is-past { opacity: 0.55; }
+  .figure.is-focused .is-on, .figure.is-focused .is-context { opacity: 1; }
+  /* Opacity compounds through nesting: a part inside a dimmed part is already dimmed. */
+  .figure.is-focused [data-part]:not(.is-on):not(.is-context) [data-part],
+  .figure.is-focused .is-on [data-part] { opacity: 1; }
+  .figure [data-part] { cursor: pointer; }
+  .figure [data-part]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .figure .is-on > rect:first-of-type { stroke: var(--accent); stroke-width: 2; }
+  .figure [data-edge].is-on { color: var(--accent); }
+  .figure [data-edge].is-on [stroke="currentColor"] { stroke: var(--accent); }
+
+  /* Step bar, optional. */
+  .stepbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-height: 36px; }
+  [hidden] { display: none !important; }
+  .stepbar button.nav {
+    font: inherit; padding: 4px 12px; border: 1px solid var(--line); border-radius: 6px;
+    background: var(--surface); color: var(--ink); cursor: pointer;
+  }
+  .stepbar button.nav:disabled { opacity: 0.4; cursor: default; }
+  .dots { display: inline-flex; }
+  .dots button { width: 22px; height: 22px; padding: 0; border: 0; background: none; position: relative; cursor: pointer; }
+  .dots button::before {
+    content: ""; position: absolute; inset: 7px; border-radius: 50%;
+    border: 1.5px solid var(--accent);
+  }
+  .dots button.done::before { background: var(--accent); opacity: 0.45; }
+  .dots button[aria-current="step"]::before { inset: 4px; background: var(--accent); }
+  .stepname { font-weight: 500; }
+
+  details { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; }
+  details + details { margin-top: -8px; }
+  summary { cursor: pointer; font-weight: 500; }
+  button:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+  /* Automated browsers get no transitions, so screenshots never catch a fade halfway. */
+  .no-motion * { transition: none !important; }
+</style>
+
+<div class="page">
+  <header class="narrative">
+    <h1>Subject name</h1>
+    <p>What it does for users, or the problem it solves.</p>
+    <ol>
+      <li>A fact that forces the design.</li>
+    </ol>
+    <p>What those facts make the code do.</p>
+  </header>
+
+  <!-- Controls: one row directly above the diagram, so they read as part of it.
+       Put whatever controls fit the subject here as .group elements, or leave it empty. -->
+  <div class="controls" id="controls"></div>
+
+  <div class="stage" id="stage">
+      <figure class="figure" id="figure" style="margin:0">
+        <svg viewBox="0 0 900 110" role="img" aria-label="Describe the claim the diagram makes">
+          <defs>
+            <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/>
+            </marker>
+          </defs>
+          <g data-part="example-a"><rect x="20" y="20" width="200" height="70" rx="8" fill="var(--surface)" stroke="var(--line)"/><text x="40" y="60" fill="currentColor">Component A</text></g>
+          <g data-edge="a-to-b" color="var(--muted)"><line x1="220" y1="55" x2="338" y2="55" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)"/></g>
+          <g data-part="example-b"><rect x="340" y="20" width="200" height="70" rx="8" fill="var(--surface)" stroke="var(--line)"/><text x="360" y="60" fill="currentColor">Component B</text></g>
+        </svg>
+      </figure>
+      <!-- Step bar, optional: delete it if nothing is stepped through. -->
+      <div class="stepbar" id="stepbar" hidden>
+        <button class="nav" id="prev" type="button">Prev</button>
+        <span class="dots" id="dots" role="group" aria-label="Steps"></span>
+        <button class="nav" id="next" type="button">Next</button>
+        <span class="stepname" id="stepname" aria-live="polite"></span>
+      </div>
+      <aside class="panel" id="panel" aria-live="polite"><p class="hint">Select a component to see its detail.</p></aside>
+  </div>
+
+  <!-- Details region: information that matters but doesn't belong in the diagram. -->
+  <section class="details" id="details"></section>
+</div>
+
+<script type="application/json" id="explainer-data">
+{
+  "parts": {
+    "example-a": { "title": "Component A", "html": "<p>Its role, the phases that touch it, and the rule or query that matters.</p>" },
+    "example-b": { "title": "Component B", "html": "<p>Detail for B.</p>" }
+  },
+  "flows": {
+    "example": { "label": "Example request", "steps": [
+      { "title": "A calls B", "parts": ["example-a", "example-b"], "edges": ["a-to-b"], "html": "<p>What crosses the edge and why it matters.</p>" }
+    ] }
+  },
+  "groups": {}
+}
+</script>
+
+<script>
+(function () {
+  if (navigator.webdriver) document.documentElement.classList.add("no-motion");
+  var DATA = JSON.parse(document.getElementById("explainer-data").textContent);
+  var parts = DATA.parts || {}, flows = DATA.flows || {}, groups = DATA.groups || {};
+  var fig = document.getElementById("figure");
+  var panel = document.getElementById("panel");
+  var stepbar = document.getElementById("stepbar");
+  var restHtml = panel ? panel.innerHTML : "";
+  var state = { flow: null, step: 0 };
+
+  function all(sel) { return Array.prototype.slice.call(fig.querySelectorAll(sel)); }
+  function byIds(attr, ids) {
+    return all("[" + attr + "]").filter(function (el) { return ids.indexOf(el.getAttribute(attr)) !== -1; });
+  }
+  function unmark() {
+    all("[data-part],[data-edge]").forEach(function (el) { el.classList.remove("is-on", "is-past", "is-context"); });
+    fig.classList.remove("is-focused");
+  }
+  function focus(partIds, edgeIds, past) {
+    unmark();
+    fig.classList.add("is-focused");
+    if (past) {
+      byIds("data-part", past.parts || []).concat(byIds("data-edge", past.edges || []))
+        .forEach(function (el) { el.classList.add("is-past"); });
+    }
+    byIds("data-part", partIds || []).concat(byIds("data-edge", edgeIds || []))
+      .forEach(function (el) {
+        el.classList.add("is-on");
+        // Containers of a highlighted part stay at full strength so it isn't dimmed through them.
+        for (var p = el.parentElement; p && p !== fig; p = p.parentElement) {
+          if (p.hasAttribute("data-part") && !p.classList.contains("is-on")) p.classList.add("is-context");
+        }
+      });
+  }
+  function showDetail(html) { if (panel) panel.innerHTML = html; }
+  function setHash(h) {
+    try { history.replaceState(null, "", h ? "#" + h : location.pathname + location.search); } catch (e) {}
+  }
+
+  function clear() {
+    state.flow = null;
+    unmark();
+    showDetail(restHtml);
+    if (stepbar) stepbar.hidden = true;
+    setHash("");
+  }
+
+  function showPart(id) {
+    var p = parts[id];
+    if (!p) return;
+    state.flow = null;
+    if (stepbar) stepbar.hidden = true;
+    focus([id], []);
+    showDetail("<h2>" + p.title + "</h2>" + (p.html || ""));
+    setHash("part=" + encodeURIComponent(id));
+  }
+
+  function highlightGroup(id) {
+    var g = groups[id];
+    if (!g) return;
+    state.flow = null;
+    if (stepbar) stepbar.hidden = true;
+    focus(g.parts, g.edges);
+    showDetail("<h2>" + g.label + "</h2>" + (g.html || ""));
+    setHash("group=" + encodeURIComponent(id));
+  }
+
+  function renderStep() {
+    var f = flows[state.flow], steps = f.steps, s = steps[state.step];
+    var past = { parts: [], edges: [] };
+    for (var i = 0; i < state.step; i++) {
+      past.parts = past.parts.concat(steps[i].parts || []);
+      past.edges = past.edges.concat(steps[i].edges || []);
+    }
+    focus(s.parts, s.edges, past);
+    showDetail("<h2>" + s.title + "</h2>" + (s.html || ""));
+    if (!stepbar) return;
+    stepbar.hidden = false;
+    document.getElementById("stepname").textContent = "Step " + (state.step + 1) + " of " + steps.length + ": " + s.title;
+    document.getElementById("prev").disabled = state.step === 0;
+    document.getElementById("next").disabled = state.step === steps.length - 1;
+    var dots = document.getElementById("dots");
+    dots.innerHTML = "";
+    steps.forEach(function (st, i) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.setAttribute("aria-label", "Step " + (i + 1) + ": " + st.title);
+      if (i < state.step) b.className = "done";
+      if (i === state.step) b.setAttribute("aria-current", "step");
+      b.addEventListener("click", function () { go(i); });
+      dots.appendChild(b);
+    });
+    setHash("flow=" + encodeURIComponent(state.flow) + "&step=" + (state.step + 1));
+  }
+  function startFlow(id, step) {
+    if (!flows[id]) { clear(); return; }
+    state.flow = id;
+    state.step = Math.max(0, Math.min((step || 1) - 1, flows[id].steps.length - 1));
+    renderStep();
+  }
+  function go(i) {
+    if (!state.flow) return;
+    var n = flows[state.flow].steps.length;
+    if (i < 0 || i >= n) return;
+    state.step = i;
+    renderStep();
+  }
+
+  all("[data-part]").forEach(function (el) {
+    var id = el.getAttribute("data-part");
+    if (!parts[id]) return;
+    el.setAttribute("tabindex", "0");
+    el.setAttribute("role", "button");
+    el.setAttribute("aria-label", parts[id].title);
+    el.addEventListener("click", function (e) { e.stopPropagation(); showPart(id); });
+    el.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); showPart(id); }
+    });
+  });
+
+  if (stepbar) {
+    document.getElementById("prev").addEventListener("click", function () { go(state.step - 1); });
+    document.getElementById("next").addEventListener("click", function () { go(state.step + 1); });
+  }
+  // A click anywhere outside a component clears the selection, except on controls and text the reader may be using.
+  document.addEventListener("click", function (e) {
+    var t = e.target;
+    if (!t || !t.closest) return;
+    if (t.closest("[data-part], #controls, #stepbar, #panel, #details, a, button, input, select, textarea, label, summary")) return;
+    clear();
+  });
+  document.addEventListener("keydown", function (e) {
+    var t = e.target && e.target.tagName;
+    if (!state.flow || t === "INPUT" || t === "TEXTAREA" || t === "SELECT") return;
+    if (e.key === "ArrowRight") { e.preventDefault(); go(state.step + 1); }
+    if (e.key === "ArrowLeft") { e.preventDefault(); go(state.step - 1); }
+    if (e.key === "Escape") { clear(); }
+  });
+
+  function applyHash() {
+    var h = new URLSearchParams(location.hash.slice(1));
+    if (h.get("flow")) startFlow(h.get("flow"), parseInt(h.get("step"), 10) || 1);
+    else if (h.get("part")) showPart(h.get("part"));
+    else if (h.get("group")) highlightGroup(h.get("group"));
+  }
+  applyHash();
+  window.addEventListener("hashchange", applyHash);
+
+  window.explainer = {
+    focus: focus, clear: clear, showDetail: showDetail,
+    startFlow: startFlow, highlightGroup: highlightGroup, showPart: showPart,
+    flows: flows, groups: groups
+  };
+})();
+</script>
