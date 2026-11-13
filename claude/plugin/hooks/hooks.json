@@ -16,6 +16,12 @@
     "PostToolUse": [
       { "hooks": [{ "type": "command", "command": "/efs-home/flow/bin/flow hook || true", "async": true }] }
     ],
+    "SubagentStart": [
+      { "hooks": [{ "type": "command", "command": "/efs-home/flow/bin/flow hook || true", "timeout": 5 }] }
+    ],
+    "SubagentStop": [
+      { "hooks": [{ "type": "command", "command": "/efs-home/flow/bin/flow hook || true", "timeout": 5 }] }
+    ],
     "Stop": [
       { "hooks": [{ "type": "command", "command": "/efs-home/flow/bin/flow hook || true", "timeout": 5 }] }
     ],

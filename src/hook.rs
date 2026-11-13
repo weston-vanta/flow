@@ -5,11 +5,13 @@ use std::io::Write as _;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use jiff::Timestamp;
 use serde::Deserialize;
 
-use crate::session::{self, Activity, Context, Origin, Session, SessionFacet, State, Status};
+use crate::session::{
+    self, Activity, Context, Origin, Session, SessionFacet, State, Status, Subagents,
+};
 use crate::store::{self, Store};
 use crate::transcript;
 
@@ -23,6 +25,8 @@ struct HookInput {
     notification_type: Option<String>,
     /// `UserPromptSubmit`'s prompt.
     prompt: Option<String>,
+    /// `SubagentStart` and `SubagentStop`'s Subagent.
+    agent_id: Option<String>,
     /// `Stop` and `StopFailure`'s final assistant text.
     last_assistant_message: Option<String>,
 }
@@ -42,6 +46,29 @@ pub fn handle_hook(store: &Store, stdin: &str, at: Timestamp) -> Result<()> {
         }
         Ok(())
     };
+    // Applies `change` to the stored Subagents, writing them only if that changes them, and
+    // returns them as they were before.
+    let subagents = |change: &dyn Fn(&mut Subagents)| -> Result<Subagents> {
+        let stored = store.get(session::KIND, id).ok().flatten();
+        let before: Subagents = stored
+            .as_ref()
+            .and_then(|e| e.facets.get(Subagents::NAME))
+            .and_then(|f| serde_json::from_value(f.value.clone()).ok())
+            .unwrap_or_default();
+        let mut after = before.clone();
+        change(&mut after);
+        if after != before {
+            Session::put(store, id, &after, at)?;
+        }
+        Ok(before)
+    };
+    let agent_id = || {
+        let name = &input.hook_event_name;
+        input
+            .agent_id
+            .clone()
+            .ok_or_else(|| anyhow!("{name} without an agent_id"))
+    };
     let transcript = || {
         input
             .transcript_path
@@ -55,6 +82,7 @@ pub fn handle_hook(store: &Store, stdin: &str, at: Timestamp) -> Result<()> {
             // Status first: it is cheap, so it lands even if the gitpod call below
             // outlives the hook's timeout.
             status(State::Idle)?;
+            subagents(&|s| *s = Subagents::default())?;
             let env = |name| std::env::var(name).ok().filter(|v: &String| !v.is_empty());
             let cde_id = env("ONA_ID");
             let origin = Origin {
@@ -74,6 +102,7 @@ pub fn handle_hook(store: &Store, stdin: &str, at: Timestamp) -> Result<()> {
         }
         "UserPromptSubmit" => {
             status(State::Running)?;
+            subagents(&|s| s.turn_stopped = false)?;
             Session::put(store, id, &Activity::new(input.prompt.clone(), None), at)?;
         }
         "PostToolUse" => status(State::Running)?,
@@ -87,8 +116,29 @@ pub fn handle_hook(store: &Store, stdin: &str, at: Timestamp) -> Result<()> {
             Some("elicitation_complete" | "elicitation_response") => status(State::Running)?,
             _ => {}
         },
+        "SubagentStart" => {
+            let agent_id = agent_id()?;
+            subagents(&|s| {
+                s.running.insert(agent_id.clone());
+            })?;
+        }
+        // Claude Code also sends `SubagentStop` for its own internal agents, which had no
+        // `SubagentStart`; only the stop that empties the set can make the Session idle.
+        "SubagentStop" => {
+            let agent_id = agent_id()?;
+            let before = subagents(&|s| {
+                s.running.remove(&agent_id);
+            })?;
+            let emptied = before.running.len() == 1 && before.running.contains(&agent_id);
+            if emptied && before.turn_stopped {
+                status(State::Idle)?;
+            }
+        }
         "Stop" | "StopFailure" => {
-            status(State::Idle)?;
+            // Running Subagents keep the Session running past its own turn.
+            if subagents(&|s| s.turn_stopped = true)?.running.is_empty() {
+                status(State::Idle)?;
+            }
             let facts = transcript();
             let context = Context {
                 title: facts.title,
@@ -98,7 +148,10 @@ pub fn handle_hook(store: &Store, stdin: &str, at: Timestamp) -> Result<()> {
             let reply = input.last_assistant_message.clone();
             Session::put(store, id, &Activity::new(facts.last_prompt, reply), at)?;
         }
-        "SessionEnd" => status(State::Done)?,
+        "SessionEnd" => {
+            status(State::Done)?;
+            subagents(&|s| *s = Subagents::default())?;
+        }
         other => bail!("unknown hook event {other:?}"),
     }
     Ok(())
