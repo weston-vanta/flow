@@ -533,3 +533,97 @@ fn a_missing_or_unreadable_transcript_leaves_title_null_and_writes_status() {
     // An unreadable transcript is not an error.
     assert_eq!(ts.hook_log(), Vec::<String>::new());
 }
+
+/// A `subagent-start` or `subagent-stop` event for Subagent `agent_id` of session `ID`.
+fn subagent(fixture: &str, agent_id: &str, cwd: &Path) -> String {
+    let mut input: Value = serde_json::from_str(&event(fixture, ID, cwd)).unwrap();
+    input["agent_id"] = json!(agent_id);
+    input.to_string()
+}
+
+/// Feeds `steps` to `flow hook` in order, asserting the status state after each.
+fn run_steps(ts: &TestStore, steps: &[(String, &str)]) {
+    for (i, (stdin, expected)) in steps.iter().enumerate() {
+        hook(ts, stdin.as_str(), &[]);
+        assert_eq!(state(ts, ID), *expected, "after step {i}: {stdin}");
+    }
+}
+
+#[test]
+fn a_subagent_running_past_the_turn_keeps_the_session_running_until_it_stops() {
+    let ts = TestStore::new();
+    let repo = ts.scratch("repo");
+    let e = |fixture| event(fixture, ID, &repo);
+    let steps = [
+        (e("session-start"), "idle"),
+        (e("user-prompt-submit"), "running"),
+        (subagent("subagent-start", "a1", &repo), "running"),
+        (e("stop"), "running"),
+        (subagent("subagent-stop", "a1", &repo), "idle"),
+    ];
+    run_steps(&ts, &steps);
+}
+
+#[test]
+fn the_last_of_several_subagents_to_stop_makes_the_session_idle() {
+    let ts = TestStore::new();
+    let repo = ts.scratch("repo");
+    let e = |fixture| event(fixture, ID, &repo);
+    let start = |agent| subagent("subagent-start", agent, &repo);
+    let stop = |agent| subagent("subagent-stop", agent, &repo);
+    let steps = [
+        (e("user-prompt-submit"), "running"),
+        (start("a1"), "running"),
+        (start("a2"), "running"),
+        // A resumed Subagent starts again under the same id.
+        (start("a1"), "running"),
+        (e("stop-failure"), "running"),
+        (stop("a1"), "running"),
+        // A background Subagent reporting back starts a turn of its own.
+        (e("user-prompt-submit"), "running"),
+        (e("stop"), "running"),
+        // An internal agent Claude Code never announced with SubagentStart.
+        (stop("internal"), "running"),
+        (stop("a2"), "idle"),
+    ];
+    run_steps(&ts, &steps);
+}
+
+#[test]
+fn a_subagent_that_stops_during_the_turn_leaves_it_running() {
+    let ts = TestStore::new();
+    let repo = ts.scratch("repo");
+    let e = |fixture| event(fixture, ID, &repo);
+    let steps = [
+        (e("user-prompt-submit"), "running"),
+        (subagent("subagent-start", "a1", &repo), "running"),
+        (subagent("subagent-stop", "a1", &repo), "running"),
+        (e("stop"), "idle"),
+        // The next turn's Subagent stops before the turn does.
+        (e("user-prompt-submit"), "running"),
+        (subagent("subagent-start", "a2", &repo), "running"),
+        (subagent("subagent-stop", "a2", &repo), "running"),
+        (e("stop"), "idle"),
+    ];
+    run_steps(&ts, &steps);
+}
+
+#[test]
+fn session_end_and_session_start_forget_running_subagents() {
+    let ts = TestStore::new();
+    let repo = ts.scratch("repo");
+    let e = |fixture| event(fixture, ID, &repo);
+    let steps = [
+        (e("user-prompt-submit"), "running"),
+        (subagent("subagent-start", "a1", &repo), "running"),
+        (e("session-end"), "done"),
+        // A Subagent's late stop does not revive an ended Session.
+        (subagent("subagent-stop", "a1", &repo), "done"),
+        (subagent("subagent-start", "a2", &repo), "done"),
+        // Resumed: the Subagent from before the end no longer counts.
+        (e("session-start"), "idle"),
+        (e("user-prompt-submit"), "running"),
+        (e("stop"), "idle"),
+    ];
+    run_steps(&ts, &steps);
+}
