@@ -116,7 +116,7 @@ pub fn log_error(store: &Store, at: Timestamp, message: &str) {
 }
 
 /// The CDE's name for `ona_id`, from `gitpod environment get`; `None` on any failure.
-fn cde_name(ona_id: &str) -> Option<String> {
+pub fn cde_name(ona_id: &str) -> Option<String> {
     let args = [
         "environment",
         "get",

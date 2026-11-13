@@ -9,3 +9,9 @@ prints this note.
   `flow pr list` (owned PRs only) and `flow pr get <owner/repo#number>`. A PR's `owner` is its
   owning Session's id, and `$CLAUDE_CODE_SESSION_ID` is yours. Your Stack:
   `flow pr list | jq '.[] | select(.owner == env.CLAUDE_CODE_SESSION_ID)'`
+- Managers launch an IC with `flow session start --name <task-slug> --brief <path> <repo-dir>`.
+  It opens a new, unfocused herdr tab in `<repo-dir>` (the repo's main checkout, which needs a
+  wt base), in a workspace named after your Session, starts Claude there with a fresh Session
+  id, sends `/flow:ic <brief path>`, and prints `{id, name, cde, pane}`. Keep the brief on
+  `/efs-home`. On failure it prints `{error, help}`, leaves the pane as it is and retries
+  nothing: show the error to the Director rather than trying again.

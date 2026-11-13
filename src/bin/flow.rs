@@ -4,6 +4,7 @@
 use std::io::Read as _;
 use std::os::unix::process::ExitStatusExt as _;
 use std::panic;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::error::ErrorKind;
@@ -12,6 +13,7 @@ use jiff::Timestamp;
 use serde::Serialize;
 
 use flow::hook;
+use flow::launch;
 use flow::services::{self, Refusal};
 use flow::store::Store;
 
@@ -28,7 +30,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Read Sessions: Claude Code conversations on every CDE.
+    /// Read Sessions: Claude Code conversations on every CDE; start an IC Session.
     #[command(subcommand)]
     Session(SessionCommand),
     /// Read PRs: GitHub pull requests, each with its owner Session.
@@ -52,6 +54,25 @@ enum SessionCommand {
     Get {
         /// The Claude session id; defaults to `$CLAUDE_CODE_SESSION_ID`, the calling Session.
         id: Option<String>,
+    },
+    /// Start an IC Session in a new, unfocused herdr tab on this CDE, running
+    /// `/flow:ic <brief>`. Prints `{id, name, cde, pane}`.
+    Start {
+        /// The Task slug: the Session's name and the tab's label (`[a-z][a-z0-9_-]`, at most 32).
+        #[arg(long)]
+        name: String,
+        /// The brief file, on /efs-home.
+        #[arg(long)]
+        brief: PathBuf,
+        /// The herdr workspace the tab goes in, created if missing; defaults to the calling
+        /// Session's title, else its id.
+        #[arg(long)]
+        workspace: Option<String>,
+        /// The IC's Session id; flow chooses a fresh UUID by default.
+        #[arg(long, hide = true)]
+        id: Option<String>,
+        /// The repo's main checkout, which must have a wt base; the IC starts there.
+        repo: PathBuf,
     },
     /// Delete Sessions from the Store, for clearing test Sessions by hand. Prints
     /// `{"removed": [ids]}`. Removes nothing unless every Session exists and, without `--force`, is done.
@@ -110,6 +131,13 @@ fn main() -> ExitCode {
             Err(err) => store_error(&err),
         },
         Some(Command::Session(SessionCommand::Get { id })) => session_get(&store, id),
+        Some(Command::Session(SessionCommand::Start {
+            name,
+            brief,
+            workspace,
+            id,
+            repo,
+        })) => session_start(&store, &name, &brief, workspace, id, &repo),
         Some(Command::Session(SessionCommand::Remove { force, ids })) => {
             session_remove(&store, &ids, force)
         }
@@ -184,6 +212,70 @@ fn session_get(store: &Store, id: Option<String>) -> ExitCode {
             "run `flow session list` to see every Session",
         ),
         Err(err) => store_error(&err),
+    }
+}
+
+fn session_start(
+    store: &Store,
+    name: &str,
+    brief: &Path,
+    workspace: Option<String>,
+    id: Option<String>,
+    repo: &Path,
+) -> ExitCode {
+    if !launch::is_agent_name(name) {
+        return error(
+            2,
+            &format!("--name {name:?} is not a usable Task slug"),
+            "use lowercase letters, digits, `-` and `_`, starting with a letter, at most 32 characters",
+        );
+    }
+    let workspace = match workspace {
+        Some(workspace) => workspace,
+        None => match std::env::var("CLAUDE_CODE_SESSION_ID") {
+            Ok(manager) if !manager.is_empty() => match launch::workspace_for(store, &manager) {
+                Ok(workspace) => workspace,
+                Err(err) => return store_error(&err),
+            },
+            _ => {
+                return error(
+                    2,
+                    "no --workspace given and CLAUDE_CODE_SESSION_ID is not set",
+                    "run it from a Manager Session or pass --workspace <label>",
+                );
+            }
+        },
+    };
+    let id = match id {
+        Some(id) if launch::is_uuid(&id) => id,
+        Some(id) => {
+            return error(
+                2,
+                &format!("--id {id:?} is not a UUID"),
+                "leave out --id to have flow choose one",
+            );
+        }
+        None => match launch::new_id() {
+            Ok(id) => id,
+            Err(err) => {
+                return error(
+                    1,
+                    &format!("cannot generate a Session id: {err}"),
+                    "this is a bug in flow",
+                );
+            }
+        },
+    };
+    let request = launch::Launch {
+        id: &id,
+        name,
+        workspace: &workspace,
+        brief,
+        repo,
+    };
+    match launch::start(store, &request) {
+        Ok(started) => print_json(&started),
+        Err(failure) => error(1, &failure.error, &failure.help),
     }
 }
 
