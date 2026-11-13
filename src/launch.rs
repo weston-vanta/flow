@@ -417,6 +417,10 @@ fn herdr(args: &[&str]) -> Result<Value, Failure> {
             ),
         });
     }
+    // Some commands (such as `tab rename`) may print nothing on success.
+    if out.stdout.iter().all(u8::is_ascii_whitespace) {
+        return Ok(Value::Null);
+    }
     serde_json::from_slice(&out.stdout)
         .map_err(|err| fail(format!("herdr printed no JSON: {err}"), HERDR_BUG_HELP))
 }
