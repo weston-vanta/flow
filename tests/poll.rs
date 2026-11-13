@@ -108,7 +108,7 @@ fn a_poll_writes_every_field_of_each_pr() {
                 {"name": "test", "status": "IN_PROGRESS", "conclusion": null,
                  "url": "https://github.com/acme/widgets/actions/runs/2/job/104"},
             ],
-            "stack": {"position": 2},
+            "stack": {"number": 41, "position": 2},
             "updatedAt": "2026-11-10T11:00:00Z", "additions": 120, "deletions": 4,
             "changedFiles": 6,
             // The dismissed and commented reviews are dropped.
@@ -141,6 +141,25 @@ fn a_poll_writes_every_field_of_each_pr() {
     assert_eq!(draft["github"]["isDraft"], true);
     assert_eq!(draft["github"]["mergeable"], "CONFLICTING");
     assert_eq!(draft["github"]["reviewDecision"], Value::Null);
+}
+
+#[test]
+fn a_poll_stores_each_prs_github_stack_number_beside_its_position() {
+    let ts = TestStore::new();
+    let log = fake_gh(&ts, &search_ok(), &gadgets_ok());
+    let mut flowd = ts.flowd();
+    flowd.wait_for_line(CYCLE);
+    assert!(
+        calls(&log).contains("stackEntry { position stack { number } }"),
+        "{}",
+        calls(&log)
+    );
+
+    let stack_of = |key: &str| pr_get(&ts, key)["github"]["stack"].clone();
+    assert_eq!(stack_of("acme/widgets#7"), json!({"number": 41, "position": 2}));
+    assert_eq!(stack_of("acme/widgets#8"), json!({"number": 41, "position": 3}));
+    // Outside a GitHub stack, a Stack of one.
+    assert_eq!(stack_of("acme/gadgets#3"), Value::Null);
 }
 
 #[test]

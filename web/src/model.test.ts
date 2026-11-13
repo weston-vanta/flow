@@ -12,7 +12,7 @@ import {
   prView,
   reviewLight,
   sessionViews,
-  stackOf,
+  stacksOf,
   statusLight,
   trayView,
 } from "./model.ts";
@@ -241,10 +241,10 @@ test("tray review: each reviewer once; a pending request wins over an earlier re
 
 test("session views name a stacked PR's base by the PR below it", () => {
   const prs = [
-    pr("s", { number: 2, stack: { position: 2 }, headRefName: "b", baseRefName: "a", mergeable: "CONFLICTING" }),
-    pr("s", { number: 1, stack: { position: 1 }, headRefName: "a", baseRefName: "main" }),
+    pr("s", { number: 2, stack: { number: 1, position: 2 }, headRefName: "b", baseRefName: "a", mergeable: "CONFLICTING" }),
+    pr("s", { number: 1, stack: { number: 1, position: 1 }, headRefName: "a", baseRefName: "main" }),
   ];
-  const [, top] = sessionViews([session("s")], prs, NOW)[0].stack;
+  const [[, top]] = sessionViews([session("s")], prs, NOW)[0].stacks;
   assert.equal(top.number, 2);
   assert.deepEqual(top.tray.base.items, ["Merge conflict with #1"]);
 });
@@ -315,22 +315,57 @@ test("mergeable: open, not a draft, no review outstanding, all four lamps fine",
   assert.equal(node({ state: "CLOSED" }), "closed");
 });
 
-test("Stack: the Session's PRs by stack position, missing positions last", () => {
+const nums = (stacks: { number: number }[][]) => stacks.map((s) => s.map((g) => g.number));
+
+test("Stacks: a Session's PRs grouped by stack number, each bottom first", () => {
   const prs = [
-    pr("s1", { number: 4 }),
-    pr("s1", { number: 3, stack: { position: 2 } }),
-    pr("s2", { number: 9, stack: { position: 1 } }),
-    pr("s1", { number: 1 }),
-    pr("s1", { number: 5, stack: { position: 1 } }),
-    pr(null, { number: 6, stack: { position: 1 } }),
+    pr("s1", { number: 10, stack: { number: 41, position: 2 } }),
+    pr("s1", { number: 12 }),
+    pr("s1", { number: 9, stack: { number: 50, position: 2 } }),
+    pr("s1", { number: 4, stack: { number: 41, position: 1 } }),
+    pr("s1", { number: 5 }),
+    pr("s1", { number: 6, stack: { number: 50, position: 1 } }),
+    pr("s2", { number: 3, stack: { number: 41, position: 3 } }),
+    pr(null, { number: 1, stack: { number: 41, position: 1 } }),
   ];
+  // Oldest first by bottom PR number, with Stacks of one among them.
+  assert.deepEqual(nums(stacksOf("s1", prs)), [[4, 10], [5], [6, 9], [12]]);
+  assert.deepEqual(nums(stacksOf("s2", prs)), [[3]]);
+});
+
+test("Stacks keep their place as PRs are added on top or the bottom PR merges", () => {
+  const before = [
+    pr("s", { number: 4, stack: { number: 41, position: 1 } }),
+    pr("s", { number: 8, stack: { number: 41, position: 2 } }),
+    pr("s", { number: 6 }),
+  ];
+  assert.deepEqual(nums(stacksOf("s", before)), [[4, 8], [6]]);
+  const after = [
+    pr("s", { number: 4, state: "MERGED", stack: { number: 41, position: 1 } }),
+    pr("s", { number: 8, stack: { number: 41, position: 2 } }),
+    pr("s", { number: 11, stack: { number: 41, position: 3 } }),
+    pr("s", { number: 6 }),
+  ];
+  assert.deepEqual(nums(stacksOf("s", after)), [[4, 8, 11], [6]]);
+});
+
+test("each Stack numbers its own PRs; a Stack of one has no number", () => {
+  const prs = [
+    pr("s", { number: 4, stack: { number: 41, position: 1 } }),
+    pr("s", { number: 8, stack: { number: 41, position: 2 } }),
+    pr("s", { number: 5 }),
+    pr("s", { number: 6, stack: { number: 50, position: 1 } }),
+    pr("s", { number: 7, stack: { number: 50, position: 2 } }),
+    pr("s", { number: 9, stack: { number: 50, position: 3 } }),
+  ];
+  const [v] = sessionViews([session("s")], prs, NOW);
   assert.deepEqual(
-    stackOf("s1", prs).map((g) => g.number),
-    [5, 3, 1, 4],
-  );
-  assert.deepEqual(
-    stackOf("s2", prs).map((g) => g.number),
-    [9],
+    v.stacks.map((s) => s.map((p) => [p.number, p.pos])),
+    [
+      [[4, 1], [8, 2]],
+      [[5, null]],
+      [[6, 1], [7, 2], [9, 3]],
+    ],
   );
 });
 
@@ -372,14 +407,14 @@ test("session views join Sessions to their Stacks and tolerate null facets", () 
   assert.equal(one.cde, "flow");
   assert.equal(one.repo, "acme/api");
   assert.deepEqual(
-    one.stack.map((p) => [p.pos, p.number, p.jira, p.title]),
-    [[1, 8, "ABC-12", "Add widgets"]],
+    one.stacks.map((s) => s.map((p) => [p.pos, p.number, p.jira, p.title])),
+    [[[null, 8, "ABC-12", "Add widgets"]]],
   );
   // Until its first Stop writes a title, a Session shows a placeholder, not its id.
   assert.equal(two.title, "New session");
   assert.equal(two.untitled, true);
   assert.equal(two.repo, null);
-  assert.deepEqual(two.stack, []);
+  assert.deepEqual(two.stacks, []);
   // Without PRs the repo falls back to the cwd's last segment.
   assert.equal(sessionViews([sessions[0]], [])[0].repo, "obsidian");
 });
@@ -417,6 +452,10 @@ test("folded Session light: act if waiting or any PR needs attention, else fine"
   assert.equal(attentionLight(view(st("running"), { reviewRequests: [{ login: "a", asCodeOwner: false }] })).lamp, "fine");
   assert.equal(attentionLight(view(st("idle"), { reviewRequests: [{ login: "a", asCodeOwner: false }] }, {})).lamp, "act");
   assert.equal(attentionLight(view(st("idle"), { mergeable: "CONFLICTING", reviewRequests: [{ login: "a", asCodeOwner: false }] })).lamp, "act");
+  // Over all of a Session's Stacks: the act is in a second Stack.
+  const two = view(st("idle"), { reviewRequests: [{ login: "a", asCodeOwner: false }] }, { stack: { number: 9, position: 1 }, mergeable: "CONFLICTING" });
+  assert.equal(two.stacks.length, 2);
+  assert.deepEqual(attentionLight(two), { lamp: "act", tip: "2 pull requests: something needs action" });
 });
 
 test("done Sessions start folded; a toggle flips the default", () => {

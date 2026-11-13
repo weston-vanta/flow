@@ -62,7 +62,8 @@ export interface Github {
   reviewDecision: string | null;
   reviewRequests: ReviewRequest[];
   checks: Check[];
-  stack: { position: number } | null;
+  /** The PR's GitHub stack and place in it; null outside a stack, a Stack of one. */
+  stack: { number: number; position: number } | null;
   updatedAt: string;
   additions: number;
   deletions: number;
@@ -91,8 +92,8 @@ export interface Light {
 export type ReviewLight = Light & { count: number | null };
 
 export interface PrView {
-  /** 1-based place in the Stack, bottom first. */
-  pos: number;
+  /** 1-based place in the Stack, bottom first; null in a Stack of one. */
+  pos: number | null;
   url: string;
   number: number;
   /** The title without its Jira prefix. */
@@ -124,7 +125,8 @@ export interface SessionView {
   repo: string | null;
   cde: string | null;
   activity: string | null;
-  stack: PrView[];
+  /** The Session's Stacks, oldest first, each bottom first. */
+  stacks: PrView[][];
 }
 
 /** `[ABC-123] Title` → key and bare title. */
@@ -214,7 +216,7 @@ export function reviewLight(g: Github): ReviewLight {
 }
 
 /** `below` is the number of the PR below this one in its Stack, if any. */
-export function prView(g: Github, pos: number, below: number | null = null, now = Date.now()): PrView {
+export function prView(g: Github, pos: number | null, below: number | null = null, now = Date.now()): PrView {
   const base = baseLight(g, below, now);
   const ci = ciLight(g);
   const feedback = feedbackLight(g);
@@ -349,16 +351,20 @@ export function trayView(g: Github, below: number | null = null, now = Date.now(
   };
 }
 
-/** The Session's PRs by GitHub stack position, bottom first; missing positions last. */
-export function stackOf(session: string, prs: Pr[]): Github[] {
-  const last = Number.MAX_SAFE_INTEGER;
-  return prs
-    .filter((p) => p.owner === session && p.github)
-    .map((p) => p.github as Github)
-    .sort(
-      (a, b) =>
-        (a.stack?.position ?? last) - (b.stack?.position ?? last) || a.number - b.number,
-    );
+/** The Session's PRs grouped by GitHub stack number into Stacks, each bottom first by
+ * position. A PR outside a GitHub stack is a Stack of one. Stacks are sorted by their bottom
+ * PR's number, so each keeps its place as PRs are added on top or its bottom merges. */
+export function stacksOf(session: string, prs: Pr[]): Github[][] {
+  const groups = new Map<number | string, Github[]>();
+  for (const p of prs) {
+    const g = p.github;
+    if (p.owner !== session || !g) continue;
+    const id = g.stack?.number ?? `#${g.number}`;
+    groups.set(id, [...(groups.get(id) ?? []), g]);
+  }
+  return [...groups.values()]
+    .map((s) => s.sort((a, b) => a.stack!.position - b.stack!.position || a.number - b.number))
+    .sort((a, b) => a[0].number - b[0].number);
 }
 
 const STATUS_LAMP: Record<State, Lamp> = { running: "run", waiting: "act", idle: "fine", done: "fine" };
@@ -387,7 +393,7 @@ export function sessionViews(sessions: Session[], prs: Pr[], now = Date.now()): 
   const started = (s: Session) => (s.origin ? Date.parse(s.origin.at) : -Infinity);
   const sorted = [...sessions].sort((a, b) => done(a) - done(b) || started(b) - started(a));
   return sorted.map((s) => {
-    const stack = stackOf(s.id, prs);
+    const stacks = stacksOf(s.id, prs);
     const state = s.status?.state ?? null;
     const cwd = s.origin?.cwd;
     const title = s.context?.title ?? null;
@@ -396,13 +402,15 @@ export function sessionViews(sessions: Session[], prs: Pr[], now = Date.now()): 
       status: { ...statusLight(state), state, since: s.status?.at ?? null },
       title: title ?? "New session",
       untitled: title == null,
-      repo: stack[0]?.repo ?? (cwd ? cwd.split("/").filter(Boolean).pop() ?? null : null),
+      repo: stacks[0]?.[0].repo ?? (cwd ? cwd.split("/").filter(Boolean).pop() ?? null : null),
       cde: s.origin?.cde ?? null,
       activity: activityLine(s),
-      stack: stack.map((g, i) => {
-        const below = stack.find((o) => o.headRefName === g.baseRefName)?.number ?? null;
-        return prView(g, i + 1, below, now);
-      }),
+      stacks: stacks.map((stack) =>
+        stack.map((g, i) => {
+          const below = stack.find((o) => o.headRefName === g.baseRefName)?.number ?? null;
+          return prView(g, stack.length > 1 ? i + 1 : null, below, now);
+        }),
+      ),
     };
   });
 }
@@ -420,10 +428,11 @@ export function age(iso: string, now = Date.now()): string {
 /** The one light on a folded Session: act if it is waiting for you or any PR needs
  * attention, else fine. */
 export function attentionLight(v: SessionView): Light {
-  const n = v.stack.length;
+  const all = v.stacks.flat();
+  const n = all.length;
   const prs = n ? `${n} pull request${n === 1 ? "" : "s"}` : "No pull requests";
   if (v.status.state === "waiting") return { lamp: "act", tip: `${prs}: waiting for you` };
-  if (v.stack.some((p) => p.attention)) return { lamp: "act", tip: `${prs}: something needs action` };
+  if (all.some((p) => p.attention)) return { lamp: "act", tip: `${prs}: something needs action` };
   return { lamp: "fine", tip: `${prs}: nothing needs action` };
 }
 

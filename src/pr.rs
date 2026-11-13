@@ -134,6 +134,10 @@ pub struct Check {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StackPosition {
+    /// The GitHub stack's number, shared by every PR in it. Facets written before it was
+    /// fetched lack it until their PR is next fetched.
+    #[serde(default)]
+    pub number: u64,
     pub position: u32,
 }
 

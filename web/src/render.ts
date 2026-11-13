@@ -1,4 +1,4 @@
-// The "flow — sessions" design canvas as HTML strings: one panel row per Session, its Stack
+// The "flow — sessions" design canvas as HTML strings: one panel row per Session, its Stacks
 // beside it, the legend behind `h` and notices in a strip fixed to the bottom.
 import { age, attentionLight, isFolded } from "./model.ts";
 import type { Light, PrView, ReviewLight, SessionView } from "./model.ts";
@@ -45,7 +45,7 @@ function prRow(p: PrView, j: number, n: number, selected: boolean): string {
   const tip = `#${p.number} · ${nodeWord(p)}`;
   return `<div class="grid grow${selected ? " sel" : ""}" role="row">
     ${j > 0 ? '<div class="rule" aria-hidden="true"></div>' : ""}
-    <div class="gnode" role="cell">${j > 0 ? '<div class="up"></div>' : ""}${j < n - 1 ? '<div class="down"></div>' : ""}<button type="button" class="node ${p.node}" data-open="${esc(p.url)}" title="${esc(tip)}" aria-label="Pull request ${esc(tip)}: show details">${n > 1 ? p.pos : ""}</button></div>
+    <div class="gnode" role="cell">${j > 0 ? '<div class="up"></div>' : ""}${j < n - 1 ? '<div class="down"></div>' : ""}<button type="button" class="node ${p.node}" data-open="${esc(p.url)}" title="${esc(tip)}" aria-label="Pull request ${esc(tip)}: show details">${p.pos ?? ""}</button></div>
     <div class="gtitle" role="cell"><button type="button" class="t ${p.node}" data-open="${esc(p.url)}">${esc(p.title)}</button>${p.jira ? `<span class="jira mono">${esc(p.jira)}</span>` : ""}</div>
     <div class="glines mono" role="cell" title="${esc(p.sizeTip)}" aria-label="${esc(p.sizeTip)}">${esc(p.size)}</div>
     ${COLUMNS.map(([col, label]) => cell(p, col, label)).join("")}
@@ -136,10 +136,10 @@ function sessionRow(v: SessionView, toggled: Set<string>, trayUrl: string | null
       ${activity ? `<span class="activity" title="${esc(v.activity!)}">${esc(activity)}</span>` : ""}
       ${meta(v)}
     </div></div>`;
-  const body = v.stack.length
+  const body = v.stacks.length
     ? `<div class="scroll"><div role="table" aria-label="Pull requests">
         <div class="grid ghead" role="row"><span></span><span></span><span></span><span role="columnheader">base</span><span role="columnheader">CI</span><span role="columnheader">feedback</span><span role="columnheader">review</span></div>
-        ${v.stack.map((p, j) => prRow(p, j, v.stack.length, p.url === trayUrl)).join("")}
+        ${v.stacks.map((stack) => `<div class="sgroup" role="rowgroup">${stack.map((p, j) => prRow(p, j, stack.length, p.url === trayUrl)).join("")}</div>`).join("")}
       </div></div>`
     : `<div class="noprs"><span class="ring" aria-hidden="true"></span><span>No pull requests yet</span></div>`;
   return `<section class="srow" aria-label="${esc(v.title)}"><div class="sidx">${key(v, false)}</div>
@@ -172,7 +172,7 @@ export function render(
   legend: boolean,
   t: TrayState | null,
 ): string {
-  const p = t && views.flatMap((v) => v.stack).find((x) => x.url === t.url);
+  const p = t && views.flatMap((v) => v.stacks.flat()).find((x) => x.url === t.url);
   return `<div class="page${notices.length ? " noticed" : ""}">
     <header class="top"><div class="logo" aria-hidden="true"><i></i></div><div class="brand"><b>flow</b><span>agent sessions and pull requests</span></div></header>
     <div class="deck${p && t?.open ? " open" : ""}">

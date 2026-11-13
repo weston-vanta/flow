@@ -141,11 +141,15 @@
       review: section(reviewers(g), review)
     };
   }
-  function stackOf(session, prs2) {
-    const last = Number.MAX_SAFE_INTEGER;
-    return prs2.filter((p) => p.owner === session && p.github).map((p) => p.github).sort(
-      (a, b) => (a.stack?.position ?? last) - (b.stack?.position ?? last) || a.number - b.number
-    );
+  function stacksOf(session, prs2) {
+    const groups = /* @__PURE__ */ new Map();
+    for (const p of prs2) {
+      const g = p.github;
+      if (p.owner !== session || !g) continue;
+      const id = g.stack?.number ?? `#${g.number}`;
+      groups.set(id, [...groups.get(id) ?? [], g]);
+    }
+    return [...groups.values()].map((s) => s.sort((a, b) => a.stack.position - b.stack.position || a.number - b.number)).sort((a, b) => a[0].number - b[0].number);
   }
   var STATUS_LAMP = { running: "run", waiting: "act", idle: "fine", done: "fine" };
   var STATUS_LABEL = {
@@ -167,7 +171,7 @@
     const started = (s) => s.origin ? Date.parse(s.origin.at) : -Infinity;
     const sorted = [...sessions2].sort((a, b) => done2(a) - done2(b) || started(b) - started(a));
     return sorted.map((s) => {
-      const stack = stackOf(s.id, prs2);
+      const stacks = stacksOf(s.id, prs2);
       const state = s.status?.state ?? null;
       const cwd = s.origin?.cwd;
       const title2 = s.context?.title ?? null;
@@ -176,13 +180,15 @@
         status: { ...statusLight(state), state, since: s.status?.at ?? null },
         title: title2 ?? "New session",
         untitled: title2 == null,
-        repo: stack[0]?.repo ?? (cwd ? cwd.split("/").filter(Boolean).pop() ?? null : null),
+        repo: stacks[0]?.[0].repo ?? (cwd ? cwd.split("/").filter(Boolean).pop() ?? null : null),
         cde: s.origin?.cde ?? null,
         activity: activityLine(s),
-        stack: stack.map((g, i) => {
-          const below = stack.find((o) => o.headRefName === g.baseRefName)?.number ?? null;
-          return prView(g, i + 1, below, now);
-        })
+        stacks: stacks.map(
+          (stack) => stack.map((g, i) => {
+            const below = stack.find((o) => o.headRefName === g.baseRefName)?.number ?? null;
+            return prView(g, stack.length > 1 ? i + 1 : null, below, now);
+          })
+        )
       };
     });
   }
@@ -195,10 +201,11 @@
     return `${Math.floor(h / 24)} d`;
   }
   function attentionLight(v) {
-    const n = v.stack.length;
+    const all = v.stacks.flat();
+    const n = all.length;
     const prs2 = n ? `${n} pull request${n === 1 ? "" : "s"}` : "No pull requests";
     if (v.status.state === "waiting") return { lamp: "act", tip: `${prs2}: waiting for you` };
-    if (v.stack.some((p) => p.attention)) return { lamp: "act", tip: `${prs2}: something needs action` };
+    if (all.some((p) => p.attention)) return { lamp: "act", tip: `${prs2}: something needs action` };
     return { lamp: "fine", tip: `${prs2}: nothing needs action` };
   }
   function isFolded(v, toggled2) {
@@ -233,7 +240,7 @@
     const tip = `#${p.number} \xB7 ${nodeWord(p)}`;
     return `<div class="grid grow${selected ? " sel" : ""}" role="row">
     ${j > 0 ? '<div class="rule" aria-hidden="true"></div>' : ""}
-    <div class="gnode" role="cell">${j > 0 ? '<div class="up"></div>' : ""}${j < n - 1 ? '<div class="down"></div>' : ""}<button type="button" class="node ${p.node}" data-open="${esc(p.url)}" title="${esc(tip)}" aria-label="Pull request ${esc(tip)}: show details">${n > 1 ? p.pos : ""}</button></div>
+    <div class="gnode" role="cell">${j > 0 ? '<div class="up"></div>' : ""}${j < n - 1 ? '<div class="down"></div>' : ""}<button type="button" class="node ${p.node}" data-open="${esc(p.url)}" title="${esc(tip)}" aria-label="Pull request ${esc(tip)}: show details">${p.pos ?? ""}</button></div>
     <div class="gtitle" role="cell"><button type="button" class="t ${p.node}" data-open="${esc(p.url)}">${esc(p.title)}</button>${p.jira ? `<span class="jira mono">${esc(p.jira)}</span>` : ""}</div>
     <div class="glines mono" role="cell" title="${esc(p.sizeTip)}" aria-label="${esc(p.sizeTip)}">${esc(p.size)}</div>
     ${COLUMNS.map(([col, label]) => cell(p, col, label)).join("")}
@@ -303,9 +310,9 @@
       ${activity ? `<span class="activity" title="${esc(v.activity)}">${esc(activity)}</span>` : ""}
       ${meta(v)}
     </div></div>`;
-    const body = v.stack.length ? `<div class="scroll"><div role="table" aria-label="Pull requests">
+    const body = v.stacks.length ? `<div class="scroll"><div role="table" aria-label="Pull requests">
         <div class="grid ghead" role="row"><span></span><span></span><span></span><span role="columnheader">base</span><span role="columnheader">CI</span><span role="columnheader">feedback</span><span role="columnheader">review</span></div>
-        ${v.stack.map((p, j) => prRow(p, j, v.stack.length, p.url === trayUrl)).join("")}
+        ${v.stacks.map((stack) => `<div class="sgroup" role="rowgroup">${stack.map((p, j) => prRow(p, j, stack.length, p.url === trayUrl)).join("")}</div>`).join("")}
       </div></div>` : `<div class="noprs"><span class="ring" aria-hidden="true"></span><span>No pull requests yet</span></div>`;
     return `<section class="srow" aria-label="${esc(v.title)}"><div class="sidx">${key(v, false)}</div>
     ${info}<div class="sprs">${body}</div>
@@ -326,7 +333,7 @@
     </div>
   </div>`;
   function render(views, toggled2, notices, legend2, t) {
-    const p = t && views.flatMap((v) => v.stack).find((x) => x.url === t.url);
+    const p = t && views.flatMap((v) => v.stacks.flat()).find((x) => x.url === t.url);
     return `<div class="page${notices.length ? " noticed" : ""}">
     <header class="top"><div class="logo" aria-hidden="true"><i></i></div><div class="brand"><b>flow</b><span>agent sessions and pull requests</span></div></header>
     <div class="deck${p && t?.open ? " open" : ""}">
@@ -368,7 +375,7 @@
     const stale = prDataAge(prs);
     if (stale != null) notices.push(`PR data ${stale} min old`);
     const views = sessionViews(sessions, prs);
-    if (tray2 && !views.some((v) => v.stack.some((p) => p.url === tray2.url))) tray2 = null;
+    if (tray2 && !views.some((v) => v.stacks.some((s) => s.some((p) => p.url === tray2.url)))) tray2 = null;
     return render(views, toggled, notices, legend, tray2);
   }
   var $ = (sel) => root.querySelector(sel);
