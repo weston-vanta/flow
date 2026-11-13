@@ -12,12 +12,11 @@ A Builder is a Subagent that writes the code for one PR in a worktree the IC cre
 - **Test-first.** Each behaviour starts as a failing test through the repo's existing test seams, so the evidence for the change exists from the start.
 - **The repo's guidance is the standard.** Its `CLAUDE.md`, glossary, ADRs and templates win over any default here.
 - **Explain with `flow:explain`.** Commits, the PR title and the PR body follow it, and whoever changes the diff rewrites the body.
-- **Note the gaps.** When you must make a choice the repo's guidance should have made (it was missing, two pieces conflicted, or following it led somewhere worse), and another Task in this repo would hit it too, add one line to the Task's `notes.md`: the guidance's location (or none), what happened, and what was done instead.
 - **Report in a line or two.** The IC's context is for the Task; the detail lives in commits and files.
 
 ## Dispatching a Builder (IC)
 
-Give it the worktree path and base, the paths of `spec.md` and its brief (`prs/<nn>-<name>.md`), the PR file to write (`prs/<nn>-<name>.pr.md`), and an instruction to follow "Building (Builder)" in this skill. For findings to address, add their source and `flow:revise`.
+Give it the worktree path and base, the paths of `spec.md` and its brief (`prs/<nn>-<name>.md`), the PR file to write (`prs/<nn>-<name>.pr.md`), the path of `notes.md` with your **Note the gaps** principle, and an instruction to follow "Building (Builder)" in this skill. For findings to address, add their source and `flow:revise`.
 
 Keep the Builder that built a PR for its per-PR Review rounds, by continuing it rather than starting a new one. Per-Stack work (a reshape, or a follow-up PR with its own brief) and each Revise round get a fresh Builder.
 

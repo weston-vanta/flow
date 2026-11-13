@@ -13,7 +13,7 @@ A Builder takes one PR's findings and leaves every one either fixed or declined 
 - **Reviewer findings are judged on their evidence.** Fix what holds; decline what doesn't, and say why.
 - **The Director's comments are accepted by default.** A comment phrased as a question is researched, then confirmed (and changed) or denied with the evidence.
 - **The spec is the target.** A comment that conflicts with `spec.md` or with another comment is left unchanged and reported to the IC, which decides, or takes a requirement change back to the Director as a spec change.
-- **Nothing is posted on GitHub.** Read comments with `gh`; answer only the IC. `gh` posts as the Director.
+- **Nothing is posted on GitHub.** Read comments with `gh`; answer only the IC.
 - **The body stays current.** Rewrite the PR file with `flow:explain` to describe the PR as it now stands, evidence included, never as a log of the round.
 
 ## Process
