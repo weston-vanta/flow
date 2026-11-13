@@ -14,5 +14,6 @@ prints this note.
   It opens a new, unfocused herdr tab in `<repo-dir>` (the repo's main checkout, which needs a
   wt base), in a workspace named after your Session, starts Claude there with a fresh Session
   id, sends `/flow:ic <brief path>`, and prints `{id, name, cde, pane}`. Keep the brief on
-  `/efs-home`. On failure it prints `{error, help}`, leaves the pane as it is and retries
+  `/efs-home`. Add `--cde <name>` to launch on another running CDE (it never starts one); the
+  output is the same, with that CDE's name as `cde`. On failure it prints `{error, help}`, leaves the pane as it is and retries
   nothing: show the error to the Director rather than trying again.

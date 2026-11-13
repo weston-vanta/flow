@@ -323,3 +323,127 @@ fn needs_a_workspace_outside_a_session() {
     let out: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert!(out["error"].as_str().unwrap().contains("--workspace"));
 }
+
+/// What the fake `gitpod environment list -o json` prints: a running CDE "Remote" and a
+/// stopped one, "Cold".
+const ENVIRONMENTS: &str = r#"[{"id":"env-remote","metadata":{"name":"Remote"},"status":{"phase":"ENVIRONMENT_PHASE_RUNNING"}},{"id":"env-cold","metadata":{"name":"Cold"},"status":{"phase":"ENVIRONMENT_PHASE_STOPPED"}}]"#;
+
+impl Launch {
+    /// A launch whose fake `gitpod` lists `ENVIRONMENTS` and whose fake `ssh` logs its argv,
+    /// one per line, and then runs `answer`.
+    fn remote(answer: &str) -> Self {
+        let l = Self::new(&[]);
+        l.ts.fake_bin(
+            "gitpod",
+            &format!(
+                "[ \"$*\" = 'environment list -o json' ] && echo '{ENVIRONMENTS}' && exit 0\n\
+                 [ \"$3\" = env-flow ] && echo Flow || exit 1"
+            ),
+        );
+        l.ts.fake_bin(
+            "ssh",
+            &format!(
+                "printf '%s\\n' \"$@\" > {}\n{answer}",
+                l.ssh_log().display()
+            ),
+        );
+        l
+    }
+
+    fn ssh_log(&self) -> PathBuf {
+        self.log.with_file_name("ssh.args")
+    }
+
+    /// The argv of the `ssh` call, if there was one.
+    fn ssh_args(&self) -> Vec<String> {
+        fs::read_to_string(self.ssh_log())
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+}
+
+const REMOTE_ID: &str = "44444444-4444-4444-8444-444444444444";
+
+#[test]
+fn starts_an_ic_on_another_cde_over_ssh() {
+    let l = Launch::remote(&format!(
+        r#"echo '{{"id":"{REMOTE_ID}","name":"widgets","cde":null,"pane":"w5:p2"}}'"#
+    ));
+    let (code, out) = l.start_widgets(&["--cde", "Remote", "--id", REMOTE_ID]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(
+        out,
+        json!({"id": REMOTE_ID, "name": "widgets", "cde": "Remote", "pane": "w5:p2"})
+    );
+    assert_eq!(
+        l.ssh_args(),
+        [
+            "-o".to_owned(),
+            "BatchMode=yes".to_owned(),
+            "-o".to_owned(),
+            "ConnectTimeout=10".to_owned(),
+            "env-remote.ona.environment".to_owned(),
+            format!(
+                "zsh -lc ''\\''/efs-home/flow/bin/flow'\\'' '\\''session'\\'' '\\''start'\\'' \
+                 '\\''--id'\\'' '\\''{REMOTE_ID}'\\'' '\\''--name'\\'' '\\''widgets'\\'' \
+                 '\\''--workspace'\\'' '\\''Plan the factory'\\'' '\\''--brief'\\'' '\\''{}'\\'' '\\''{}'\\'''",
+                path(&l.brief),
+                path(&l.repo)
+            ),
+        ]
+    );
+    assert!(
+        l.calls().is_empty(),
+        "no local herdr call: {:#?}",
+        l.calls()
+    );
+}
+
+#[test]
+fn chooses_the_remote_ics_id_before_ssh() {
+    let l = Launch::remote("echo '{\"error\":\"x\",\"help\":\"y\"}'; exit 1");
+    l.start_widgets(&["--cde", "Remote"]);
+    let command = l.ssh_args().pop().unwrap();
+    let id = command
+        .split("'\\''")
+        .skip_while(|w| *w != "--id")
+        .nth(2)
+        .unwrap()
+        .to_owned();
+    assert_eq!(id.len(), 36, "{command}");
+}
+
+#[test]
+fn passes_a_remote_failure_through_unchanged() {
+    let l = Launch::remote(
+        r#"echo '{"error":"no herdr server is running: down","help":"start herdr yourself"}'; exit 1"#,
+    );
+    let (code, out) = l.start_widgets(&["--cde", "Remote"]);
+    assert_eq!(code, 1);
+    assert_eq!(
+        out,
+        json!({"error": "no herdr server is running: down", "help": "start herdr yourself"})
+    );
+}
+
+#[test]
+fn reports_an_unreachable_cde() {
+    let l = Launch::remote("echo 'ssh: connect to host: timed out' >&2; exit 255");
+    assert_fails(&l, &["--cde", "Remote"], "timed out", 0);
+}
+
+#[test]
+fn never_starts_a_stopped_cde() {
+    let l = Launch::remote("exit 0");
+    assert_fails(&l, &["--cde", "Cold"], "not running", 0);
+    assert!(l.ssh_args().is_empty());
+}
+
+#[test]
+fn stops_when_the_cde_is_not_found() {
+    let l = Launch::remote("exit 0");
+    assert_fails(&l, &["--cde", "Nowhere"], "Nowhere", 0);
+    assert!(l.ssh_args().is_empty());
+}

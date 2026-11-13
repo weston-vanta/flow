@@ -173,6 +173,122 @@ pub fn start(store: &Store, launch: &Launch) -> Result<Started, Failure> {
     })
 }
 
+/// The installed `flow` every CDE shares, which a remote launch runs.
+const INSTALLED_FLOW: &str = "/efs-home/flow/bin/flow";
+
+/// What a remote launch ended with: the target's JSON output and exit code.
+pub struct RemoteOutcome {
+    pub code: u8,
+    pub output: Value,
+}
+
+/// Launches on the CDE named `cde`: resolves its environment id through `gitpod`, checks it
+/// is running (it never starts one), then runs the local form of `flow session start` there
+/// over ssh with every value explicit. The target's `{error, help}` and exit code pass through
+/// unchanged; on success `cde` is set to `cde`.
+pub fn start_remote(cde: &str, launch: &Launch) -> Result<RemoteOutcome, Failure> {
+    let env_id = running_environment(cde)?;
+    let absolute = |p: &Path| std::path::absolute(p).unwrap_or_else(|_| p.to_owned());
+    let (brief, repo) = (absolute(launch.brief), absolute(launch.repo));
+    let words = [
+        INSTALLED_FLOW,
+        "session",
+        "start",
+        "--id",
+        launch.id,
+        "--name",
+        launch.name,
+        "--workspace",
+        launch.workspace,
+        "--brief",
+        &brief.to_string_lossy(),
+        &repo.to_string_lossy(),
+    ]
+    .map(shell_quote)
+    .join(" ");
+    let out = Command::new("ssh")
+        .args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"])
+        .arg(format!("{env_id}.ona.environment"))
+        .arg(format!("zsh -lc {}", shell_quote(&words)))
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|err| fail(format!("cannot run ssh: {err}"), "ssh must be on PATH"))?;
+    let code = out.status.code().unwrap_or(-1);
+    match serde_json::from_slice::<Value>(&out.stdout) {
+        Ok(mut output) if matches!(code, 0..=2) && output.is_object() => {
+            if code == 0 {
+                output["cde"] = cde.into();
+            }
+            Ok(RemoteOutcome {
+                code: code as u8,
+                output,
+            })
+        }
+        _ => Err(fail(
+            format!(
+                "ssh to CDE {cde} ({env_id}) failed with exit code {code}: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ),
+            "check that the CDE is reachable (`gitpod environment ssh-config`) and flow is installed on /efs-home",
+        )),
+    }
+}
+
+/// The environment id of the CDE named `cde`, if `gitpod environment list` shows it running.
+fn running_environment(cde: &str) -> Result<String, Failure> {
+    let out = Command::new("gitpod")
+        .args(["environment", "list", "-o", "json"])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|err| {
+            fail(
+                format!("cannot run gitpod: {err}"),
+                "gitpod must be on PATH",
+            )
+        })?;
+    let listed: Value = serde_json::from_slice(&out.stdout)
+        .ok()
+        .filter(|_| out.status.success())
+        .ok_or_else(|| {
+            fail(
+                format!(
+                    "gitpod environment list failed: {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ),
+                "log in with `gitpod login` on this CDE",
+            )
+        })?;
+    let env = listed
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|env| env["metadata"]["name"] == cde)
+        .ok_or_else(|| {
+            fail(
+                format!("no CDE named {cde:?}"),
+                "pass a name from `gitpod environment list`",
+            )
+        })?;
+    let phase = env["status"]["phase"].as_str().unwrap_or_default();
+    if phase != "ENVIRONMENT_PHASE_RUNNING" {
+        return Err(fail(
+            format!("CDE {cde} is not running ({phase})"),
+            "start it yourself or pick a running CDE; flow never starts a CDE",
+        ));
+    }
+    env["id"].as_str().map(str::to_owned).ok_or_else(|| {
+        fail(
+            format!("gitpod listed CDE {cde} with no id"),
+            "check `gitpod --version`",
+        )
+    })
+}
+
+/// `word` in single quotes, safe for a POSIX shell.
+fn shell_quote(word: &str) -> String {
+    format!("'{}'", word.replace('\'', r"'\''"))
+}
+
 const HERDR_BUG_HELP: &str = "herdr's output was not what flow expects; check `herdr --version`";
 
 /// The repo dir made absolute, if it exists and has a wt base beside it.
