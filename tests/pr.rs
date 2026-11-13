@@ -71,7 +71,7 @@ fn put_pr(ts: &TestStore, repo: &str, number: u64, head: &str) {
             { "team": "acme/reviewers", "asCodeOwner": true },
         ],
         "checks": [{ "name": "ci", "status": "COMPLETED", "conclusion": "SUCCESS", "url": null }],
-        "stack": { "position": 1 },
+        "stack": { "number": 12, "position": 1 },
         "updatedAt": "2026-11-10T12:00:00Z",
         "additions": 10,
         "deletions": 2,
@@ -176,6 +176,8 @@ fn the_later_reporter_owns_the_pr() {
     let listed = prs(&ts);
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0]["owner"], "second");
+    // Readers group PRs into Stacks by the stack number.
+    assert_eq!(listed[0]["github"]["stack"], json!({ "number": 12, "position": 1 }));
 }
 
 #[test]
@@ -255,7 +257,7 @@ fn a_pr_carries_its_github_facet_in_full() {
             { "team": "acme/reviewers", "asCodeOwner": true },
         ])
     );
-    assert_eq!(github["stack"], json!({ "position": 1 }));
+    assert_eq!(github["stack"], json!({ "number": 12, "position": 1 }));
     assert_eq!(github["additions"], 10);
     assert_eq!(github["deletions"], 2);
     assert_eq!(github["changedFiles"], 3);
