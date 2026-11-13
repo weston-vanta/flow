@@ -36,14 +36,16 @@ Align settles the deliverable: PRs, a spec, or an answer. Stop where that delive
 1. **Align.** Run `flow:align`. It ends with an approved `spec.md`, and for PRs an approved `plan.md` and one builder brief per PR under `prs/`.
    - A spec deliverable is done once `spec.md` is approved.
    - An answer deliverable: find the answer, dispatching Subagents for heavy reading, write it to `answer.md`, and present it. It is done once the Director accepts it.
-2. **Draft.** Run `flow guide` once for the `flow` commands. Then for each PR, as soon as its base is done:
-   - create its worktree with `flow wt create`, so that you own the PR;
-   - dispatch a Builder with `flow:build` and the PR's brief;
-   - run the PR's Review passes with `flow:review`, and have the same Builder address the findings with `flow:revise`, for at most two rounds;
-   - open the PR as a draft at once, so CI runs and the Director can start reviewing.
+2. **Draft.** Run `flow guide` once for the `flow` commands. Start every PR as soon as its base is done, with no cap on how many build at once:
+   1. Create its worktree with `flow wt create`, so that you own the PR.
+   2. Dispatch a Builder with `flow:build`.
+   3. Run the PR's Review passes with `flow:review`, and continue the same Builder with `flow:revise` on the findings, for at most two rounds.
+   4. Open it as a draft at once, as `flow:build` describes, so CI runs and the Director can start reviewing.
 
-   Once all of a Stack's PRs are open, run its per-Stack pass, bring the findings to the Director (written with `flow:explain`) and wait. On their confirmation, reshape the Stack if every PR is still a draft, or add follow-up PRs otherwise. Otherwise stop only when an assumption proves false, the plan contradicts other guidance, or a material concern comes up that planning didn't foresee.
-3. **Revise.** When the Director says they have reviewed on GitHub, give each PR with comments to a fresh Builder with `flow:revise`. Step in only when a comment conflicts with the spec or with another comment; a comment that changes a requirement goes back to the Director as a spec change. Report the outcomes in your pane.
+   Once all of a Stack's PRs are open, run its per-Stack pass, bring the findings to the Director (written with `flow:explain`) and wait. On their confirmation, reshape the Stack through `flow:revise` if every PR is still a draft, or add follow-up PRs otherwise, so that nothing the Director has started reviewing is rewritten under them. Then update the plan as below.
+
+   Otherwise keep going. Stop only when an assumption proves false, the plan contradicts other guidance, or a material concern comes up that planning didn't foresee.
+3. **Revise.** When the Director says they have reviewed on GitHub, give each PR with comments to a fresh Builder with `flow:build` and `flow:revise`. Step in only for a comment conflict it reports; a comment that changes a requirement goes back to the Director as a spec change. Update each PR as `flow:build` describes, and report the outcomes in your pane.
 4. **Done**, when the Director says the Task is done:
    1. Check that every PR is merged or closed. If any isn't, list them and stop.
    2. `wt remove` each worktree. Leave any dirty one in place and name it.
