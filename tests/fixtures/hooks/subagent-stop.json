@@ -1,0 +1,14 @@
+{
+  "session_id": "8f2c1a7e-3b4d-4e5f-9a6b-1c2d3e4f5a6b",
+  "transcript_path": "/home/vscode/.claude/projects/-workspaces-obsidian/8f2c1a7e-3b4d-4e5f-9a6b-1c2d3e4f5a6b.jsonl",
+  "cwd": "/workspaces/obsidian",
+  "permission_mode": "default",
+  "hook_event_name": "SubagentStop",
+  "stop_hook_active": false,
+  "agent_id": "a60e4f9685a10e703",
+  "agent_type": "general-purpose",
+  "agent_transcript_path": "/home/vscode/.claude/projects/-workspaces-obsidian/8f2c1a7e-3b4d-4e5f-9a6b-1c2d3e4f5a6b/subagents/agent-a60e4f9685a10e703.jsonl",
+  "last_assistant_message": "The tests pass.",
+  "background_tasks": [],
+  "session_crons": []
+}

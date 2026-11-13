@@ -86,6 +86,8 @@ fn installs_binaries_and_hooks_plugin_and_replaces_them_under_a_running_flowd() 
             "SessionStart",
             "Stop",
             "StopFailure",
+            "SubagentStart",
+            "SubagentStop",
             "UserPromptSubmit",
         ]
     );

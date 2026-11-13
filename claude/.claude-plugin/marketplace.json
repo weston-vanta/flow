@@ -1,6 +1,6 @@
 {
   "name": "flow",
-  "description": "flow's Claude Code hooks, which record every Session in the flow Store.",
+  "description": "flow's Claude Code plugin: hooks that record every Session in the flow Store, and the Manager and IC skills.",
   "owner": {
     "name": "flow"
   },
