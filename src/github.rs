@@ -226,7 +226,7 @@ fn discover(gh: &Gh) -> Result<Vec<Found>> {
 
 /// The PR fields fetched in detail, other than check contexts and the default-branch compare.
 const PR_FIELDS: &str = "number url title state isDraft headRefName headRefOid baseRefName \
-    mergeable reviewDecision updatedAt additions deletions changedFiles stackEntry { position } \
+    mergeable reviewDecision updatedAt additions deletions changedFiles stackEntry { position stack { number } } \
     reviewRequests(first: 20) { nodes { asCodeOwner requestedReviewer { ... on User { login } ... on Bot { login } ... on Mannequin { login } ... on Team { slug } } } } \
     latestOpinionatedReviews(first: 20, writersOnly: true) { nodes { author { login } state onBehalfOf(first: 5) { nodes { slug } } } } \
     reviewThreads(first: 100) { nodes { isResolved isOutdated path line comments(first: 1) { nodes { author { login } bodyText url createdAt } } } }";
@@ -259,12 +259,23 @@ struct RawPr {
     additions: u64,
     deletions: u64,
     changed_files: u64,
-    stack_entry: Option<StackPosition>,
+    stack_entry: Option<StackEntry>,
     review_requests: Connection<RequestNode>,
     latest_opinionated_reviews: Connection<RawReview>,
     review_threads: Connection<RawThread>,
     head_ref: Option<HeadRef>,
     status_check_rollup: Option<Rollup>,
+}
+
+#[derive(Deserialize)]
+struct StackEntry {
+    position: u32,
+    stack: Number,
+}
+
+#[derive(Deserialize)]
+struct Number {
+    number: u64,
 }
 
 #[derive(Deserialize)]
@@ -546,7 +557,10 @@ fn github(repo: &str, default_branch: &str, raw: RawPr) -> Github {
             })
             .collect(),
         checks: required_checks(contexts),
-        stack: raw.stack_entry,
+        stack: raw.stack_entry.map(|entry| StackPosition {
+            number: entry.stack.number,
+            position: entry.position,
+        }),
         updated_at: raw.updated_at,
         additions: raw.additions,
         deletions: raw.deletions,

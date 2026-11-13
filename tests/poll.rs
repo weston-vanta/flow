@@ -108,7 +108,7 @@ fn a_poll_writes_every_field_of_each_pr() {
                 {"name": "test", "status": "IN_PROGRESS", "conclusion": null,
                  "url": "https://github.com/acme/widgets/actions/runs/2/job/104"},
             ],
-            "stack": {"position": 2},
+            "stack": {"number": 41, "position": 2},
             "updatedAt": "2026-11-10T11:00:00Z", "additions": 120, "deletions": 4,
             "changedFiles": 6,
             // The dismissed and commented reviews are dropped.
@@ -141,6 +141,25 @@ fn a_poll_writes_every_field_of_each_pr() {
     assert_eq!(draft["github"]["isDraft"], true);
     assert_eq!(draft["github"]["mergeable"], "CONFLICTING");
     assert_eq!(draft["github"]["reviewDecision"], Value::Null);
+}
+
+#[test]
+fn a_poll_stores_each_prs_github_stack_number_beside_its_position() {
+    let ts = TestStore::new();
+    let log = fake_gh(&ts, &search_ok(), &gadgets_ok());
+    let mut flowd = ts.flowd();
+    flowd.wait_for_line(CYCLE);
+    assert!(
+        calls(&log).contains("stackEntry { position stack { number } }"),
+        "{}",
+        calls(&log)
+    );
+
+    let stack_of = |key: &str| pr_get(&ts, key)["github"]["stack"].clone();
+    assert_eq!(stack_of("acme/widgets#7"), json!({"number": 41, "position": 2}));
+    assert_eq!(stack_of("acme/widgets#8"), json!({"number": 41, "position": 3}));
+    // Outside a GitHub stack, a Stack of one.
+    assert_eq!(stack_of("acme/gadgets#3"), Value::Null);
 }
 
 #[test]
@@ -288,4 +307,58 @@ fn a_failed_discovery_skips_detail() {
         .args(["pr", "get", "acme/widgets#7"])
         .assert()
         .failure();
+}
+
+fn pr_keys(ts: &TestStore, args: &[&str]) -> Vec<(String, Value)> {
+    let out = ts.flow().args(args).assert().success();
+    let prs: Vec<Value> = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    prs.iter()
+        .map(|pr| (pr["key"].as_str().unwrap().to_owned(), pr["owner"].clone()))
+        .collect()
+}
+
+#[test]
+fn pr_list_all_adds_the_polled_prs_no_session_owns() {
+    let ts = TestStore::new();
+    fake_gh(&ts, &search_ok(), &gadgets_ok());
+    let mut flowd = ts.flowd();
+    flowd.wait_for_line(CYCLE);
+    let now = Timestamp::now();
+    let store = ts.store();
+    store
+        .put_facet(
+            "session",
+            "s1",
+            "status",
+            &json!({ "state": "running" }),
+            now,
+        )
+        .unwrap();
+    store
+        .put_facet(
+            "branch",
+            "acme/widgets:feat/x",
+            "reporter",
+            &json!({ "session": "s1" }),
+            now,
+        )
+        .unwrap();
+
+    let owned = vec![("acme/widgets#7".to_owned(), json!("s1"))];
+    assert_eq!(pr_keys(&ts, &["pr", "list"]), owned);
+    assert_eq!(
+        pr_keys(&ts, &["pr", "list", "--all"]),
+        [
+            ("acme/gadgets#3", Value::Null),
+            ("acme/gadgets#4", Value::Null),
+            ("acme/widgets#5", Value::Null),
+            ("acme/widgets#7", json!("s1")),
+            ("acme/widgets#8", Value::Null),
+        ]
+        .map(|(key, owner)| (key.to_owned(), owner))
+    );
+    let (status, body) = flowd.get("/api/prs");
+    assert_eq!(status, 200);
+    let api: Vec<Value> = serde_json::from_str(&body).unwrap();
+    assert_eq!(api.len(), 1, "{body}");
 }

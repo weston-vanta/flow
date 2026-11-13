@@ -5,7 +5,7 @@
       "state": "OPEN", "isDraft": false, "headRefName": "feat/x", "headRefOid": "0123456789abcdef0123456789abcdef01234567",
       "baseRefName": "main", "mergeable": "MERGEABLE", "reviewDecision": "REVIEW_REQUIRED",
       "updatedAt": "2026-11-10T11:00:00Z", "additions": 120, "deletions": 4, "changedFiles": 6,
-      "stackEntry": {"position": 2},
+      "stackEntry": {"position": 2, "stack": {"number": 41}},
       "reviewRequests": {"nodes": [
         {"asCodeOwner": false, "requestedReviewer": {"login": "alice"}},
         {"asCodeOwner": true, "requestedReviewer": {"slug": "platform"}}
@@ -48,7 +48,7 @@
       "state": "OPEN", "isDraft": false, "headRefName": "feat/y", "headRefOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "baseRefName": "feat/x", "mergeable": "MERGEABLE", "reviewDecision": "REVIEW_REQUIRED",
       "updatedAt": "2026-11-10T11:30:00Z", "additions": 8, "deletions": 2, "changedFiles": 2,
-      "stackEntry": {"position": 3},
+      "stackEntry": {"position": 3, "stack": {"number": 41}},
       "reviewRequests": {"nodes": []},
       "latestOpinionatedReviews": {"nodes": []},
       "reviewThreads": {"nodes": []},

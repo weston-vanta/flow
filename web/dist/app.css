@@ -357,6 +357,10 @@ button.node:hover {
   color: var(--ink2);
   text-align: center;
 }
+.sgroup + .sgroup {
+  margin-top: 8px;
+  border-top: 1px solid var(--rule);
+}
 .grow {
   position: relative;
   min-height: 64px;
