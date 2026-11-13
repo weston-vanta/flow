@@ -90,7 +90,11 @@ enum SessionCommand {
 #[derive(Subcommand)]
 enum PrCommand {
     /// Print every PR that has an owner as a JSON array; `owner` is the owning Session's id.
-    List,
+    List {
+        /// Also print the PRs you authored that no Session owns, with `owner` null.
+        #[arg(long)]
+        all: bool,
+    },
     /// Print one PR as JSON, owned or not.
     Get {
         /// The PR's key, `owner/repo#number`.
@@ -141,7 +145,11 @@ fn main() -> ExitCode {
         Some(Command::Session(SessionCommand::Remove { force, ids })) => {
             session_remove(&store, &ids, force)
         }
-        Some(Command::Pr(PrCommand::List)) => match services::pr_list(&store) {
+        Some(Command::Pr(PrCommand::List { all })) => match if all {
+            services::pr_list_all(&store)
+        } else {
+            services::pr_list(&store)
+        } {
             Ok(prs) => print_json(&prs),
             Err(err) => store_error(&err),
         },
