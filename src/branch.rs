@@ -7,7 +7,7 @@ use anyhow::{Context as _, Result};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use crate::store::{Entity, Put, Store};
+use crate::store::{self, Entity, Put, Store};
 
 /// The Store kind Branches are kept under.
 pub const KIND: &str = "branch";
@@ -52,6 +52,40 @@ pub fn owners(store: &Store) -> Result<HashMap<String, String>> {
         }
     }
     Ok(owners)
+}
+
+/// A Branch as `flow branch list` prints it: its key split into `repo` and `branch`, its
+/// reporter Session as `owner`, and `at`, when that Session created its worktree.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Branch {
+    pub key: String,
+    pub repo: String,
+    pub branch: String,
+    pub owner: String,
+    /// RFC 3339, as the Store carries it.
+    pub at: String,
+}
+
+/// Every reported Branch, ordered by key.
+pub fn list(store: &Store) -> Result<Vec<Branch>> {
+    let mut branches = Vec::new();
+    for entity in store.list(KIND)? {
+        let (Some(owner), Some(facet)) = (reporter(&entity)?, entity.facets.get(REPORTER)) else {
+            continue;
+        };
+        let (repo, branch) = entity
+            .id
+            .split_once(':')
+            .with_context(|| format!("branch key {:?} has no `:`", entity.id))?;
+        branches.push(Branch {
+            key: entity.id.clone(),
+            repo: repo.to_owned(),
+            branch: branch.to_owned(),
+            owner,
+            at: store::format_at(facet.at),
+        });
+    }
+    Ok(branches)
 }
 
 fn reporter(entity: &Entity) -> Result<Option<String>> {

@@ -79,6 +79,10 @@ fn api_returns_the_cli_json_byte_for_byte() {
     let prs = cli_stdout(&ts, &["pr", "list"]);
     assert!(prs.contains("acme/widgets#7"), "{prs}");
     assert_eq!(flowd.get("/api/prs"), (200, prs));
+
+    let branches = cli_stdout(&ts, &["branch", "list"]);
+    assert!(branches.contains("acme/widgets:feat/x"), "{branches}");
+    assert_eq!(flowd.get("/api/branches"), (200, branches));
 }
 
 #[test]

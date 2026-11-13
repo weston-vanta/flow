@@ -16,7 +16,7 @@ import {
   statusLight,
   trayView,
 } from "./model.ts";
-import type { Check, Github, Pr, Session, Thread } from "./model.ts";
+import type { Branch, Check, Github, Pr, Session, Thread } from "./model.ts";
 
 const AT = "2026-11-10T12:00:00.000000Z";
 
@@ -244,7 +244,7 @@ test("session views name a stacked PR's base by the PR below it", () => {
     pr("s", { number: 2, stack: { number: 1, position: 2 }, headRefName: "b", baseRefName: "a", mergeable: "CONFLICTING" }),
     pr("s", { number: 1, stack: { number: 1, position: 1 }, headRefName: "a", baseRefName: "main" }),
   ];
-  const [[, top]] = sessionViews([session("s")], prs, NOW)[0].stacks;
+  const [[, top]] = sessionViews([session("s")], prs, [], NOW)[0].stacks;
   assert.equal(top.number, 2);
   assert.deepEqual(top.tray.base.items, ["Merge conflict with #1"]);
 });
@@ -358,7 +358,7 @@ test("each Stack numbers its own PRs; a Stack of one has no number", () => {
     pr("s", { number: 7, stack: { number: 50, position: 2 } }),
     pr("s", { number: 9, stack: { number: 50, position: 3 } }),
   ];
-  const [v] = sessionViews([session("s")], prs, NOW);
+  const [v] = sessionViews([session("s")], prs, [], NOW);
   assert.deepEqual(
     v.stacks.map((s) => s.map((p) => [p.number, p.pos])),
     [
@@ -417,6 +417,37 @@ test("session views join Sessions to their Stacks and tolerate null facets", () 
   assert.deepEqual(two.stacks, []);
   // Without PRs the repo falls back to the cwd's last segment.
   assert.equal(sessionViews([sessions[0]], [])[0].repo, "obsidian");
+});
+
+const branch = (owner: string, name: string, at: string, repo = "acme/widgets"): Branch => ({
+  key: `${repo}:${name}`,
+  repo,
+  branch: name,
+  owner,
+  at,
+});
+
+test("a Session's Branches without a PR follow its Stacks, oldest first", () => {
+  const branches = [
+    branch("s", "feat/new", hoursAgo(1)),
+    branch("s", "feat/old", hoursAgo(5)),
+    // Heads of a PR, open or merged: the PR shows instead.
+    branch("s", "feat/x", hoursAgo(9)),
+    branch("s", "feat/done", hoursAgo(9)),
+    // Same branch name in another repo has no PR.
+    branch("s", "feat/x", hoursAgo(3), "acme/api"),
+    branch("other", "feat/theirs", hoursAgo(2)),
+  ];
+  const prs = [pr("s", { number: 7, headRefName: "feat/x", isDraft: true }), pr("s", { number: 8, headRefName: "feat/done", state: "MERGED" })];
+  const [v] = sessionViews([session("s")], prs, branches, NOW);
+  assert.deepEqual(v.stacks.flat().map((p) => p.number), [7, 8]);
+  assert.deepEqual(v.branches, ["feat/old", "feat/x", "feat/new"]);
+  // Branch rows count towards neither the folded light nor its PR count.
+  assert.deepEqual(attentionLight(v), { lamp: "fine", tip: "2 pull requests: nothing needs action" });
+  // A Session with only a Branch takes its repo from it.
+  const [only] = sessionViews([session("o")], [], [branch("o", "feat/y", AT, "acme/api")]);
+  assert.equal(only.repo, "acme/api");
+  assert.deepEqual(only.branches, ["feat/y"]);
 });
 
 test("done Sessions go last; each group newest first, unstarted last", () => {

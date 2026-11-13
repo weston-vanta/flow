@@ -1,5 +1,5 @@
-// The view model: pure functions from flowd's API JSON (`flow session list`, `flow pr list`)
-// to what the dashboard shows. No DOM here, so `node --test` covers it directly.
+// The view model: pure functions from flowd's API JSON (`flow session list`, `flow pr list`,
+// `flow branch list`) to what the dashboard shows. No DOM here, so `node --test` covers it directly.
 
 /** A facet's fields with the time its fact was observed; `null` if never written. */
 type Facet<T> = (T & { at: string }) | null;
@@ -80,6 +80,15 @@ export interface Pr {
   github: Facet<Github>;
 }
 
+/** A Branch a Session created a worktree for; `at` is when. */
+export interface Branch {
+  key: string;
+  repo: string;
+  branch: string;
+  owner: string;
+  at: string;
+}
+
 /** act: the user must do something; run: in progress; fine; off: does not apply. */
 export type Lamp = "act" | "fine" | "run" | "off";
 
@@ -127,6 +136,8 @@ export interface SessionView {
   activity: string | null;
   /** The Session's Stacks, oldest first, each bottom first. */
   stacks: PrView[][];
+  /** Names of the Session's Branches that head no PR, oldest worktree first. */
+  branches: string[];
 }
 
 /** `[ABC-123] Title` → key and bare title. */
@@ -388,12 +399,15 @@ export function activityLine(s: Session): string | null {
 
 /** Done Sessions last; within each group the most recently started first, then those with no
  * start time. */
-export function sessionViews(sessions: Session[], prs: Pr[], now = Date.now()): SessionView[] {
+export function sessionViews(sessions: Session[], prs: Pr[], branches: Branch[] = [], now = Date.now()): SessionView[] {
+  const heads = new Set(prs.flatMap((p) => (p.github ? [`${p.github.repo}:${p.github.headRefName}`] : [])));
+  const loose = branches.filter((b) => !heads.has(b.key)).sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
   const done = (s: Session) => (s.status?.state === "done" ? 1 : 0);
   const started = (s: Session) => (s.origin ? Date.parse(s.origin.at) : -Infinity);
   const sorted = [...sessions].sort((a, b) => done(a) - done(b) || started(b) - started(a));
   return sorted.map((s) => {
     const stacks = stacksOf(s.id, prs);
+    const own = loose.filter((b) => b.owner === s.id);
     const state = s.status?.state ?? null;
     const cwd = s.origin?.cwd;
     const title = s.context?.title ?? null;
@@ -402,7 +416,7 @@ export function sessionViews(sessions: Session[], prs: Pr[], now = Date.now()): 
       status: { ...statusLight(state), state, since: s.status?.at ?? null },
       title: title ?? "New session",
       untitled: title == null,
-      repo: stacks[0]?.[0].repo ?? (cwd ? cwd.split("/").filter(Boolean).pop() ?? null : null),
+      repo: stacks[0]?.[0].repo ?? own[0]?.repo ?? (cwd ? cwd.split("/").filter(Boolean).pop() ?? null : null),
       cde: s.origin?.cde ?? null,
       activity: activityLine(s),
       stacks: stacks.map((stack) =>
@@ -411,6 +425,7 @@ export function sessionViews(sessions: Session[], prs: Pr[], now = Date.now()): 
           return prView(g, stack.length > 1 ? i + 1 : null, below, now);
         }),
       ),
+      branches: own.map((b) => b.branch),
     };
   });
 }

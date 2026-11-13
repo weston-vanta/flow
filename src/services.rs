@@ -82,6 +82,15 @@ pub fn pr_list_all(store: &Store) -> Result<Vec<Pr>> {
         .collect()
 }
 
+/// `flow branch list`: every Branch whose owner is a listed Session, ordered by key.
+pub fn branch_list(store: &Store) -> Result<Vec<branch::Branch>> {
+    let sessions = session_list(store)?;
+    let listed: HashSet<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
+    let mut branches = branch::list(store)?;
+    branches.retain(|b| listed.contains(b.owner.as_str()));
+    Ok(branches)
+}
+
 /// The listed Sessions and the PRs they own, under the listing rule at this moment.
 fn listing(store: &Store) -> Result<(Vec<Session>, Vec<Pr>)> {
     let owners = branch::owners(store)?;

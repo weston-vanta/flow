@@ -1,6 +1,6 @@
 // Polls flowd's read API, keeps the last good data in memory and redraws with innerHTML.
 import { prDataAge, sessionViews } from "./model.ts";
-import type { Pr, Session } from "./model.ts";
+import type { Branch, Pr, Session } from "./model.ts";
 import { render } from "./render.ts";
 import type { Column, TrayState } from "./render.ts";
 
@@ -8,6 +8,7 @@ const POLL_MS = 3000;
 
 let sessions: Session[] = [];
 let prs: Pr[] = [];
+let branches: Branch[] = [];
 let drawn = "";
 /** When the last poll succeeded, and whether the latest one failed. */
 let lastGood: Date | null = null;
@@ -38,7 +39,7 @@ function page(): string {
   }
   const stale = prDataAge(prs);
   if (stale != null) notices.push(`PR data ${stale} min old`);
-  const views = sessionViews(sessions, prs);
+  const views = sessionViews(sessions, prs, branches);
   if (tray && !views.some((v) => v.stacks.some((s) => s.some((p) => p.url === tray!.url)))) tray = null;
   return render(views, toggled, notices, legend, tray);
 }
@@ -85,7 +86,11 @@ function closeTray() {
 
 async function poll() {
   try {
-    [sessions, prs] = await Promise.all([get<Session[]>("/api/sessions"), get<Pr[]>("/api/prs")]);
+    [sessions, prs, branches] = await Promise.all([
+      get<Session[]>("/api/sessions"),
+      get<Pr[]>("/api/prs"),
+      get<Branch[]>("/api/branches"),
+    ]);
     lastGood = new Date();
     failing = false;
   } catch (err) {
