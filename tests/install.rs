@@ -59,7 +59,11 @@ fn installs_binaries_and_hooks_plugin_and_replaces_them_under_a_running_flowd() 
         .map(|entry| entry.unwrap().file_name())
         .collect();
     left.sort();
-    assert_eq!(left, ["bin", "claude"], "no temp directories are left behind");
+    assert_eq!(
+        left,
+        ["bin", "claude"],
+        "no temp directories are left behind"
+    );
 
     let marketplace = root.join("claude");
     let manifest = read_json(&marketplace.join(".claude-plugin/marketplace.json"));
@@ -87,7 +91,10 @@ fn installs_binaries_and_hooks_plugin_and_replaces_them_under_a_running_flowd() 
     );
     for (event, groups) in hooks {
         let hook = &groups[0]["hooks"][0];
-        assert_eq!(hook["command"], "/efs-home/flow/bin/flow hook || true", "{event}");
+        assert_eq!(
+            hook["command"], "/efs-home/flow/bin/flow hook || true",
+            "{event}"
+        );
         let is_async = hook["async"].as_bool().unwrap_or(false);
         assert_eq!(is_async, event == "PostToolUse", "{event} async");
     }

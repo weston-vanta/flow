@@ -1,8 +1,9 @@
 # flow
 
 flow shows every Claude Code Session on every CDE, each with the Stack of PRs it owns: to the
-user in a local web app served by `flowd`, and to agents as JSON through the `flow` CLI. It only
-observes; it dispatches and supervises nothing.
+user in a local web app served by `flowd`, and to agents as JSON through the `flow` CLI. It
+launches a Session when asked, but never supervises one (see
+[ADR-0004](docs/adr/0004-flow-launches-sessions-but-never-supervises-them.md)).
 
 This is flow v2, under construction. Terms are defined in [GLOSSARY.md](GLOSSARY.md) and the
 hard-to-reverse choices in [docs/adr/](docs/adr/).
