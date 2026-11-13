@@ -429,6 +429,11 @@ button.node:hover {
 .gtitle .t.closed {
   text-decoration: line-through;
 }
+.gtitle .branch {
+  font-size: 13px;
+  line-height: 19px;
+  overflow-wrap: anywhere;
+}
 .gtitle .jira {
   font-size: 11px;
   line-height: 15px;

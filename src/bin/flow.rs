@@ -34,6 +34,9 @@ enum Command {
     /// Read PRs: GitHub pull requests, each with its owner Session.
     #[command(subcommand)]
     Pr(PrCommand),
+    /// Read Branches: git branches a Session created a worktree for.
+    #[command(subcommand)]
+    Branch(BranchCommand),
     /// Create worktrees through `wt`, recording the calling Session as the owner.
     #[command(subcommand)]
     Wt(WtCommand),
@@ -79,6 +82,13 @@ enum PrCommand {
         /// The PR's key, `owner/repo#number`.
         key: String,
     },
+}
+
+#[derive(Subcommand)]
+enum BranchCommand {
+    /// Print every Branch whose owner is a listed Session as a JSON array; `at` is when its
+    /// worktree was created.
+    List,
 }
 
 #[derive(Subcommand)]
@@ -132,6 +142,10 @@ fn main() -> ExitCode {
                 &format!("no PR with key {key:?}"),
                 "PR keys are `owner/repo#number`; run `flow pr list` to see owned PRs",
             ),
+            Err(err) => store_error(&err),
+        },
+        Some(Command::Branch(BranchCommand::List)) => match services::branch_list(&store) {
+            Ok(branches) => print_json(&branches),
             Err(err) => store_error(&err),
         },
         Some(Command::Wt(WtCommand::Create { branch, args })) => wt_create(&store, &branch, &args),

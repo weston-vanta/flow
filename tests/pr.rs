@@ -1,4 +1,4 @@
-//! `flow wt create`, `flow pr list` and `flow pr get`. PRs are set up through the library
+//! `flow wt create`, `flow branch list`, `flow pr list` and `flow pr get`. PRs are set up through the library
 //! Store, standing in for the PR Writer.
 
 mod common;
@@ -177,7 +177,10 @@ fn the_later_reporter_owns_the_pr() {
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0]["owner"], "second");
     // Readers group PRs into Stacks by the stack number.
-    assert_eq!(listed[0]["github"]["stack"], json!({ "number": 12, "position": 1 }));
+    assert_eq!(
+        listed[0]["github"]["stack"],
+        json!({ "number": 12, "position": 1 })
+    );
 }
 
 #[test]
@@ -300,4 +303,38 @@ fn help_lists_the_reads_and_wt_create() {
     let out = ts.flow().args(["wt", "--help"]).assert().success();
     let help = String::from_utf8(out.get_output().stdout.clone()).unwrap();
     assert!(help.contains("create"), "{help}");
+}
+
+fn branches(ts: &TestStore) -> Vec<Value> {
+    let out = ts.flow().args(["branch", "list"]).assert().success();
+    serde_json::from_slice(&out.get_output().stdout).unwrap()
+}
+
+#[test]
+fn branch_list_prints_every_branch_a_listed_session_owns() {
+    let ts = TestStore::new();
+    let dir = repo(&ts, "git@github.com:acme/widgets.git");
+    fake_wt(&ts, 0);
+    put_session(&ts, "s1");
+    let before = Timestamp::now();
+    wt_create(&ts, &dir, Some("s1"), &["feat/x"]).success();
+    let after = Timestamp::now();
+    // A Branch whose owner is no listed Session, and one with a PR, which is still listed.
+    wt_create(&ts, &dir, Some("ghost"), &["feat/y"]).success();
+    put_pr(&ts, "acme/widgets", 7, "feat/z");
+    wt_create(&ts, &dir, Some("s1"), &["feat/z"]).success();
+
+    let branches = branches(&ts);
+    assert_eq!(branches.len(), 2, "{branches:?}");
+    let x = &branches[0];
+    let at: Timestamp = x["at"].as_str().unwrap().parse().unwrap();
+    assert!(before <= at && at <= after, "{x}");
+    assert_eq!(
+        x,
+        &json!({
+            "key": "acme/widgets:feat/x", "repo": "acme/widgets", "branch": "feat/x",
+            "owner": "s1", "at": x["at"],
+        })
+    );
+    assert_eq!(branches[1]["key"], "acme/widgets:feat/z");
 }

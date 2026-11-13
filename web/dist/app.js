@@ -166,12 +166,15 @@
     if (!a) return null;
     return s.status?.state === "running" || a.reply == null ? a.prompt : a.reply;
   }
-  function sessionViews(sessions2, prs2, now = Date.now()) {
+  function sessionViews(sessions2, prs2, branches2 = [], now = Date.now()) {
+    const heads = new Set(prs2.flatMap((p) => p.github ? [`${p.github.repo}:${p.github.headRefName}`] : []));
+    const loose = branches2.filter((b) => !heads.has(b.key)).sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
     const done2 = (s) => s.status?.state === "done" ? 1 : 0;
     const started = (s) => s.origin ? Date.parse(s.origin.at) : -Infinity;
     const sorted = [...sessions2].sort((a, b) => done2(a) - done2(b) || started(b) - started(a));
     return sorted.map((s) => {
       const stacks = stacksOf(s.id, prs2);
+      const own = loose.filter((b) => b.owner === s.id);
       const state = s.status?.state ?? null;
       const cwd = s.origin?.cwd;
       const title2 = s.context?.title ?? null;
@@ -180,7 +183,7 @@
         status: { ...statusLight(state), state, since: s.status?.at ?? null },
         title: title2 ?? "New session",
         untitled: title2 == null,
-        repo: stacks[0]?.[0].repo ?? (cwd ? cwd.split("/").filter(Boolean).pop() ?? null : null),
+        repo: stacks[0]?.[0].repo ?? own[0]?.repo ?? (cwd ? cwd.split("/").filter(Boolean).pop() ?? null : null),
         cde: s.origin?.cde ?? null,
         activity: activityLine(s),
         stacks: stacks.map(
@@ -188,7 +191,8 @@
             const below = stack.find((o) => o.headRefName === g.baseRefName)?.number ?? null;
             return prView(g, stack.length > 1 ? i + 1 : null, below, now);
           })
-        )
+        ),
+        branches: own.map((b) => b.branch)
       };
     });
   }
@@ -246,6 +250,11 @@
     ${COLUMNS.map(([col, label]) => cell(p, col, label)).join("")}
   </div>`;
   }
+  var branchRow = (name) => `<div class="sgroup" role="rowgroup"><div class="grid grow" role="row">
+    <div class="gnode" role="cell"></div>
+    <div class="gtitle" role="cell"><span class="branch mono muted" title="Branch with no pull request">${esc(name)}</span></div>
+    <div class="glines" role="cell"></div>${'<div class="gcell" role="cell"></div>'.repeat(COLUMNS.length)}
+  </div></div>`;
   var ext = (url, cls, title2, text) => `<a class="${cls}" href="${esc(url)}" target="_blank" rel="noreferrer" title="${esc(title2)}">${esc(text)}</a>`;
   function items(p, col, expanded) {
     const t = p.tray;
@@ -310,9 +319,10 @@
       ${activity ? `<span class="activity" title="${esc(v.activity)}">${esc(activity)}</span>` : ""}
       ${meta(v)}
     </div></div>`;
-    const body = v.stacks.length ? `<div class="scroll"><div role="table" aria-label="Pull requests">
+    const body = v.stacks.length || v.branches.length ? `<div class="scroll"><div role="table" aria-label="Pull requests and branches">
         <div class="grid ghead" role="row"><span></span><span></span><span></span><span role="columnheader">base</span><span role="columnheader">CI</span><span role="columnheader">feedback</span><span role="columnheader">review</span></div>
         ${v.stacks.map((stack) => `<div class="sgroup" role="rowgroup">${stack.map((p, j) => prRow(p, j, stack.length, p.url === trayUrl)).join("")}</div>`).join("")}
+        ${v.branches.map(branchRow).join("")}
       </div></div>` : `<div class="noprs"><span class="ring" aria-hidden="true"></span><span>No pull requests yet</span></div>`;
     return `<section class="srow" aria-label="${esc(v.title)}"><div class="sidx">${key(v, false)}</div>
     ${info}<div class="sprs">${body}</div>
@@ -353,6 +363,7 @@
   var POLL_MS = 3e3;
   var sessions = [];
   var prs = [];
+  var branches = [];
   var drawn = "";
   var lastGood = null;
   var failing = false;
@@ -374,7 +385,7 @@
     }
     const stale = prDataAge(prs);
     if (stale != null) notices.push(`PR data ${stale} min old`);
-    const views = sessionViews(sessions, prs);
+    const views = sessionViews(sessions, prs, branches);
     if (tray2 && !views.some((v) => v.stacks.some((s) => s.some((p) => p.url === tray2.url)))) tray2 = null;
     return render(views, toggled, notices, legend, tray2);
   }
@@ -411,7 +422,11 @@
   }
   async function poll() {
     try {
-      [sessions, prs] = await Promise.all([get("/api/sessions"), get("/api/prs")]);
+      [sessions, prs, branches] = await Promise.all([
+        get("/api/sessions"),
+        get("/api/prs"),
+        get("/api/branches")
+      ]);
       lastGood = /* @__PURE__ */ new Date();
       failing = false;
     } catch (err) {

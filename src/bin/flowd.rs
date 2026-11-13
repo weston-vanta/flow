@@ -1,6 +1,6 @@
 //! `flowd`: the daemon on the Flow CDE, run in the foreground. It serves the read API
-//! (`GET /api/sessions`, `GET /api/prs`, the same JSON as `flow session list` and
-//! `flow pr list`) and the embedded frontend, on `127.0.0.1` only. Every request reads the
+//! (`GET /api/sessions`, `GET /api/prs`, `GET /api/branches`, the same JSON as
+//! `flow session list`, `flow pr list` and `flow branch list`) and the embedded frontend, on `127.0.0.1` only. Every request reads the
 //! Store fresh.
 
 use std::io::Cursor;
@@ -131,6 +131,7 @@ fn respond(store: &Store, request: &Request) -> Response<Cursor<Vec<u8>>> {
     match path {
         "/api/sessions" => json(services::session_list(store)),
         "/api/prs" => json(services::pr_list(store)),
+        "/api/branches" => json(services::branch_list(store)),
         _ => match ASSETS.iter().find(|(asset, ..)| *asset == path) {
             Some((_, content_type, body)) => {
                 Response::from_data(body.to_vec()).with_header(header(content_type))

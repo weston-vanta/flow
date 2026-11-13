@@ -52,6 +52,13 @@ function prRow(p: PrView, j: number, n: number, selected: boolean): string {
   </div>`;
 }
 
+/** A Branch with no PR: its name, muted, in the title cell; every other cell blank. */
+const branchRow = (name: string) => `<div class="sgroup" role="rowgroup"><div class="grid grow" role="row">
+    <div class="gnode" role="cell"></div>
+    <div class="gtitle" role="cell"><span class="branch mono muted" title="Branch with no pull request">${esc(name)}</span></div>
+    <div class="glines" role="cell"></div>${'<div class="gcell" role="cell"></div>'.repeat(COLUMNS.length)}
+  </div></div>`;
+
 const ext = (url: string, cls: string, title: string, text: string) =>
   `<a class="${cls}" href="${esc(url)}" target="_blank" rel="noreferrer" title="${esc(title)}">${esc(text)}</a>`;
 
@@ -136,10 +143,11 @@ function sessionRow(v: SessionView, toggled: Set<string>, trayUrl: string | null
       ${activity ? `<span class="activity" title="${esc(v.activity!)}">${esc(activity)}</span>` : ""}
       ${meta(v)}
     </div></div>`;
-  const body = v.stacks.length
-    ? `<div class="scroll"><div role="table" aria-label="Pull requests">
+  const body = v.stacks.length || v.branches.length
+    ? `<div class="scroll"><div role="table" aria-label="Pull requests and branches">
         <div class="grid ghead" role="row"><span></span><span></span><span></span><span role="columnheader">base</span><span role="columnheader">CI</span><span role="columnheader">feedback</span><span role="columnheader">review</span></div>
         ${v.stacks.map((stack) => `<div class="sgroup" role="rowgroup">${stack.map((p, j) => prRow(p, j, stack.length, p.url === trayUrl)).join("")}</div>`).join("")}
+        ${v.branches.map(branchRow).join("")}
       </div></div>`
     : `<div class="noprs"><span class="ring" aria-hidden="true"></span><span>No pull requests yet</span></div>`;
   return `<section class="srow" aria-label="${esc(v.title)}"><div class="sidx">${key(v, false)}</div>
