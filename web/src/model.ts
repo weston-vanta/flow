@@ -449,6 +449,19 @@ export function isFolded(v: SessionView, toggled: Set<string>): boolean {
   return (v.status.state === "done") !== toggled.has(v.id);
 }
 
+/** The URL of the PR ↓ (`dir` 1) or ↑ (`dir` -1) selects after the one at `url`, in the order
+ * the page draws them: Session by Session, Stack by Stack, bottom first. PRs in folded Sessions
+ * are skipped, and so are Branches with no PR, which have no view. Wraps at both ends; from
+ * nothing selected (or a PR no longer visible), ↓ picks the first and ↑ the last. Null when no
+ * PR is visible. */
+export function stepPr(views: SessionView[], toggled: Set<string>, url: string | null, dir: 1 | -1): string | null {
+  const order = views.filter((v) => !isFolded(v, toggled)).flatMap((v) => v.prs.map((p) => p.url));
+  if (!order.length) return null;
+  const i = url == null ? -1 : order.indexOf(url);
+  if (i < 0) return order[dir > 0 ? 0 : order.length - 1];
+  return order[(i + dir + order.length) % order.length];
+}
+
 /** Minutes since the oldest `github.at` among open PRs when that is over 3 minutes, else null. */
 export function prDataAge(prs: Pr[], now = Date.now()): number | null {
   const ats = prs.flatMap((p) => (p.github?.state === "OPEN" ? [Date.parse(p.github.at)] : []));

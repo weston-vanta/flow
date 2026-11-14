@@ -1,5 +1,5 @@
 // Polls flowd's read API, keeps the last good data in memory and redraws with innerHTML.
-import { prDataAge, sessionViews } from "./model.ts";
+import { prDataAge, sessionViews, stepPr } from "./model.ts";
 import type { Branch, Pr, Session } from "./model.ts";
 import { render } from "./render.ts";
 import type { Column, TrayState } from "./render.ts";
@@ -104,7 +104,12 @@ root.addEventListener("click", (e) => {
     return draw();
   }
   const pr = target.closest<HTMLElement>("[data-open]");
-  if (pr) return openTray(pr.dataset.open!, (pr.dataset.col as Column | undefined) ?? null);
+  if (pr) {
+    const col = (pr.dataset.col as Column | undefined) ?? null;
+    // Clicking the selected strip's node or title again deselects it; its lamps still select.
+    if (!col && tray?.url === pr.dataset.open) return closeTray();
+    return openTray(pr.dataset.open!, col);
+  }
   if (target.closest("[data-legend]")) {
     legend = !legend;
     return draw();
@@ -116,10 +121,19 @@ root.addEventListener("click", (e) => {
   draw();
 });
 
-// `h` toggles the legend; Esc deselects the PR, else closes the legend. Listening on the document
-// means the page needs no focus first.
+// ↑ ↓ step through the visible PRs; `h` toggles the legend; Esc deselects the PR, else closes
+// the legend. Listening on the document means the page needs no focus first.
 document.addEventListener("keydown", (e) => {
-  if (e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    const url = stepPr(sessionViews(sessions, prs, branches), toggled, tray?.url ?? null, e.key === "ArrowDown" ? 1 : -1);
+    if (!url) return;
+    e.preventDefault();
+    openTray(url, null);
+    $(".strip.sel")?.scrollIntoView({ block: "nearest" });
+    return;
+  }
+  if (e.repeat) return;
   if (e.key === "Escape" && tray) return closeTray();
   if (e.key === "h" || e.key === "H") legend = !legend;
   else if (e.key === "Escape" && legend) legend = false;

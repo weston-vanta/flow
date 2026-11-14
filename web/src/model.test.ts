@@ -13,6 +13,7 @@ import {
   sessionViews,
   stacksOf,
   statusLight,
+  stepPr,
   trayView,
 } from "./model.ts";
 import type { Branch, Check, Github, Pr, Session, Thread } from "./model.ts";
@@ -508,4 +509,48 @@ test("PR data age: minutes since the oldest open PR was fetched, only when over 
   // Closed and merged PRs are fetched once, so their age says nothing.
   assert.equal(prDataAge([fetched(1), fetched(60, "MERGED"), fetched(60, "CLOSED")], now), null);
   assert.equal(prDataAge([{ key: "k", owner: null, github: null }], now), null);
+});
+
+/** PR `n` owned by `owner`, at `url` "#n"; `stack` places it in a GitHub stack. */
+const stepped = (owner: string, n: number, stack: { number: number; position: number } | null = null) =>
+  pr(owner, { number: n, url: `#${n}`, headRefName: `b${n}`, stack });
+
+/** Session a: a Stack of #2 on #1, then #3 alone; Session b: #4 and a Branch with no PR;
+ * Session c: no PRs. The page draws #1 #2 #3 #4. */
+function stepViews() {
+  const prs = [stepped("a", 2, { number: 1, position: 2 }), stepped("a", 1, { number: 1, position: 1 }), stepped("a", 3), stepped("b", 4)];
+  return sessionViews([session("a"), session("b"), session("c")], prs, [branch("b", "loose", AT)]);
+}
+const step = (url: string | null, dir: 1 | -1, toggled = new Set<string>()) => stepPr(stepViews(), toggled, url, dir);
+
+test("step order: from nothing selected, ↓ picks the first PR and ↑ the last", () => {
+  assert.equal(step(null, 1), "#1");
+  assert.equal(step(null, -1), "#4");
+});
+
+test("step order: next and previous within a Stack, across Stacks and across Sessions", () => {
+  assert.equal(step("#1", 1), "#2");
+  assert.equal(step("#2", -1), "#1");
+  assert.equal(step("#2", 1), "#3");
+  assert.equal(step("#3", -1), "#2");
+  assert.equal(step("#3", 1), "#4");
+  assert.equal(step("#4", -1), "#3");
+});
+
+test("step order: wraps at both ends, never onto a Branch with no PR", () => {
+  assert.equal(step("#4", 1), "#1");
+  assert.equal(step("#1", -1), "#4");
+});
+
+test("step order: skips folded Sessions", () => {
+  const folded = new Set(["a"]);
+  assert.equal(step(null, 1, folded), "#4");
+  assert.equal(step("#4", 1, folded), "#4");
+  // A selected PR that has been folded away steps as if nothing were selected.
+  assert.equal(stepPr(stepViews(), new Set(["b"]), "#4", -1), "#3");
+});
+
+test("step order: null with no visible PR", () => {
+  assert.equal(step(null, 1, new Set(["a", "b"])), null);
+  assert.equal(stepPr([], new Set(), null, -1), null);
 });
