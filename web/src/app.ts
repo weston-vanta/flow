@@ -17,7 +17,7 @@ let failing = false;
  * in memory only, so a reload resets them. */
 const toggled = new Set<string>();
 let legend = false;
-/** The tray's PR stays after it closes, so the tray can slide out with its content. */
+/** The selected PR's tray, or null while the window shows its empty state. */
 let tray: TrayState | null = null;
 const root = document.getElementById("root")!;
 
@@ -41,7 +41,7 @@ function page(): string {
   if (stale != null) notices.push(`PR data ${stale} min old`);
   const views = sessionViews(sessions, prs, branches);
   if (tray && !views.some((v) => v.prs.some((p) => p.url === tray!.url))) tray = null;
-  return render(views, toggled, notices, legend, tray);
+  return render(views, toggled, notices, !failing, legend, tray);
 }
 
 const $ = <T extends HTMLElement>(sel: string) => root.querySelector<T>(sel);
@@ -64,13 +64,10 @@ function morph(change: () => void, dom: () => void) {
   drawn = page();
 }
 
-/** Slides the tray in for the PR at `url`, scrolled to `col`'s section (tinted briefly) or the top. */
+/** Selects the PR at `url`, with the window scrolled to `col`'s section (tinted briefly) or the top. */
 function openTray(url: string, col: Column | null) {
-  tray = { url, open: false, focus: col, expanded: tray?.expanded ?? new Set() };
+  tray = { url, focus: col, expanded: tray?.expanded ?? new Set() };
   draw();
-  const deck = $(".deck")!;
-  void deck.offsetWidth; // Lay out the closed tray first, so opening it slides.
-  morph(() => (tray!.open = true), () => deck.classList.add("open"));
   $(".tscroll")!.scrollTop = col ? $(`[data-sec="${col}"]`)!.offsetTop : 0;
   $(".tclose")!.focus({ preventScroll: true });
   if (col) {
@@ -81,7 +78,8 @@ function openTray(url: string, col: Column | null) {
 }
 
 function closeTray() {
-  morph(() => (tray!.open = false), () => $(".deck")!.classList.remove("open"));
+  tray = null;
+  draw();
 }
 
 async function poll() {
@@ -122,11 +120,11 @@ root.addEventListener("click", (e) => {
   draw();
 });
 
-// `h` toggles the legend; Esc closes the tray, else the legend. Listening on the document
+// `h` toggles the legend; Esc deselects the PR, else closes the legend. Listening on the document
 // means the page needs no focus first.
 document.addEventListener("keydown", (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
-  if (e.key === "Escape" && tray?.open) return closeTray();
+  if (e.key === "Escape" && tray) return closeTray();
   if (e.key === "h" || e.key === "H") legend = !legend;
   else if (e.key === "Escape" && legend) legend = false;
   else return;

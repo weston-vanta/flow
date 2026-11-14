@@ -1,5 +1,5 @@
-// The "flow — sessions" design canvas as HTML strings: one panel row per Session, its Stacks
-// beside it, the legend behind `h` and notices in a strip fixed to the bottom.
+// The "flow" receiver face as HTML strings: a header strip, the Session channels with their
+// Stacks as plates of PR strips, the window showing the selected PR, and the legend behind `h`.
 import { age, attentionLight, isFolded } from "./model.ts";
 import type { Light, PrView, ReviewLight, SessionView } from "./model.ts";
 
@@ -7,14 +7,13 @@ export function esc(s: string | number): string {
   return String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 }
 
-const lamp = (l: Light, sm = false) =>
-  `<span class="lamp ${l.lamp}${sm ? " sm" : ""}" aria-hidden="true"></span>`;
+const lamp = (l: Light) => `<span class="lamp ${l.lamp}" aria-hidden="true"></span>`;
 
 /** A lamp, or the review count while reviews are requested. */
 const light = (l: Light | ReviewLight) =>
   "count" in l && l.count != null ? `<span class="count" aria-hidden="true">${l.count}</span>` : lamp(l);
 
-/** The four columns: the key a lamp cell opens the tray at, and its heading. */
+/** The four columns: the key a lamp selects its PR at, and its heading. */
 const COLUMNS = [
   ["base", "base"],
   ["ci", "CI"],
@@ -23,41 +22,49 @@ const COLUMNS = [
 ] as const;
 export type Column = (typeof COLUMNS)[number][0];
 
-/** The open (or last opened) tray: whose it is, whether it is showing, the section a lamp
- * click opened it at (tinted briefly), and the threads expanded past their clamp, by URL. */
+/** The selected PR's tray: whose it is, the section a lamp click selected it at (tinted
+ * briefly), and the threads expanded past their clamp, by URL. */
 export interface TrayState {
   url: string;
-  open: boolean;
   focus: Column | null;
   expanded: Set<string>;
 }
 
-/** A lamp cell: a button that opens the tray at its column's section. */
-const cell = (p: PrView, col: Column, label: string) => {
+const NODE_WORD = { merged: "merged", closed: "closed", ready: "mergeable" };
+const nodeWord = (p: PrView) => (p.node === "open" ? (p.draft ? "draft" : "not yet mergeable") : NODE_WORD[p.node]);
+
+/** The node column: the line joining a strip to its neighbours in the Stack, and its node. */
+const nodeCell = (j: number, n: number, node: string) =>
+  `<span class="ncell">${j > 0 ? '<span class="up"></span>' : ""}${j < n - 1 ? '<span class="down"></span>' : ""}${node}</span>`;
+
+/** A lamp button: selects the PR at its column's section. */
+const led = (p: PrView, col: Column, label: string) => {
   const l = p[col];
-  return `<div class="gcell" role="cell"><button type="button" data-open="${esc(p.url)}" data-col="${col}" title="${esc(l.tip)}" aria-label="${esc(`${l.tip}. Show ${label} details for #${p.number}`)}">${light(l)}</button></div>`;
+  return `<button type="button" class="led" data-open="${esc(p.url)}" data-col="${col}" title="${esc(l.tip)}" aria-label="${esc(`${l.tip}. Show ${label} details for #${p.number}`)}">${light(l)}</button>`;
 };
 
-const NODE_TIP = { merged: "merged", closed: "closed", ready: "mergeable" };
-const nodeWord = (p: PrView) => (p.node === "open" ? (p.draft ? "draft" : "not yet mergeable") : NODE_TIP[p.node]);
-
-function prRow(p: PrView, j: number, n: number, selected: boolean): string {
-  const tip = `#${p.number} · ${nodeWord(p)}`;
-  return `<div class="grid grow${selected ? " sel" : ""}" role="row">
-    ${j > 0 ? '<div class="rule" aria-hidden="true"></div>' : ""}
-    <div class="gnode" role="cell">${j > 0 ? '<div class="up"></div>' : ""}${j < n - 1 ? '<div class="down"></div>' : ""}<button type="button" class="node ${p.node}" data-open="${esc(p.url)}" title="${esc(tip)}" aria-label="Pull request ${esc(tip)}: show details">${p.pos ?? ""}</button></div>
-    <div class="gtitle" role="cell"><button type="button" class="t ${p.node}" data-open="${esc(p.url)}">${esc(p.title)}</button>${p.jira ? `<span class="jira mono">${esc(p.jira)}</span>` : ""}</div>
-    <div class="glines mono" role="cell" title="${esc(p.sizeTip)}" aria-label="${esc(p.sizeTip)}">${esc(p.size)}</div>
-    ${COLUMNS.map(([col, label]) => cell(p, col, label)).join("")}
+function strip(p: PrView, j: number, n: number, selected: boolean): string {
+  const word = nodeWord(p);
+  return `<div class="strip pr${selected ? " sel" : ""}">
+    <span class="needle" aria-hidden="true"></span>
+    <button type="button" class="pick" data-open="${esc(p.url)}" title="${esc(`#${p.number} ${p.title} · ${word}`)}" aria-label="${esc(`Tune in #${p.number}, ${p.title}, ${word}`)}" aria-pressed="${selected}">
+      ${nodeCell(j, n, `<span class="node ${p.node}">${p.pos ?? ""}</span>`)}
+      <span class="title ${p.node}">${esc(p.title)}</span>
+    </button>
+    ${COLUMNS.map(([col, label]) => led(p, col, label)).join("")}
   </div>`;
 }
 
-/** A Branch with no PR: its name, muted, in the title cell; every other cell blank. */
-const branchRow = (name: string) => `<div class="sgroup" role="rowgroup"><div class="grid grow" role="row">
-    <div class="gnode" role="cell"></div>
-    <div class="gtitle" role="cell"><span class="branch mono muted" title="Branch with no pull request">${esc(name)}</span></div>
-    <div class="glines" role="cell"></div>${'<div class="gcell" role="cell"></div>'.repeat(COLUMNS.length)}
-  </div></div>`;
+/** A Branch with no PR: its own plate, a dashed node, its name in mono and blank lamps. */
+const branchPlate = (name: string) => `<div class="plate branch" role="group" aria-label="Branch ${esc(name)}, no pull request yet">
+    <div class="strip" title="${esc(name)} · no pull request yet">
+      <span class="pick">${nodeCell(0, 1, '<span class="node branch"></span>')}<span class="title mono">${esc(name)}</span></span>
+      ${'<span class="led"></span>'.repeat(COLUMNS.length)}
+    </div>
+  </div>`;
+
+const plate = (stack: PrView[], url: string | null) =>
+  `<div class="plate" role="group" aria-label="${stack.length === 1 ? "Pull request" : `Stack of ${stack.length} pull requests`}">${stack.map((p, j) => strip(p, j, stack.length, p.url === url)).join("")}</div>`;
 
 const ext = (url: string, cls: string, title: string, text: string) =>
   `<a class="${cls}" href="${esc(url)}" target="_blank" rel="noreferrer" title="${esc(title)}">${esc(text)}</a>`;
@@ -87,38 +94,44 @@ function items(p: PrView, col: Column, expanded: Set<string>): string {
     </div>`).join("");
 }
 
-/** The tray for one PR: a header linking to GitHub, then a section per lamp. */
+const CLOSE = `<button type="button" class="tclose" data-close aria-label="Close details"><svg width="10" height="10" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"></path></svg></button>`;
+
+/** The window for the selected PR: a header linking to GitHub, then a section per lamp. */
 function tray(p: PrView, t: TrayState): string {
   const word = nodeWord(p);
-  // The node already says open, mergeable or merged; only draft and closed need a word.
-  const state = p.draft || p.node === "closed" ? `<span>${p.node === "closed" ? "closed" : "draft"}</span>` : "";
   const sections = COLUMNS.map(([col, label]) => {
     const s = p.tray[col];
     const l = p[col];
     return `<section class="tsec${t.focus === col ? " focus" : ""}" data-sec="${col}" aria-label="${label}">
-      <div class="tlamp" title="${esc(l.tip)}">${light(l)}</div>
-      <div class="thd"><h4>${label}</h4>${s.fine != null ? `<span class="${l.lamp === "act" ? "act" : ""}">${esc(s.fine)}</span>` : ""}</div>
+      <span class="tlamp" title="${esc(l.tip)}">${light(l)}</span>
+      <div class="thd"><h3>${label}</h3>${s.fine != null ? `<span class="${l.lamp === "act" ? "act" : ""}">${esc(s.fine)}</span>` : ""}</div>
       ${s.items ? `<div class="titems ${col}">${items(p, col, t.expanded)}</div>` : ""}
     </section>`;
   }).join("");
-  return `<header class="thead">
-      <span class="node ${p.node}" title="${esc(word)}" aria-hidden="true"></span>
-      <div class="tmeta">${ext(p.url, "plain mono", `Open #${p.number} on GitHub`, `#${p.number}`)}${state}${p.jira ? `<span class="mono">${esc(p.jira)}</span>` : ""}</div>
-      <button type="button" class="tclose" data-close aria-label="Close details"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"></path></svg></button>
-      <h3>${esc(p.title)}</h3>
+  return `<header class="whead">
+      <div class="wline">
+        <span class="node ${p.node}" title="${esc(word)}" aria-hidden="true"></span>
+        ${ext(p.url, "num mono", `Open #${p.number} on GitHub`, `#${p.number}`)}
+        <span>${word}</span>
+        <span class="wsize mono">${esc(p.sizeTip)}</span>
+        ${CLOSE}
+      </div>
+      <h2>${esc(p.title)}</h2>
     </header>${sections}`;
 }
+
+/** The window with no PR selected: what it will show and how to fill it. */
+const EMPTY = `<header class="whead">
+    <div class="wline"><span class="node none" aria-hidden="true"></span><span>no pull request tuned in</span></div>
+    <span class="whint">Select a strip, or press ↑ ↓</span>
+  </header>${COLUMNS.map(([, label]) => `<div class="tsec idle"><span class="tlamp"><span class="lamp unlit" aria-hidden="true"></span></span><span class="thd">${label}</span></div>`).join("")}`;
 
 /** The status label and how long the Session has had it: "waiting for you, 31 min". */
 const statusTip = (v: SessionView) => (v.status.since ? `${v.status.tip}, ${age(v.status.since)}` : v.status.tip);
 
-/** The Session key: its dish carries the status lamp. */
+/** The round push key: its lens carries the status lamp; raised while folded, pressed in while open. */
 const key = (v: SessionView, folded: boolean) =>
-  `<button type="button" class="skey${folded ? " up" : ""}" data-toggle="${esc(v.id)}" aria-expanded="${!folded}" title="${esc(statusTip(v))}" aria-label="${folded ? "Expand" : "Collapse"} session: ${esc(v.title)} (${esc(statusTip(v))})"><span>${lamp(v.status, true)}</span></button>`;
-
-/** Untitled and done Sessions show their title muted. */
-const title = (v: SessionView, tag: string) =>
-  `<${tag}${v.untitled || v.status.state === "done" ? ' class="muted"' : ""}>${esc(v.title)}</${tag}>`;
+  `<button type="button" class="skey${folded ? " up" : ""}" data-toggle="${esc(v.id)}" aria-expanded="${!folded}" title="${esc(statusTip(v))}" aria-label="${folded ? "Expand" : "Collapse"} session: ${esc(v.title)} (${esc(statusTip(v))})"><span>${lamp(v.status)}</span></button>`;
 
 const DOT = '<span class="dot" aria-hidden="true">·</span>';
 
@@ -130,68 +143,73 @@ function meta(v: SessionView): string {
   }${DOT}<span title="${esc(statusTip(v))}"><span class="${v.status.lamp}">${esc(v.status.state ?? "unknown")}</span>${since}</span></span>`;
 }
 
-function sessionRow(v: SessionView, toggled: Set<string>, trayUrl: string | null): string {
+function channel(v: SessionView, toggled: Set<string>, url: string | null): string {
+  // Untitled and done Sessions show their title muted.
+  const h2 = `<h2${v.untitled || v.status.state === "done" ? ' class="muted"' : ""}>${esc(v.title)}</h2>`;
   if (isFolded(v, toggled)) {
     const a = attentionLight(v);
-    return `<section class="srow folded" data-toggle="${esc(v.id)}" aria-label="${esc(v.title)}">
-      <div class="sidx">${key(v, true)}</div>
-      <div class="sline">${title(v, "h2")}<span class="attn" title="${esc(a.tip)}" aria-label="${esc(a.tip)}">${lamp(a)}</span></div>
+    return `<section class="chan folded" data-toggle="${esc(v.id)}" aria-label="${esc(v.title)}">
+      <div class="chead">${key(v, true)}<div class="ctext"><div class="cline">${h2}<span class="attn" title="${esc(a.tip)}" aria-label="${esc(a.tip)}">${lamp(a)}</span></div></div></div>
     </section>`;
   }
   const activity = v.activity?.replace(/\s+/g, " ");
-  const info = `<div class="sess">${title(v, "h2")}<div class="sctx">
-      ${activity ? `<span class="activity" title="${esc(v.activity!)}">${esc(activity)}</span>` : ""}
-      ${meta(v)}
-    </div></div>`;
   const body = v.stacks.length || v.branches.length
-    ? `<div class="scroll"><div role="table" aria-label="Pull requests and branches">
-        <div class="grid ghead" role="row"><span></span><span></span><span></span><span role="columnheader">base</span><span role="columnheader">CI</span><span role="columnheader">feedback</span><span role="columnheader">review</span></div>
-        ${v.stacks.map((stack) => `<div class="sgroup" role="rowgroup">${stack.map((p, j) => prRow(p, j, stack.length, p.url === trayUrl)).join("")}</div>`).join("")}
-        ${v.branches.map(branchRow).join("")}
-      </div></div>`
-    : `<div class="noprs"><span class="ring" aria-hidden="true"></span><span>No pull requests yet</span></div>`;
-  return `<section class="srow" aria-label="${esc(v.title)}"><div class="sidx">${key(v, false)}</div>
-    ${info}<div class="sprs">${body}</div>
-  </section>`;
+    ? `<div class="plates">${v.stacks.map((s) => plate(s, url)).join("")}${v.branches.map(branchPlate).join("")}</div>`
+    : '<div class="noprs">no pull requests yet</div>';
+  return `<section class="chan" aria-label="${esc(v.title)}">
+      <div class="chead">${key(v, false)}<div class="ctext">
+        <div class="cline">${h2}</div>
+        ${activity ? `<span class="activity" title="${esc(v.activity!)}">${esc(activity)}</span>` : ""}
+        ${meta(v)}
+      </div></div>
+      ${body}
+    </section>`;
 }
 
 const LEGEND = `<div class="legend" role="note" aria-label="Legend">
     <div><span class="lh">lights</span>
       <span class="li act"><span class="lamp act"></span>needs action</span>
-      <span class="li"><span class="lamp run"></span>in progress</span>
+      <span class="li"><span class="lamp run still"></span>in progress</span>
       <span class="li"><span class="lamp fine"></span>fine</span>
-      <span class="li"><span class="count">2</span>reviews needed</span>
+      <span class="li"><span class="count">2</span>pending reviews</span>
     </div>
     <div><span class="lh">pull requests</span>
-      <span class="li"><span class="node key"></span>open or draft</span>
+      <span class="li"><span class="node key open"></span>open or draft</span>
       <span class="li"><span class="node key ready"></span>mergeable</span>
       <span class="li"><span class="node key merged"></span>merged</span>
-      <span class="li"><span class="node key closed"></span>closed</span>
+      <span class="li"><span class="node key branch"></span>branch with no PR</span>
     </div>
   </div>`;
 
 /** `toggled` holds the ids of Sessions the user has folded or unfolded against their default;
- * `notices` are warnings shown in the bottom strip; `legend` is whether the legend is open;
- * `t` is the tray, drawn only while its PR is in `views`. */
+ * `notices` are warnings shown in the header; `live` lights the power lamp; `legend` is whether
+ * the legend is open; `t` is the selected PR's tray, drawn only while its PR is in `views`. */
 export function render(
   views: SessionView[],
   toggled: Set<string>,
   notices: string[],
+  live: boolean,
   legend: boolean,
   t: TrayState | null,
 ): string {
   const p = t && views.flatMap((v) => v.prs).find((x) => x.url === t.url);
-  return `<div class="page${notices.length ? " noticed" : ""}">
-    <header class="top"><div class="logo" aria-hidden="true"><i></i></div><div class="brand"><b>flow</b><span>agent sessions and pull requests</span></div></header>
-    <div class="deck${p && t?.open ? " open" : ""}">
-      <main class="panel">${views.length ? views.map((v) => sessionRow(v, toggled, p ? p.url : null)).join("") : '<p class="empty">No Sessions.</p>'}</main>
-      <div class="scrim" data-close aria-hidden="true"></div>
-      <aside class="tray" role="dialog" aria-modal="false" aria-label="Pull request details"><div class="tscroll">${p && t ? tray(p, t) : ""}</div></aside>
+  return `<div class="face">
+    <header class="top">
+      <b class="brand">flow</b><span class="tagline">agent sessions and pull requests</span>
+      <div class="controls">
+        ${notices.length ? `<div class="notices" role="status">${notices.map((n) => `<span>${esc(n)}</span>`).join("")}</div>` : ""}
+        <span class="hint" aria-hidden="true"><kbd>↑</kbd><kbd>↓</kbd><span>tune</span></span>
+        <button type="button" class="hint" data-legend aria-expanded="${legend}" aria-keyshortcuts="h"><kbd class="${legend ? "down" : ""}">h</kbd><span>legend</span></button>
+        <span class="power${live ? " on" : ""}" title="${live ? "flowd reachable" : "flowd unreachable"}" aria-hidden="true"></span>
+      </div>
+    </header>
+    <div class="deck">
+      <main class="rack">
+        <div class="scale" aria-hidden="true"><span></span><span></span>${COLUMNS.map(([, label]) => `<span>${label}</span>`).join("")}</div>
+        <div class="chans">${views.length ? views.map((v) => channel(v, toggled, p ? p.url : null)).join("") : '<p class="empty">No Sessions.</p>'}</div>
+      </main>
+      <aside class="window"><div class="wbody"><div class="tscroll" role="region" aria-label="Pull request details">${p && t ? tray(p, t) : EMPTY}</div></div></aside>
     </div>
-    <footer><button type="button" class="hint" data-legend aria-expanded="${legend}" aria-keyshortcuts="h"><kbd class="${legend ? "down" : ""}">h</kbd><span>legend</span></button></footer>
   </div>
-  <div class="dock">
-    ${legend ? LEGEND : ""}
-    ${notices.length ? `<div class="notices" role="status">${notices.map((n) => `<p>${esc(n)}</p>`).join("")}</div>` : ""}
-  </div>`;
+  ${legend ? LEGEND : ""}`;
 }

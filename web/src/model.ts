@@ -105,9 +105,8 @@ export interface PrView {
   pos: number | null;
   url: string;
   number: number;
-  /** The title without its Jira prefix. */
+  /** The PR's GitHub title, unchanged. */
   title: string;
-  jira: string | null;
   /** `files / lines`, e.g. `3 / 540`. */
   size: string;
   /** `3 files, +500 −40`. */
@@ -140,12 +139,6 @@ export interface SessionView {
   prs: PrView[];
   /** Names of the Session's Branches that head no PR, oldest worktree first. */
   branches: string[];
-}
-
-/** `[ABC-123] Title` → key and bare title. */
-export function parseJira(title: string): { jira: string | null; title: string } {
-  const m = /^\[([A-Z][A-Z0-9]*-\d+)\]\s+(.*)$/s.exec(title);
-  return m ? { jira: m[1], title: m[2] } : { jira: null, title };
 }
 
 const FAILING = new Set([
@@ -241,7 +234,7 @@ export function prView(g: Github, pos: number | null, below: number | null = nul
     pos,
     url: g.url,
     number: g.number,
-    ...parseJira(g.title),
+    title: g.title,
     size: `${g.changedFiles} / ${g.additions + g.deletions}`,
     sizeTip: `${g.changedFiles} file${g.changedFiles === 1 ? "" : "s"}, +${g.additions} −${g.deletions}`,
     node: g.state === "MERGED" ? "merged" : g.state === "CLOSED" ? "closed" : ready ? "ready" : "open",
