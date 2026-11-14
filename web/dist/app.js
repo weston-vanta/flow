@@ -211,6 +211,13 @@
   function isFolded(v, toggled2) {
     return v.status.state === "done" !== toggled2.has(v.id);
   }
+  function stepPr(views, toggled2, url, dir) {
+    const order = views.filter((v) => !isFolded(v, toggled2)).flatMap((v) => v.prs.map((p) => p.url));
+    if (!order.length) return null;
+    const i = url == null ? -1 : order.indexOf(url);
+    if (i < 0) return order[dir > 0 ? 0 : order.length - 1];
+    return order[(i + dir + order.length) % order.length];
+  }
   function prDataAge(prs2, now = Date.now()) {
     const ats = prs2.flatMap((p) => p.github?.state === "OPEN" ? [Date.parse(p.github.at)] : []);
     if (!ats.length) return null;
@@ -451,7 +458,11 @@
       return draw();
     }
     const pr = target.closest("[data-open]");
-    if (pr) return openTray(pr.dataset.open, pr.dataset.col ?? null);
+    if (pr) {
+      const col = pr.dataset.col ?? null;
+      if (!col && tray2?.url === pr.dataset.open) return closeTray();
+      return openTray(pr.dataset.open, col);
+    }
     if (target.closest("[data-legend]")) {
       legend = !legend;
       return draw();
@@ -463,7 +474,16 @@
     draw();
   });
   document.addEventListener("keydown", (e) => {
-    if (e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      const url = stepPr(sessionViews(sessions, prs, branches), toggled, tray2?.url ?? null, e.key === "ArrowDown" ? 1 : -1);
+      if (!url) return;
+      e.preventDefault();
+      openTray(url, null);
+      $(".strip.sel")?.scrollIntoView({ block: "nearest" });
+      return;
+    }
+    if (e.repeat) return;
     if (e.key === "Escape" && tray2) return closeTray();
     if (e.key === "h" || e.key === "H") legend = !legend;
     else if (e.key === "Escape" && legend) legend = false;
