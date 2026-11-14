@@ -533,6 +533,7 @@ button.led:hover {
   position: relative;
   flex: 0 0 30rem;
   min-width: 0;
+  min-height: min(100vh, 40rem);
   overflow: clip;
 }
 .wbody {
@@ -579,6 +580,7 @@ button.led:hover {
   }
   .window {
     flex-basis: auto;
+    min-height: 0;
   }
   .wbody {
     position: static;

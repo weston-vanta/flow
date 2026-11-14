@@ -107,8 +107,6 @@ export interface PrView {
   number: number;
   /** The PR's GitHub title, unchanged. */
   title: string;
-  /** `files / lines`, e.g. `3 / 540`. */
-  size: string;
   /** `3 files, +500 −40`. */
   sizeTip: string;
   /** ready: mergeable (open, not a draft, all four columns fine). */
@@ -235,7 +233,6 @@ export function prView(g: Github, pos: number | null, below: number | null = nul
     url: g.url,
     number: g.number,
     title: g.title,
-    size: `${g.changedFiles} / ${g.additions + g.deletions}`,
     sizeTip: `${g.changedFiles} file${g.changedFiles === 1 ? "" : "s"}, +${g.additions} −${g.deletions}`,
     node: g.state === "MERGED" ? "merged" : g.state === "CLOSED" ? "closed" : ready ? "ready" : "open",
     draft: g.isDraft,

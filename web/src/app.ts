@@ -55,15 +55,6 @@ function draw() {
   $(".tscroll")!.scrollTop = top;
 }
 
-/** Makes `change` to the state and, with `dom`, the same change to the drawn page, so its CSS
- * transitions run instead of a redraw replacing it. */
-function morph(change: () => void, dom: () => void) {
-  draw();
-  change();
-  dom();
-  drawn = page();
-}
-
 /** Selects the PR at `url`, with the window scrolled to `col`'s section (tinted briefly) or the top. */
 function openTray(url: string, col: Column | null) {
   tray = { url, focus: col, expanded: tray?.expanded ?? new Set() };
@@ -72,7 +63,12 @@ function openTray(url: string, col: Column | null) {
   $(".tclose")!.focus({ preventScroll: true });
   if (col) {
     setTimeout(() => {
-      if (tray?.focus === col) morph(() => (tray!.focus = null), () => $(".tsec.focus")?.classList.remove("focus"));
+      if (tray?.focus !== col) return;
+      // Clear the tint on the drawn page rather than redrawing, so its fade runs.
+      draw();
+      tray.focus = null;
+      $(".tsec.focus")?.classList.remove("focus");
+      drawn = page();
     }, 1000);
   }
 }

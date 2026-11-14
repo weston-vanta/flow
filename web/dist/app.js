@@ -73,7 +73,6 @@
       url: g.url,
       number: g.number,
       title: g.title,
-      size: `${g.changedFiles} / ${g.additions + g.deletions}`,
       sizeTip: `${g.changedFiles} file${g.changedFiles === 1 ? "" : "s"}, +${g.additions} \u2212${g.deletions}`,
       node: g.state === "MERGED" ? "merged" : g.state === "CLOSED" ? "closed" : ready ? "ready" : "open",
       draft: g.isDraft,
@@ -408,12 +407,6 @@
     root.innerHTML = drawn = html;
     $(".tscroll").scrollTop = top;
   }
-  function morph(change, dom) {
-    draw();
-    change();
-    dom();
-    drawn = page();
-  }
   function openTray(url, col) {
     tray2 = { url, focus: col, expanded: tray2?.expanded ?? /* @__PURE__ */ new Set() };
     draw();
@@ -421,7 +414,11 @@
     $(".tclose").focus({ preventScroll: true });
     if (col) {
       setTimeout(() => {
-        if (tray2?.focus === col) morph(() => tray2.focus = null, () => $(".tsec.focus")?.classList.remove("focus"));
+        if (tray2?.focus !== col) return;
+        draw();
+        tray2.focus = null;
+        $(".tsec.focus")?.classList.remove("focus");
+        drawn = page();
       }, 1e3);
     }
   }

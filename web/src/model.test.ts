@@ -136,9 +136,8 @@ test("merged and closed PRs show all four lamps fine", () => {
   }
 });
 
-test("size: files / lines changed, with the tip splitting the lines", () => {
+test("size tip: files changed, with the lines added and removed", () => {
   const v = prView(gh({ changedFiles: 3, additions: 500, deletions: 40 }), 1);
-  assert.equal(v.size, "3 / 540");
   assert.equal(v.sizeTip, "3 files, +500 −40");
   assert.equal(prView(gh({ changedFiles: 1, additions: 2, deletions: 0 }), 1).sizeTip, "1 file, +2 −0");
 });
