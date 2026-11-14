@@ -1,155 +1,162 @@
-/* Tokens from the "flow — sessions" design canvas. */
-:root{--bg:#F8F4F3;--panel:#FFFFFF;--ink:#240642;--ink2:#5B5167;--ink3:#8A8195;--act:#6E2BC9;--fine:#D3CBCF;--rule:#E4DCDF;--rule2:#EEE8EA;--rail:#CFC4C8;--keyrule:#E8E2E5;--focus:#AC55FF;--tint:#FBF9FA}
+/* Tokens from the "flow" receiver design: a warm-grey housing, anthracite ink, and lamps in
+ * red-orange (act), amber (in progress) and olive (mergeable). The window is dark glass. */
+:root{--housing:#D9D2C6;--chan:#F0EEEA;--plate:#E2DCD1;--ink:#2A2927;--ink2:#5E5B55;--ink3:#7A776F;--act:#ED3F1C;--act-text:#B8300F;--amber:#ED8008;--go:#736B1E;--fine:#C2BBAE;--white:#F2F0EB;--rail:#A9A59C;--needle:#BF1B1B;--ro:#ECE9E1;--ro2:#A6A299;--ro3:#7A776F;--ro-fine:#55534E;--ro-rule:#3A3935;--glow:0 0 0 3px rgba(237,63,28,.14),0 0 8px rgba(237,63,28,.55);--well:inset 0 1px 2px rgba(42,41,39,.35);--sans:Archivo,"Helvetica Neue",Helvetica,Arial,sans-serif;--mono:"JetBrains Mono",ui-monospace,monospace}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.4 Inter,"Helvetica Neue",Helvetica,Arial,sans-serif;font-feature-settings:"tnum" 1}
+body{margin:0;min-height:100vh;padding:40px 24px 64px;background:var(--housing);color:var(--ink);font:14px/1.4 var(--sans);font-feature-settings:"tnum" 1}
 a{color:inherit}
 button{font:inherit;color:inherit}
-:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
-.mono{font-family:"JetBrains Mono",ui-monospace,monospace}
-.page{max-width:1280px;margin:0 auto;padding:56px 24px 72px;display:flex;flex-direction:column;gap:48px}
-.page.noticed{padding-bottom:160px}
-header.top{display:flex;align-items:center;gap:18px}
-.logo{width:44px;height:44px;border-radius:50%;background:#AC55FF;display:flex;align-items:center;justify-content:center}
-.logo i{width:14px;height:14px;border-radius:50%;background:var(--bg)}
-.brand{display:flex;flex-direction:column;gap:4px}
-.brand b{font-size:40px;line-height:1;font-weight:700;letter-spacing:-.04em}
-.brand span{font-size:12px;color:var(--ink2)}
+:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+.mono{font-family:var(--mono)}
+.muted{color:var(--ink2)}
 
-/* Lights: act fills purple, fine fills grey, run is a pulsing grey ring. */
-.lamp{display:inline-block;width:12px;height:12px;border-radius:50%;border:2px solid var(--fine);background:var(--fine);flex:none}
-.lamp.sm{width:10px;height:10px}
-.lamp.act{border-color:var(--act);background:var(--act)}
-.lamp.run{border-color:var(--ink2);background:#fff;animation:pulse 2s ease-out infinite}
-.lamp.off{background:#fff}
-@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(91,81,103,.45)}70%{box-shadow:0 0 0 6px rgba(91,81,103,0)}100%{box-shadow:0 0 0 0 rgba(91,81,103,0)}}
-.count{width:20px;height:20px;border-radius:50%;border:1.5px solid var(--ink2);color:var(--ink2);display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;line-height:1;flex:none}
+/* The face: brushed panel holding the header strip and the deck. */
+.face{max-width:1280px;margin:0 auto;border-radius:6px;background:repeating-linear-gradient(90deg,rgba(255,255,255,.10) 0 1px,rgba(0,0,0,0) 1px 3px),linear-gradient(180deg,#E7E5E0,#D8D6D0);box-shadow:inset 0 1px 0 rgba(255,255,255,.85),0 0 0 1px #B9B6AE,0 24px 48px rgba(42,41,39,.20),0 2px 4px rgba(42,41,39,.12)}
+header.top{display:flex;flex-wrap:wrap;align-items:center;gap:12px;padding:18px 28px 16px;border-bottom:1px solid #C9C6BE;box-shadow:0 1px 0 rgba(255,255,255,.6)}
+.brand{font-size:20px;line-height:1;font-weight:700;letter-spacing:.02em}
+.tagline{font-size:11px;color:var(--ink2)}
+.controls{margin-left:auto;display:flex;flex-wrap:wrap;align-items:center;gap:18px;font-size:11px;color:var(--ink2)}
+.notices{display:flex;flex-wrap:wrap;gap:4px 14px;color:var(--act-text);font-weight:500}
+.hint{display:flex;align-items:center;gap:6px}
+button.hint{min-height:32px;padding:0;border:0;background:transparent;cursor:pointer}
+kbd{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border:1px solid #BDBAB2;border-radius:2px;background:#EEECE7;box-shadow:inset 0 -1px 0 #CFCCC4;font-family:inherit;font-size:10px;color:var(--ink)}
+button.hint kbd{font-weight:500;background:var(--white);box-shadow:inset 0 -1px 0 #D6D2C9}
+button.hint kbd.down{background:#E3E0D9;box-shadow:inset 0 1px 2px rgba(42,41,39,.2)}
+.power{width:8px;height:8px;border-radius:50%;background:var(--fine);box-shadow:var(--well)}
+.power.on{background:var(--amber);box-shadow:0 0 0 3px rgba(237,128,8,.16),0 0 10px rgba(237,128,8,.6)}
 
-/* PR nodes: open or draft is an ink ring, mergeable purple, merged grey. */
-.node{position:relative;width:22px;height:22px;border-radius:50%;border:2px solid var(--ink);background:#fff;color:var(--ink);display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;line-height:1;text-decoration:none;flex:none}
-button.node{margin:0;padding:0;cursor:pointer}
-button.node:hover{box-shadow:0 0 0 4px #EFE6FB}
-.node.ready{background:var(--act);border-color:var(--act);color:#fff}
-.node.merged{background:var(--fine);border-color:var(--fine)}
-.node.closed{border-color:var(--fine);color:var(--ink3)}
+/* Lamps: act glows red-orange, in progress is a pulsing amber ring, fine a recessed grey well. */
+.lamp{display:inline-block;flex:none;width:10px;height:10px;border-radius:50%;border:2px solid var(--fine);background:var(--fine);box-shadow:var(--well)}
+.lamp.act{border-color:var(--act);background:var(--act);box-shadow:var(--glow)}
+.lamp.run{border-color:var(--amber);background:var(--white);box-shadow:none;animation:pulse 2s ease-out infinite}
+.lamp.run.still{animation:none}
+.lamp.off{background:transparent;box-shadow:none}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(237,128,8,.5)}70%{box-shadow:0 0 0 6px rgba(237,128,8,0)}100%{box-shadow:0 0 0 0 rgba(237,128,8,0)}}
+.count{flex:none;width:16px;height:16px;border-radius:50%;border:1.5px solid var(--ink2);color:var(--ink);display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:600;line-height:1}
+
+/* PR nodes: open or draft an ink ring, mergeable olive, merged and closed grey, a Branch with
+ * no PR a dashed ring. */
+.node{position:relative;flex:none;width:20px;height:20px;border-radius:50%;border:2px solid var(--ink);background:var(--white);color:var(--ink);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;line-height:1;transition:box-shadow .12s ease}
+.node.ready{background:var(--go);border-color:var(--go);color:var(--white)}
+.node.merged,.node.closed{background:var(--fine);border-color:var(--fine)}
+.node.branch{border-style:dashed;border-color:#8A8195;color:var(--ink2)}
 .node.key{width:14px;height:14px}
+.node.key.branch{border-color:#8C8981;background:transparent}
+.node.key.open{background:transparent}
 
-.panel{background:var(--panel);border-top:2px solid var(--ink)}
-.empty{margin:0;padding:28px;color:var(--ink2)}
-.srow{display:flex;flex-wrap:wrap;border-bottom:1px solid var(--rule)}
-.sidx{flex:0 0 88px;padding:16px 0 0 28px}
+/* The deck: the channel rack beside the window. */
+.deck{display:flex;align-items:stretch;gap:20px;padding:20px}
+.rack{flex:1 1 0;min-width:0}
+.empty{margin:0;padding:20px;color:var(--ink2)}
+.scale,.strip{display:grid;grid-template-columns:52px minmax(0,1fr) repeat(4,56px)}
+.scale{padding:0 16px 8px;font-size:10px;line-height:14px;color:var(--ink2);text-align:center}
+.chans{display:flex;flex-direction:column;gap:10px}
 
-/* The Session key: latched (pressed) while open, raised while folded; the same box in both. */
-.skey{display:flex;align-items:center;justify-content:center;width:40px;height:40px;margin:0;padding:0;border:1px solid var(--keyrule);border-radius:3px;background:#F7F4F5;box-shadow:inset 0 1px 1px rgba(36,6,66,.05);cursor:pointer;transition:background-color .12s ease,box-shadow .12s ease,border-color .12s ease}
-.skey.up{background:#FDFCFC;box-shadow:inset 0 -1px 0 #EFEAEC}
-.skey:hover{border-color:#DCD4D8}
-.skey:active{background:#F7F4F5;box-shadow:inset 0 1px 1px rgba(36,6,66,.05)}
-.skey>span{width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:rgba(36,6,66,.02);box-shadow:inset 0 1px 1px rgba(36,6,66,.035)}
-
-.folded{cursor:pointer}
-.sline{flex:999 1 560px;min-width:0;padding-right:28px;display:flex;align-items:center;gap:24px;min-height:72px}
-.sline h2{flex:0 1 auto;min-width:0;margin:0;font-size:15px;line-height:20px;font-weight:600;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.attn{flex:0 0 64px;margin-left:auto;display:flex;justify-content:center}
-.muted{color:var(--ink3)}
-
-/* An open Session: its title and context beside its Stack, 1 : 3 of the row; stacked when narrow. */
-.sess{flex:1 1 0;min-width:0;padding:11px 32px 28px 0;display:flex;flex-direction:column;gap:10px}
-.sess h2{margin:0;font-size:18px;line-height:24px;font-weight:600;letter-spacing:-.01em;overflow-wrap:anywhere}
-.sctx{display:flex;flex-direction:column;gap:4px;color:var(--ink2)}
-.activity{font-size:13px;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.smeta{display:flex;align-items:baseline;min-width:0;font-size:12px;line-height:16px;white-space:nowrap}
+/* A Session channel: the round push key, its title, Activity and meta, then its plates. */
+.chan{border-radius:4px;background:var(--chan);box-shadow:inset 0 1px 0 rgba(255,255,255,.9),0 0 0 1px #C3C0B8,0 1px 2px rgba(42,41,39,.08)}
+.chan.folded{cursor:pointer}
+.chead{display:flex;align-items:flex-start;gap:8px;padding:16px 16px 12px 22px}
+.folded .chead{padding-bottom:7px}
+.skey{flex:none;display:flex;align-items:center;justify-content:center;width:40px;height:40px;margin:-9px 0 0;padding:0;border:1px solid #C2BEB5;border-radius:50%;background:#E3E0D9;box-shadow:inset 0 2px 3px rgba(42,41,39,.22);transition:background-color .12s ease,box-shadow .12s ease;cursor:pointer}
+.skey.up{background:var(--white);box-shadow:inset 0 1px 0 rgba(255,255,255,.9),0 2px 0 #C9C5BC,0 3px 4px rgba(42,41,39,.15)}
+.skey:hover{border-color:var(--rail)}
+.skey:active{background:#DCD9D1;box-shadow:inset 0 2px 3px rgba(42,41,39,.25)}
+.skey>span{width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:radial-gradient(circle at 50% 35%,#ECE9E2,#DDD9D1);box-shadow:inset 0 1px 2px rgba(42,41,39,.18)}
+.ctext{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
+.cline{display:flex;align-items:baseline;gap:16px;min-width:0}
+.cline h2{flex:1 1 auto;min-width:0;margin:0;font-size:15px;line-height:22px;font-weight:600;overflow-wrap:anywhere}
+.folded .cline h2{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.attn{flex:none;width:56px;display:flex;justify-content:center;align-self:center}
+.activity{font-size:12px;line-height:17px;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.smeta{display:flex;align-items:baseline;min-width:0;font-size:11px;line-height:15px;color:var(--ink2);white-space:nowrap}
 .smeta>span{flex:none}
 .smeta>.repo{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .smeta .dot{padding:0 5px}
-.smeta .act{color:var(--act)}
-.sprs{flex:3 1 0;min-width:0;padding:15px 28px 28px 0}
-@media (max-width:900px){.sess{flex-basis:calc(100% - 88px);padding-bottom:4px}.sprs{flex-basis:100%;padding-left:88px}}
-.scroll{overflow-x:auto}
-.grid{display:grid;grid-template-columns:40px minmax(0,1fr) 104px 64px 64px 64px 64px;min-width:680px}
-.ghead{height:15px;margin-bottom:4px;font-size:11px;line-height:15px;color:var(--ink2);text-align:center}
-/* Each Stack is a row group; a gap and a firm rule split it from the Stack above. */
-.sgroup+.sgroup{margin-top:8px;border-top:1px solid var(--rule)}
-.grow{position:relative;min-height:64px;align-items:stretch}
-.deck.open .grow.sel{background:var(--tint)}
-.grow .rule{position:absolute;left:56px;right:0;top:0;height:1px;background:var(--rule2)}
-.gnode{position:relative;display:flex;align-items:center;justify-content:center}
-.gnode .up,.gnode .down{position:absolute;left:19px;width:2px;background:var(--rail)}
-.gnode .up{top:0;height:50%}.gnode .down{top:50%;bottom:0}
-.gtitle{display:flex;flex-direction:column;justify-content:center;gap:4px;min-width:0;padding:12px 24px 12px 16px}
-.gtitle .t{align-self:flex-start;margin:0;padding:0;border:0;background:transparent;text-align:left;font-size:14px;font-weight:500;line-height:19px;overflow-wrap:anywhere;cursor:pointer}
-.gtitle .t:hover{color:var(--act)}
-.gtitle .t.merged,.gtitle .t.closed{color:var(--ink2)}
-.gtitle .t.closed{text-decoration:line-through}
-.gtitle .branch{font-size:13px;line-height:19px;overflow-wrap:anywhere}
-.gtitle .jira{font-size:11px;line-height:15px;color:var(--ink2)}
-.glines{display:flex;align-items:center;justify-content:flex-end;padding-right:16px;font-size:12px;color:var(--ink2);white-space:nowrap}
-.gcell{display:flex;align-items:stretch}
-.gcell button{flex:1;display:flex;align-items:center;justify-content:center;margin:0;padding:0;border:0;background:transparent;cursor:pointer}
-.gcell button:hover{background:var(--tint)}
-.gcell button:focus-visible{outline-offset:-2px}
-.noprs{margin-top:19px;min-height:64px;display:grid;grid-template-columns:40px minmax(0,1fr);align-items:center}
-.noprs .ring{justify-self:center;width:12px;height:12px;border-radius:50%;border:2px solid var(--fine)}
-.noprs span:not(.ring){padding-left:16px;line-height:19px;color:var(--ink2)}
+.smeta .act{color:var(--act-text)}
+.noprs{padding:0 16px 14px 70px;font-size:12px;color:var(--ink2)}
 
-/* The tray: overlays the rows from the panel's right edge and spans the panel's height. Its
- * contents stick to the top of the window. overflow-x:clip hides it past the panel's edge
- * without making the deck a scroll container, which would stop the stickiness. */
-.deck{position:relative;overflow-x:clip}
-.scrim{display:none;position:fixed;inset:0;z-index:20;background:rgba(36,6,66,.04)}
-.deck.open .scrim{display:block}
-.tray{position:absolute;top:0;bottom:0;right:0;z-index:21;width:min(32rem,100%);background:var(--panel);border-left:1px solid var(--rule);border-bottom:1px solid var(--rule);box-shadow:-16px 0 40px rgba(36,6,66,.06);transform:translateX(100%);visibility:hidden;pointer-events:none;transition:transform .28s cubic-bezier(.2,.8,.2,1),visibility 0s linear .28s}
-.deck.open .tray{transform:none;visibility:visible;pointer-events:auto;transition-delay:0s}
-.tscroll{position:sticky;top:0;max-height:100vh;overflow-y:auto}
-.thead{border-top:2px solid var(--ink);padding:20px 32px 24px;display:grid;grid-template-columns:24px minmax(0,1fr) 32px;column-gap:12px;row-gap:8px;align-items:center}
-.thead .node{justify-self:center}
-.tmeta{display:flex;align-items:baseline;gap:10px;min-width:0;font-size:12px;line-height:16px;color:var(--ink2)}
-.tmeta .mono{font-size:11px}
-.tmeta a.mono{font-size:12px}
-.plain{padding:0;border:0;background:transparent;color:var(--ink2);text-decoration:none;cursor:pointer}
-.plain:hover{color:var(--ink)}
-.tclose{width:32px;height:32px;display:flex;align-items:center;justify-content:center;padding:0;border:0;border-radius:3px;background:transparent;color:var(--ink2);cursor:pointer}
-.tclose:hover{background:#F7F4F5;color:var(--ink)}
-.thead h3{grid-column:2/4;margin:0;font-size:18px;line-height:24px;font-weight:600;letter-spacing:-.01em;overflow-wrap:anywhere}
-.tsec{border-top:1px solid var(--rule2);padding:20px 32px 24px;display:grid;grid-template-columns:24px minmax(0,1fr);column-gap:12px;row-gap:10px;transition:background-color .6s ease}
-.tsec.focus{background:var(--tint)}
+/* Stacks as recessed plates of strips: node, title and four lamps under the printed scale. */
+.plates{display:flex;flex-direction:column;gap:8px;padding:2px 16px 14px}
+.plate{display:flex;flex-direction:column;padding:2px 0;border-radius:6px;background:var(--plate);box-shadow:inset 0 1px 2px rgba(42,41,39,.16),0 1px 0 rgba(255,255,255,.7)}
+.plate.branch{background:transparent;box-shadow:inset 0 0 0 1px var(--housing)}
+.strip{position:relative;min-height:36px;transition:background-color .12s ease}
+.strip+.strip{border-top:1px solid rgba(42,41,39,.07)}
+.strip.pr:hover{background:rgba(42,41,39,.06)}
+.needle{position:absolute;left:4px;top:calc(50% - 1px);width:8px;height:2px;border-radius:1px}
+.strip.sel .needle{background:var(--needle)}
+.pick{grid-column:1/3;display:grid;grid-template-columns:52px minmax(0,1fr);align-items:center;min-width:0;margin:0;padding:0;border:0;background:transparent;text-align:left}
+button.pick{cursor:pointer}
+button.pick:hover .node{box-shadow:0 0 0 4px rgba(42,41,39,.08)}
+.ncell{position:relative;align-self:stretch;display:flex;align-items:center;justify-content:center}
+.ncell .up,.ncell .down{position:absolute;left:25px;width:2px;background:var(--rail)}
+.ncell .up{top:-1px;height:calc(50% + 1px)}
+.ncell .down{top:50%;bottom:0}
+.title{min-width:0;padding:0 12px 0 2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;line-height:18px}
+.title.merged,.title.closed{color:var(--ink2)}
+.title.mono{font-size:12px;color:var(--ink2)}
+.led{display:flex;align-items:center;justify-content:center;margin:0;padding:0;border:0;border-radius:4px;background:transparent}
+button.led{cursor:pointer}
+button.led:hover{background:rgba(42,41,39,.06)}
+
+/* The window: dark glass, always present, its contents pinned to the viewport as the rack scrolls. */
+.window{position:relative;flex:0 0 30rem;min-width:0;min-height:min(100vh,40rem);overflow:clip}
+.wbody{position:absolute;top:0;right:0;bottom:0;width:30rem;background:linear-gradient(180deg,#2C2B29,#242321);border-radius:4px;color:var(--ro);box-shadow:inset 0 2px 10px rgba(0,0,0,.6),inset 0 0 0 1px #1A1917,0 1px 0 rgba(255,255,255,.8)}
+.tscroll{position:sticky;top:0;max-height:min(100vh,100%);overflow-y:auto;overscroll-behavior:contain}
+.tscroll::-webkit-scrollbar{width:6px}
+.tscroll::-webkit-scrollbar-thumb{background:#4A4844;border-radius:3px}
+.tscroll a{text-decoration:none}
+.tscroll a:hover{color:#FFFFFF}
+@media (max-width:1000px){.deck{flex-direction:column}.window{flex-basis:auto;min-height:0}.wbody{position:static;width:auto}.tscroll{position:static;max-height:none}}
+.whead{padding:22px 24px 20px;display:flex;flex-direction:column;gap:10px;border-bottom:1px solid var(--ro-rule)}
+.wline{display:flex;align-items:center;gap:10px;font-size:12px;line-height:16px;color:var(--ro2)}
+.wline .node{background:transparent;border-color:var(--ro)}
+.wline .node.ready{background:var(--go);border-color:var(--go);box-shadow:0 0 0 3px rgba(115,107,30,.18),0 0 10px rgba(115,107,30,.5)}
+.wline .node.merged,.wline .node.closed{background:#6A6862;border-color:#6A6862}
+.wline .node.none{border-color:var(--ro-fine)}
+.wline .num{color:var(--ro)}
+.wsize{margin-left:auto;font-size:11px}
+.tclose{flex:none;width:28px;height:28px;margin:-6px -10px -6px 4px;display:flex;align-items:center;justify-content:center;padding:0;border:0;border-radius:3px;background:transparent;color:var(--ro2);cursor:pointer}
+.tclose:hover{color:#FFFFFF;background:rgba(255,255,255,.06)}
+.whead h2{margin:0;font-size:17px;line-height:23px;font-weight:500;color:#F4F1EA;overflow-wrap:anywhere}
+.whint{font-size:12px;line-height:17px;color:var(--ro3)}
+.tsec{padding:16px 24px 18px;border-bottom:1px solid var(--ro-rule);display:grid;grid-template-columns:18px minmax(0,1fr);column-gap:10px;row-gap:10px;transition:background-color .4s ease}
+.tsec.idle{align-items:center}
+.tsec.focus{background:#33322F}
 .tlamp{height:16px;display:flex;align-items:center;justify-content:center}
-.thd{display:flex;align-items:baseline;justify-content:space-between;gap:12px;min-width:0;font-size:12px;line-height:16px;color:var(--ink2)}
-.thd h4{margin:0;font-size:11px;font-weight:400}
+.tsec .lamp.fine,.lamp.unlit{background:var(--ro-fine);border-color:var(--ro-fine);box-shadow:inset 0 1px 2px rgba(0,0,0,.6)}
+.tsec .lamp.run{background:transparent}
+.tsec .count{width:18px;height:18px;border-color:var(--ro2);color:var(--ro);font-size:10px}
+.thd{display:flex;align-items:baseline;justify-content:space-between;gap:12px;min-width:0;font-size:11px;line-height:16px;color:var(--ro2)}
+.tsec.idle .thd{color:var(--ro3)}
+.thd h3{margin:0;font-size:11px;font-weight:500}
+.tsec.focus .thd h3{color:#F4F1EA}
+.thd span{font-size:12px}
 .thd .act{color:var(--act)}
-.titems{grid-column:2;display:flex;flex-direction:column;gap:8px;min-width:0;font-size:13px;line-height:18px}
+.titems{grid-column:2;display:flex;flex-direction:column;gap:8px;min-width:0;font-size:12px;line-height:17px;color:var(--ro)}
 .titems.feedback{gap:16px}
-.item{color:var(--ink);text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.item:hover{color:var(--act)}
-.titems.ci .item{font-size:12px}
-.titems article{display:flex;flex-direction:column;gap:4px;min-width:0}
-.tby{display:flex;align-items:baseline;gap:8px;min-width:0;font-size:12px;line-height:16px;color:var(--ink2);white-space:nowrap}
-.tby b{flex:none;font-weight:500;color:var(--ink)}
-.tby .item{flex:0 1 auto;min-width:0;font-size:11px;color:var(--ink2)}
-.tby .item:hover{color:var(--act)}
+.item{color:var(--ro);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.titems.ci .item{font-size:11px}
+.titems article{display:flex;flex-direction:column;gap:3px;min-width:0}
+.tby{display:flex;align-items:baseline;gap:8px;min-width:0;font-size:11px;line-height:15px;color:var(--ro2);white-space:nowrap}
+.tby b{flex:none;font-weight:600;color:var(--ro)}
+.tby .item{flex:0 1 auto;min-width:0;font-size:10px;color:var(--ro2)}
 .tby>span{flex:none;margin-left:auto}
 .titems p{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
 .titems p.clamp{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:4;overflow:hidden}
-.titems article .plain{align-self:flex-start;font-size:12px}
+.plain{align-self:flex-start;padding:0;border:0;background:transparent;font-size:11px;color:var(--ro2);cursor:pointer}
+.plain:hover{color:#FFFFFF}
 .rv{display:flex;align-items:baseline;gap:8px;min-width:0}
 .rv .who{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.rv .who.mono{font-size:12px}
-.rv .co{flex:none;font-size:11px;color:var(--ink2)}
-.rv .for{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--ink2)}
-.rv .state{flex:none;margin-left:auto;font-size:12px;color:var(--ink2)}
+.rv .who.mono{font-size:11px}
+.rv .co{flex:none;font-size:10px;color:var(--ro2)}
+.rv .for{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;color:var(--ro2)}
+.rv .state{flex:none;margin-left:auto;font-size:11px;color:var(--ro2)}
 .rv .state.act{color:var(--act);font-weight:500}
 
-footer{display:flex;align-items:center;font-size:12px;line-height:16px;color:var(--ink2)}
-.hint{display:flex;align-items:center;gap:8px;min-height:44px;margin:-12px 0;padding:0;border:0;background:transparent;color:inherit;cursor:pointer}
-kbd{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border:1px solid var(--keyrule);border-radius:3px;background:#FDFCFC;box-shadow:inset 0 -1px 0 #EFEAEC;font-family:inherit;font-size:11px;font-weight:500;line-height:1;color:var(--ink)}
-kbd.down{background:#F7F4F5;box-shadow:inset 0 1px 1px rgba(36,6,66,.05)}
-
-/* The dock holds the legend and, beneath it, the notice strip, fixed to the bottom. */
-.dock{position:fixed;left:0;right:0;bottom:0;z-index:10;display:flex;flex-direction:column;align-items:flex-start;pointer-events:none}
-.dock>*{pointer-events:auto}
-.legend{margin:0 24px 24px;width:400px;max-width:calc(100vw - 48px);padding:24px 28px;background:var(--panel);border:1px solid var(--rule);border-top:2px solid var(--ink);box-shadow:0 12px 32px rgba(36,6,66,.10);display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:32px;row-gap:20px;font-size:12px;line-height:16px;color:var(--ink2)}
+/* The legend: a card fixed to the bottom left, behind `h`. */
+.legend{position:fixed;left:24px;bottom:24px;z-index:10;width:380px;max-width:calc(100vw - 48px);padding:22px 26px;background:var(--chan);border-radius:4px;box-shadow:0 0 0 1px #B9B6AE,0 16px 36px rgba(42,41,39,.18);display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:28px;row-gap:18px;font-size:12px;line-height:16px;color:var(--ink2)}
 .legend>div{display:flex;flex-direction:column;gap:8px}
-.lh{font-size:11px;line-height:15px;color:var(--ink3);margin-bottom:2px}
+.lh{font-size:10px;color:var(--ink3)}
 .li{display:flex;align-items:center;gap:10px}
-.li.act{color:var(--act);font-weight:500}
-.li .count{margin:-4px}
-.notices{align-self:stretch;background:var(--panel);border-top:2px solid var(--ink);padding:10px 24px calc(10px + env(safe-area-inset-bottom,0px));box-shadow:0 -8px 24px rgba(36,6,66,.06)}
-.notices p{max-width:1232px;margin:0 auto;color:var(--act);font-weight:500;line-height:20px}
+.li.act{color:var(--ink)}
+.li .lamp,.li .node.key{flex:none}
+.li .count{margin:-3px;margin-right:0}

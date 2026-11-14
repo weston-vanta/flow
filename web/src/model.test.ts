@@ -7,7 +7,6 @@ import {
   baseLight,
   ciLight,
   feedbackLight,
-  parseJira,
   prDataAge,
   prView,
   reviewLight,
@@ -137,9 +136,8 @@ test("merged and closed PRs show all four lamps fine", () => {
   }
 });
 
-test("size: files / lines changed, with the tip splitting the lines", () => {
+test("size tip: files changed, with the lines added and removed", () => {
   const v = prView(gh({ changedFiles: 3, additions: 500, deletions: 40 }), 1);
-  assert.equal(v.size, "3 / 540");
   assert.equal(v.sizeTip, "3 files, +500 −40");
   assert.equal(prView(gh({ changedFiles: 1, additions: 2, deletions: 0 }), 1).sizeTip, "1 file, +2 −0");
 });
@@ -281,13 +279,8 @@ test("Session status lamp: running → run, waiting → act, idle and done → f
   assert.equal(statusLight(null).lamp, "off");
 });
 
-test("Jira key is parsed from a `[ABC-123] ` prefix and removed from the title", () => {
-  assert.deepEqual(parseJira("[ABC-123] Fix it"), { jira: "ABC-123", title: "Fix it" });
-  assert.deepEqual(parseJira("[PLAT2-9] Bump"), { jira: "PLAT2-9", title: "Bump" });
-  assert.deepEqual(parseJira("Fix it [ABC-123]"), { jira: null, title: "Fix it [ABC-123]" });
-  assert.deepEqual(parseJira("[abc-123] lower"), { jira: null, title: "[abc-123] lower" });
-  assert.deepEqual(parseJira("[ABC] no number"), { jira: null, title: "[ABC] no number" });
-  assert.deepEqual(parseJira("[ABC-123]no space"), { jira: null, title: "[ABC-123]no space" });
+test("a PR's view title is its GitHub title unchanged, prefix and all", () => {
+  assert.equal(prView(gh({ title: "[ABC-123] Fix it" }), null).title, "[ABC-123] Fix it");
 });
 
 test("attention: an open PR that is mergeable or has a lit lamp", () => {
@@ -407,8 +400,8 @@ test("session views join Sessions to their Stacks and tolerate null facets", () 
   assert.equal(one.cde, "flow");
   assert.equal(one.repo, "acme/api");
   assert.deepEqual(
-    one.stacks.map((s) => s.map((p) => [p.pos, p.number, p.jira, p.title])),
-    [[[null, 8, "ABC-12", "Add widgets"]]],
+    one.stacks.map((s) => s.map((p) => [p.pos, p.number, p.title])),
+    [[[null, 8, "[ABC-12] Add widgets"]]],
   );
   // Until its first Stop writes a title, a Session shows a placeholder, not its id.
   assert.equal(two.title, "New session");
