@@ -99,11 +99,13 @@ fn a_poll_writes_every_field_of_each_pr() {
             ],
             // Required only: the cancelled `lint` and the failed `ci/optional` are not
             // required. `build`'s failed run is replaced by its later rerun, from page 2.
+            // `deploy` is required but has not reported, so it is expected.
             "checks": [
                 {"name": "build", "status": "COMPLETED", "conclusion": "SUCCESS",
                  "url": "https://github.com/acme/widgets/actions/runs/2/job/105"},
                 {"name": "ci/legacy", "status": "PENDING", "conclusion": null,
                  "url": "https://ci.example.com/acme/widgets/7"},
+                {"name": "deploy", "status": "EXPECTED", "conclusion": null, "url": null},
                 {"name": "security", "status": "COMPLETED", "conclusion": "SUCCESS", "url": null},
                 {"name": "test", "status": "IN_PROGRESS", "conclusion": null,
                  "url": "https://github.com/acme/widgets/actions/runs/2/job/104"},
@@ -237,7 +239,8 @@ fn a_stacked_prs_checks_are_those_its_default_branch_requires() {
         "{calls}"
     );
     // #8 is based on `feat/x`, which requires nothing; `main` requires `build`, not
-    // `ci/optional`.
+    // `ci/optional`. Its workflows may run only for PRs into `main`, so the unreported
+    // `deploy` is not expected.
     let stacked = pr_get(&ts, "acme/widgets#8");
     assert_eq!(stacked["github"]["baseRefName"], "feat/x");
     assert_eq!(

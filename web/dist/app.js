@@ -54,7 +54,9 @@
     const light2 = (lamp2, tip, count = null) => ({ lamp: lamp2, tip, count });
     const closed = done(g, "review");
     if (closed) return { ...closed, count: null };
-    if (g.reviewDecision === "CHANGES_REQUESTED") return light2("act", "review: changes requested");
+    if (g.reviewDecision === "CHANGES_REQUESTED" || g.reviews.some((r) => r.state === "CHANGES_REQUESTED")) {
+      return light2("act", "review: changes requested");
+    }
     const names = g.reviewRequests.map((r) => "login" in r ? r.login : r.team);
     if (names.length) return light2("fine", `review needed: ${names.join(", ")}`, names.length);
     if (g.reviewDecision === "REVIEW_REQUIRED") return light2("act", "review: no reviewers requested");

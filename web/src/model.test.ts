@@ -264,6 +264,10 @@ test("review: changes requested or nobody requested â†’ act; pending requests â†
   assert.deepEqual(r({ isDraft: true, reviewDecision: "REVIEW_REQUIRED" }), ["act", null]);
   assert.deepEqual(r({ reviewDecision: "APPROVED" }), ["fine", null]);
   assert.deepEqual(r({ reviewDecision: null }), ["fine", null]);
+  // A stacked PR's base requires no review, so GitHub gives no decision; the review still counts.
+  const changes = { login: "ana", state: "CHANGES_REQUESTED" as const, teams: [] };
+  assert.deepEqual(r({ reviewDecision: null, reviews: [changes] }), ["act", null]);
+  assert.deepEqual(r({ reviewDecision: null, reviews: [changes], reviewRequests: [{ login: "ana", asCodeOwner: false }] }), ["act", null]);
 });
 
 test("review tooltip names the requested people and teams", () => {

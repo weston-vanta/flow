@@ -5,7 +5,7 @@
       {"parameters": {}},
       {"parameters": {"requiredStatusChecks": [{"context": "build"}, {"context": "ci/legacy"}]}},
       {"parameters": null},
-      {"parameters": {"requiredStatusChecks": [{"context": "security"}, {"context": "test"}]}}
+      {"parameters": {"requiredStatusChecks": [{"context": "deploy"}, {"context": "security"}, {"context": "test"}]}}
     ]}},
     "p7": {
       "number": 7, "mergeQueueEntry": null, "url": "https://github.com/acme/widgets/pull/7", "title": "[ABC-123] Add widgets",

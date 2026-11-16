@@ -592,6 +592,9 @@ fn github(
                 .find_map(|pr| pr.merged_at)
                 .unwrap_or(commit.committed_date)
         });
+    // A stacked PR's workflows may run only for PRs into the default branch, so its
+    // unreported required checks are not expected.
+    let expect = raw.state == PrState::Open && raw.base_ref_name == default_branch;
     Github {
         repo: repo.to_owned(),
         number: raw.number,
@@ -640,7 +643,7 @@ fn github(
                     .collect(),
             })
             .collect(),
-        checks: required_checks(required, contexts),
+        checks: required_checks(required, expect, contexts),
         stack: raw.stack_entry.map(|entry| StackPosition {
             number: entry.stack.number,
             position: entry.position,
@@ -674,8 +677,9 @@ fn github(
 /// The checks among `contexts` named in `required`, one per name (the rerun GitHub created
 /// last), ordered by name. A commit status is mapped onto a check run's fields: `PENDING` and
 /// `EXPECTED` become the status with no conclusion; any other state is the conclusion of a
-/// `COMPLETED` status.
-fn required_checks(required: &HashSet<String>, contexts: Vec<Context>) -> Vec<Check> {
+/// `COMPLETED` status. If `expect`, each required check absent from `contexts` is added as
+/// an `EXPECTED` status, as GitHub shows one that has yet to report.
+fn required_checks(required: &HashSet<String>, expect: bool, contexts: Vec<Context>) -> Vec<Check> {
     let mut latest: BTreeMap<String, (u64, Check)> = BTreeMap::new();
     for context in contexts {
         let (rank, check) = match context {
@@ -721,6 +725,19 @@ fn required_checks(required: &HashSet<String>, contexts: Vec<Context>) -> Vec<Ch
             _ => {
                 latest.insert(check.name.clone(), (rank, check));
             }
+        }
+    }
+    if expect {
+        for name in required {
+            latest.entry(name.clone()).or_insert_with(|| {
+                let check = Check {
+                    name: name.clone(),
+                    status: Some("EXPECTED".to_owned()),
+                    conclusion: None,
+                    url: None,
+                };
+                (0, check)
+            });
         }
     }
     latest.into_values().map(|(_, check)| check).collect()

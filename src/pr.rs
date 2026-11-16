@@ -50,7 +50,8 @@ pub struct Github {
     pub review_requests: Vec<ReviewRequest>,
     /// Required checks only, reruns deduplicated by name. Required means named by the
     /// default branch's rulesets, whatever the PR's base, so a stacked PR is judged by the
-    /// bar it must clear to land.
+    /// bar it must clear to land. An open PR on the default branch also lists each
+    /// required check that has yet to report, as an `EXPECTED` status.
     #[serde(default)]
     pub checks: Vec<Check>,
     /// The PR's place in its GitHub stack, `None` outside a stack.

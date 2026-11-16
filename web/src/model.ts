@@ -213,12 +213,16 @@ export function feedbackLight(g: Github): Light {
 
 /** Changes requested or nobody asked to review → act; pending requests → their count;
  * else fine. Drafts follow the same rules. Reviewers who requested changes leave
- * `reviewRequests`, so that decision is shown as a lamp rather than counted. */
+ * `reviewRequests`, so that decision is shown as a lamp rather than counted. Changes are
+ * requested by any such review, as on a stacked PR, whose base requires no review, GitHub
+ * gives no `reviewDecision`. */
 export function reviewLight(g: Github): ReviewLight {
   const light = (lamp: Lamp, tip: string, count: number | null = null): ReviewLight => ({ lamp, tip, count });
   const closed = done(g, "review");
   if (closed) return { ...closed, count: null };
-  if (g.reviewDecision === "CHANGES_REQUESTED") return light("act", "review: changes requested");
+  if (g.reviewDecision === "CHANGES_REQUESTED" || g.reviews.some((r) => r.state === "CHANGES_REQUESTED")) {
+    return light("act", "review: changes requested");
+  }
   const names = g.reviewRequests.map((r) => ("login" in r ? r.login : r.team));
   if (names.length) return light("fine", `review needed: ${names.join(", ")}`, names.length);
   if (g.reviewDecision === "REVIEW_REQUIRED") return light("act", "review: no reviewers requested");
