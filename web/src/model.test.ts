@@ -43,6 +43,7 @@ function gh(o: Partial<Github> = {}): Github {
     reviews: [],
     threads: [],
     behindSince: null,
+    mergeQueue: null,
     ...o,
   };
 }
@@ -307,6 +308,28 @@ test("mergeable: open, not a draft, no review outstanding, all four lamps fine",
   assert.equal(node({ threads: [thread()] }), "open");
   assert.equal(node({ state: "MERGED" }), "merged");
   assert.equal(node({ state: "CLOSED" }), "closed");
+});
+
+test("queued: an open PR in the merge queue is never mergeable and needs attention only for a lit lamp", () => {
+  const mergeQueue = { position: 37, size: 214 };
+  assert.equal(prView(gh({ mergeQueue }), 1).node, "queued");
+  assert.equal(prView(gh({ mergeQueue }), 1).attention, false);
+  assert.equal(prView(gh({ mergeQueue, threads: [thread()] }), 1).node, "queued");
+  assert.equal(prView(gh({ mergeQueue, threads: [thread()] }), 1).attention, true);
+  // A leftover entry on a merged PR doesn't matter.
+  assert.equal(prView(gh({ mergeQueue, state: "MERGED" }), 1).node, "merged");
+  assert.equal(prView(gh({ mergeQueue, state: "MERGED" }), 1).queue, null);
+  assert.equal(prView(gh(), 1).queue, null);
+});
+
+test("queue: the label, the text, and the needle's place from the front (0) to the back (1)", () => {
+  const queue = (position: number, size: number) => prView(gh({ mergeQueue: { position, size } }), 1).queue;
+  assert.deepEqual(queue(37, 214), { label: "37/214", text: "in merge queue · 37 of 214", at: 36 / 213 });
+  assert.equal(queue(1, 214)?.at, 0);
+  assert.equal(queue(214, 214)?.at, 1);
+  assert.equal(queue(1, 1)?.at, 0);
+  // Position and size can disagree for a moment; the needle stays on the scale.
+  assert.equal(queue(5, 3)?.at, 1);
 });
 
 const nums = (stacks: { number: number }[][]) => stacks.map((s) => s.map((g) => g.number));
