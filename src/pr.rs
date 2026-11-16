@@ -68,9 +68,22 @@ pub struct Github {
     #[serde(default)]
     pub threads: Vec<Thread>,
     /// When the oldest default-branch commit the head lacks landed there; `None` unless the
-    /// PR is open, based on the default branch, and behind it by at least one commit.
+    /// PR is open, based on the default branch, behind it by at least one commit, and not
+    /// queued.
     #[serde(default)]
     pub behind_since: Option<String>,
+    /// The PR's place in its repository's merge queue; `None` unless it is queued.
+    #[serde(default)]
+    pub merge_queue: Option<MergeQueue>,
+}
+
+/// A queued PR's place in the merge queue of its base branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergeQueue {
+    /// Counted from 1, the PR that merges next.
+    pub position: u64,
+    /// How many PRs the queue holds.
+    pub size: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

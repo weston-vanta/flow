@@ -129,6 +129,8 @@ fn a_poll_writes_every_field_of_each_pr() {
             ],
             // The oldest missing commit's PR merged then; it was committed hours earlier.
             "behindSince": "2026-11-09T08:30:00Z",
+            // `acme/widgets` has a merge queue, but this PR isn't in it.
+            "mergeQueue": null,
         })
     );
 
@@ -156,8 +158,14 @@ fn a_poll_stores_each_prs_github_stack_number_beside_its_position() {
     );
 
     let stack_of = |key: &str| pr_get(&ts, key)["github"]["stack"].clone();
-    assert_eq!(stack_of("acme/widgets#7"), json!({"number": 41, "position": 2}));
-    assert_eq!(stack_of("acme/widgets#8"), json!({"number": 41, "position": 3}));
+    assert_eq!(
+        stack_of("acme/widgets#7"),
+        json!({"number": 41, "position": 2})
+    );
+    assert_eq!(
+        stack_of("acme/widgets#8"),
+        json!({"number": 41, "position": 3})
+    );
     // Outside a GitHub stack, a Stack of one.
     assert_eq!(stack_of("acme/gadgets#3"), Value::Null);
 }
@@ -183,6 +191,37 @@ fn behind_since_is_when_the_oldest_missing_default_branch_commit_landed() {
     assert_eq!(behind("acme/widgets#8"), Value::Null);
     // Merged, though its head lacks commits on `main`.
     assert_eq!(behind("acme/widgets#5"), Value::Null);
+}
+
+#[test]
+fn a_queued_pr_has_its_merge_queue_position_and_size_and_is_never_behind() {
+    let ts = TestStore::new();
+    let queued = format!(
+        "cat '{}/tests/fixtures/github/gadgets-queued.json'",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let log = fake_gh(&ts, &search_ok(), &queued);
+    let mut flowd = ts.flowd();
+    flowd.wait_for_line(CYCLE);
+
+    let calls = calls(&log);
+    assert!(
+        calls.contains(r#"mergeQueue(branch: "main") { entries { totalCount } }"#),
+        "{calls}"
+    );
+    assert!(calls.contains("mergeQueueEntry { position }"), "{calls}");
+    let queue = |key: &str| pr_get(&ts, key)["github"]["mergeQueue"].clone();
+    assert_eq!(
+        queue("acme/gadgets#3"),
+        json!({"position": 37, "size": 214})
+    );
+    // Its head lacks commits on `main`, but the queue tests it against the latest `main`.
+    assert_eq!(
+        pr_get(&ts, "acme/gadgets#3")["github"]["behindSince"],
+        Value::Null
+    );
+    // Not in the queue.
+    assert_eq!(queue("acme/gadgets#4"), Value::Null);
 }
 
 #[test]
@@ -227,6 +266,7 @@ fn failed_batch_keeps_the_last_facet(gadgets: &str, env: &[(&str, &str)]) {
         "mergeable": "MERGEABLE", "reviewDecision": null, "reviewRequests": [], "checks": [],
         "stack": null, "updatedAt": "2026-11-09T07:00:00Z", "additions": 1, "deletions": 0,
         "changedFiles": 1, "reviews": [], "threads": [], "behindSince": null,
+        "mergeQueue": null,
     });
     seed(&ts, "acme/gadgets#3", &old, old_at);
 

@@ -75,8 +75,12 @@ A PR's review threads that are unresolved and not outdated: what is still left t
 _Avoid_: comments, threads
 
 **Behind**:
-A PR is behind when the oldest commit on its repository's default branch that its head lacks landed there more than 24 hours ago. Only PRs based on the default branch can be behind; one based on another PR's branch never is. Measured by when that commit landed, not by how many commits are missing.
+A PR is behind when the oldest commit on its repository's default branch that its head lacks landed there more than 24 hours ago. Only PRs based on the default branch can be behind; one based on another PR's branch never is. Measured by when that commit landed, not by how many commits are missing. A queued PR is never behind.
 _Avoid_: stale, out of date
+
+**Queued**:
+A PR is queued while it is in its repository's GitHub merge queue. Its position is its place in that queue (1 merges next). A queued PR needs nothing from its owner.
+_Avoid_: enqueued, merging, landing
 
 **Owner**:
 The Session that owns a Stack: responsible for seeing it through, even while Subagents or other Sessions write, review or fix its PRs. A Session owns a Branch by creating a worktree for it; when several Sessions have, the most recent one owns it. It owns the PRs whose head is that Branch. Each PR has at most one owner; a Session can own any number of Stacks. Owning is a relationship between a Session and its Branches and PRs, not a kind of Session; any Session can own a Stack.
