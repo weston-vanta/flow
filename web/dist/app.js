@@ -347,6 +347,7 @@
       ${body}
     </section>`;
   }
+  var WORDMARK = `<svg class="brand" width="45.45" height="24" viewBox="0 0 60.6 32" role="img" aria-label="flow"><defs><clipPath id="wx0"><rect x="0" y="12.2" width="60.6" height="15.0"/></clipPath></defs><g fill="none" stroke="#2A2927" stroke-width="3.2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="10"><path d="M8.6 27.2 V11.4 C8.6 8.1 10.5 6.3 13.7 6.3 H16.2"/><path d="M20.4 4.7 V27.2"/><ellipse cx="31.1" cy="19.75" rx="5.45" ry="6.05"/><path clip-path="url(#wx0)" d="M39.4 8 L44.3 29 L49 10 L53.7 29 L58.6 8"/></g><rect x="3.8" y="12.2" width="10.4" height="3.2" fill="#BF1B1B"/></svg>`;
   var LEGEND = `<div class="legend" role="note" aria-label="Legend">
     <div><span class="lh">lights</span>
       <span class="li act"><span class="lamp act"></span>needs action</span>
@@ -366,7 +367,7 @@
     const p = t && views.flatMap((v) => v.prs).find((x) => x.url === t.url);
     return `<div class="face">
     <header class="top">
-      <b class="brand">flow</b><span class="tagline">agent sessions and pull requests</span>
+      ${WORDMARK}<span class="tagline">agent sessions and pull requests</span>
       <div class="controls">
         ${notices.length ? `<div class="notices" role="status">${notices.map((n) => `<span>${esc(n)}</span>`).join("")}</div>` : ""}
         <span class="hint" aria-hidden="true"><kbd>\u2191</kbd><kbd>\u2193</kbd><span>tune</span></span>
