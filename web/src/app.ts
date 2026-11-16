@@ -13,8 +13,8 @@ let drawn = "";
 /** When the last poll succeeded, and whether the latest one failed. */
 let lastGood: Date | null = null;
 let failing = false;
-/** Ids of Sessions folded or unfolded against their default (done Sessions start folded);
- * in memory only, so a reload resets them. */
+/** Ids of Sessions folded or unfolded against their default (done Sessions and Sessions with
+ * no PRs start folded); in memory only, so a reload resets them. */
 const toggled = new Set<string>();
 let legend = false;
 /** The selected PR's tray, or null while the window shows its empty state. */

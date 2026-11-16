@@ -217,7 +217,7 @@
     return { lamp: "fine", tip: `${prs2}: nothing needs action` };
   }
   function isFolded(v, toggled2) {
-    return v.status.state === "done" !== toggled2.has(v.id);
+    return (v.status.state === "done" || !v.prs.length) !== toggled2.has(v.id);
   }
   function stepPr(views, toggled2, url, dir) {
     const order = views.filter((v) => !isFolded(v, toggled2)).flatMap((v) => v.prs.map((p) => p.url));

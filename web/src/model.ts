@@ -460,9 +460,10 @@ export function attentionLight(v: SessionView): Light {
   return { lamp: "fine", tip: `${prs}: nothing needs action` };
 }
 
-/** Done Sessions start folded; `toggled` holds the ids the user has flipped since load. */
+/** Done Sessions and Sessions with no PRs start folded; `toggled` holds the ids the user has
+ * flipped since load. */
 export function isFolded(v: SessionView, toggled: Set<string>): boolean {
-  return (v.status.state === "done") !== toggled.has(v.id);
+  return (v.status.state === "done" || !v.prs.length) !== toggled.has(v.id);
 }
 
 /** The URL of the PR ↓ (`dir` 1) or ↑ (`dir` -1) selects after the one at `url`, in the order

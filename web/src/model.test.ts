@@ -510,17 +510,26 @@ test("folded Session light: act if waiting or any PR needs attention, else fine"
   assert.deepEqual(attentionLight(two), { lamp: "act", tip: "2 pull requests: something needs action" });
 });
 
-test("done Sessions start folded; a toggle flips the default", () => {
+test("done Sessions and Sessions with no PRs start folded; a toggle flips the default", () => {
   const views = sessionViews(
-    [session("d", { status: { at: AT, state: "done" } }), session("i", { status: { at: AT, state: "idle" } })],
-    [],
+    [
+      session("d", { status: { at: AT, state: "done" } }),
+      session("i", { status: { at: AT, state: "idle" } }),
+      session("e", { status: { at: AT, state: "running" } }),
+    ],
+    [pr("d", { number: 1 }), pr("i", { number: 2 })],
+    [{ key: "acme/widgets:wip", repo: "acme/widgets", branch: "wip", owner: "e", at: AT }],
   );
   const done = views.find((v) => v.id === "d")!;
   const idle = views.find((v) => v.id === "i")!;
+  // A Branch with no PR doesn't count as a PR.
+  const empty = views.find((v) => v.id === "e")!;
   assert.equal(isFolded(done, new Set()), true);
   assert.equal(isFolded(idle, new Set()), false);
+  assert.equal(isFolded(empty, new Set()), true);
   assert.equal(isFolded(done, new Set(["d"])), false);
   assert.equal(isFolded(idle, new Set(["i"])), true);
+  assert.equal(isFolded(empty, new Set(["e"])), false);
 });
 
 test("PR data age: minutes since the oldest open PR was fetched, only when over 3 minutes", () => {
