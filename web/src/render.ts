@@ -1,4 +1,4 @@
-// The "flow" receiver face as HTML strings: a header strip, the Session channels with their
+// The "flow" receiver face, flat, as HTML strings: a header strip, the Session channels with their
 // Stacks as plates of PR strips, the window showing the selected PR, and the legend behind `h`.
 import { age, attentionLight, isFolded } from "./model.ts";
 import type { Light, PrView, ReviewLight, SessionView } from "./model.ts";
@@ -137,7 +137,7 @@ const EMPTY = `<header class="whead">
 /** The status label and how long the Session has had it: "waiting for you, 31 min". */
 const statusTip = (v: SessionView) => (v.status.since ? `${v.status.tip}, ${age(v.status.since)}` : v.status.tip);
 
-/** The round push key: its lens carries the status lamp; raised while folded, pressed in while open. */
+/** The square push key: it carries the status lamp; an outline while folded, filled while open. */
 const key = (v: SessionView, folded: boolean) =>
   `<button type="button" class="skey${folded ? " up" : ""}" data-toggle="${esc(v.id)}" aria-expanded="${!folded}" title="${esc(statusTip(v))}" aria-label="${folded ? "Expand" : "Collapse"} session: ${esc(v.title)} (${esc(statusTip(v))})"><span>${lamp(v.status)}</span></button>`;
 
@@ -174,6 +174,9 @@ function channel(v: SessionView, toggled: Set<string>, url: string | null): stri
     </section>`;
 }
 
+/** The wordmark from the brand kit, on light, 24px tall. */
+const WORDMARK = `<svg class="brand" width="45.45" height="24" viewBox="0 0 60.6 32" role="img" aria-label="flow"><defs><clipPath id="wx0"><rect x="0" y="12.2" width="60.6" height="15.0"/></clipPath></defs><g fill="none" stroke="#2A2927" stroke-width="3.2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="10"><path d="M8.6 27.2 V11.4 C8.6 8.1 10.5 6.3 13.7 6.3 H16.2"/><path d="M20.4 4.7 V27.2"/><ellipse cx="31.1" cy="19.75" rx="5.45" ry="6.05"/><path clip-path="url(#wx0)" d="M39.4 8 L44.3 29 L49 10 L53.7 29 L58.6 8"/></g><rect x="3.8" y="12.2" width="10.4" height="3.2" fill="#BF1B1B"/></svg>`;
+
 const LEGEND = `<div class="legend" role="note" aria-label="Legend">
     <div><span class="lh">lights</span>
       <span class="li act"><span class="lamp act"></span>needs action</span>
@@ -204,7 +207,7 @@ export function render(
   const p = t && views.flatMap((v) => v.prs).find((x) => x.url === t.url);
   return `<div class="face">
     <header class="top">
-      <b class="brand">flow</b><span class="tagline">agent sessions and pull requests</span>
+      ${WORDMARK}<span class="tagline">agent sessions and pull requests</span>
       <div class="controls">
         ${notices.length ? `<div class="notices" role="status">${notices.map((n) => `<span>${esc(n)}</span>`).join("")}</div>` : ""}
         <span class="hint" aria-hidden="true"><kbd>↑</kbd><kbd>↓</kbd><span>tune</span></span>
