@@ -256,7 +256,8 @@ button.hint kbd.down {
   background: var(--fine);
   border-color: var(--fine);
 }
-.node.branch {
+.node.branch,
+.node.draft {
   border-style: dashed;
   border-color: #8A8195;
   color: var(--ink2);
@@ -650,6 +651,9 @@ button.led:hover {
 .wline .node.closed {
   background: #6A6862;
   border-color: #6A6862;
+}
+.wline .node.draft {
+  border-color: var(--ro2);
 }
 .wline .node.none {
   border-color: var(--ro-fine);

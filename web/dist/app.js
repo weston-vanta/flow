@@ -245,6 +245,7 @@
   ];
   var NODE_WORD = { merged: "merged", closed: "closed", queued: "in merge queue", ready: "mergeable" };
   var gauge = (q) => `<span class="gauge" style="--at:${q.at}" aria-hidden="true"><span class="ahead"></span><span class="mark"></span></span>`;
+  var nodeClass = (p) => p.node === "open" && p.draft ? "open draft" : p.node;
   var nodeWord = (p) => p.node === "open" ? p.draft ? "draft" : "not yet mergeable" : NODE_WORD[p.node];
   var nodeCell = (j, n, node) => `<span class="ncell">${j > 0 ? '<span class="up"></span>' : ""}${j < n - 1 ? '<span class="down"></span>' : ""}${node}</span>`;
   var led = (p, col, label) => {
@@ -256,7 +257,7 @@
     return `<div class="strip pr${selected ? " sel" : ""}">
     <span class="needle" aria-hidden="true"></span>
     <button type="button" class="pick" data-open="${esc(p.url)}" title="${esc(`#${p.number} ${p.title} \xB7 ${word}`)}" aria-label="${esc(`Tune in #${p.number}, ${p.title}, ${word}`)}" aria-pressed="${selected}">
-      ${nodeCell(j, n, `<span class="node ${p.node}">${p.pos ?? ""}</span>`)}
+      ${nodeCell(j, n, `<span class="node ${nodeClass(p)}">${p.pos ?? ""}</span>`)}
       <span class="tline"><span class="title ${p.node}">${esc(p.title)}</span>${p.queue ? `<span class="queue" title="${esc(p.queue.text)}">${gauge(p.queue)}<span class="mono">${p.queue.label}</span></span>` : ""}</span>
     </button>
     ${COLUMNS.map(([col, label]) => led(p, col, label)).join("")}
@@ -307,7 +308,7 @@
     }).join("");
     return `<header class="whead">
       <div class="wline">
-        <span class="node ${p.node}" title="${esc(word)}" aria-hidden="true"></span>
+        <span class="node ${nodeClass(p)}" title="${esc(word)}" aria-hidden="true"></span>
         ${ext(p.url, "num mono", `Open #${p.number} on GitHub`, `#${p.number}`)}
         <span>${word}</span>
         <span class="wsize mono">${esc(p.sizeTip)}</span>
@@ -356,11 +357,11 @@
       <span class="li"><span class="count">2</span>pending reviews</span>
     </div>
     <div><span class="lh">pull requests</span>
-      <span class="li"><span class="node key open"></span>open or draft</span>
+      <span class="li"><span class="node key open"></span>open</span>
       <span class="li"><span class="node key ready"></span>mergeable</span>
       <span class="li"><span class="node key queued"></span>in merge queue</span>
       <span class="li"><span class="node key merged"></span>merged</span>
-      <span class="li"><span class="node key branch"></span>branch with no PR</span>
+      <span class="li"><span class="node key branch"></span>draft, or branch with no PR</span>
     </div>
   </div>`;
   function render(views, toggled2, notices, live, legend2, t) {

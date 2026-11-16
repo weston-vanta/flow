@@ -36,6 +36,8 @@ const NODE_WORD = { merged: "merged", closed: "closed", queued: "in merge queue"
  * ahead of the PR drawn darker and an amber mark at its place. */
 const gauge = (q: NonNullable<PrView["queue"]>) =>
   `<span class="gauge" style="--at:${q.at}" aria-hidden="true"><span class="ahead"></span><span class="mark"></span></span>`;
+/** The node's classes: its state, and a draft PR drawn dashed like a Branch with no PR. */
+const nodeClass = (p: PrView) => (p.node === "open" && p.draft ? "open draft" : p.node);
 const nodeWord = (p: PrView) => (p.node === "open" ? (p.draft ? "draft" : "not yet mergeable") : NODE_WORD[p.node]);
 
 /** The node column: the line joining a strip to its neighbours in the Stack, and its node. */
@@ -53,7 +55,7 @@ function strip(p: PrView, j: number, n: number, selected: boolean): string {
   return `<div class="strip pr${selected ? " sel" : ""}">
     <span class="needle" aria-hidden="true"></span>
     <button type="button" class="pick" data-open="${esc(p.url)}" title="${esc(`#${p.number} ${p.title} · ${word}`)}" aria-label="${esc(`Tune in #${p.number}, ${p.title}, ${word}`)}" aria-pressed="${selected}">
-      ${nodeCell(j, n, `<span class="node ${p.node}">${p.pos ?? ""}</span>`)}
+      ${nodeCell(j, n, `<span class="node ${nodeClass(p)}">${p.pos ?? ""}</span>`)}
       <span class="tline"><span class="title ${p.node}">${esc(p.title)}</span>${
         p.queue ? `<span class="queue" title="${esc(p.queue.text)}">${gauge(p.queue)}<span class="mono">${p.queue.label}</span></span>` : ""
       }</span>
@@ -117,7 +119,7 @@ function tray(p: PrView, t: TrayState): string {
   }).join("");
   return `<header class="whead">
       <div class="wline">
-        <span class="node ${p.node}" title="${esc(word)}" aria-hidden="true"></span>
+        <span class="node ${nodeClass(p)}" title="${esc(word)}" aria-hidden="true"></span>
         ${ext(p.url, "num mono", `Open #${p.number} on GitHub`, `#${p.number}`)}
         <span>${word}</span>
         <span class="wsize mono">${esc(p.sizeTip)}</span>
@@ -185,11 +187,11 @@ const LEGEND = `<div class="legend" role="note" aria-label="Legend">
       <span class="li"><span class="count">2</span>pending reviews</span>
     </div>
     <div><span class="lh">pull requests</span>
-      <span class="li"><span class="node key open"></span>open or draft</span>
+      <span class="li"><span class="node key open"></span>open</span>
       <span class="li"><span class="node key ready"></span>mergeable</span>
       <span class="li"><span class="node key queued"></span>in merge queue</span>
       <span class="li"><span class="node key merged"></span>merged</span>
-      <span class="li"><span class="node key branch"></span>branch with no PR</span>
+      <span class="li"><span class="node key branch"></span>draft, or branch with no PR</span>
     </div>
   </div>`;
 
