@@ -1,6 +1,7 @@
 {"data": {
   "repo": {
     "mergeQueue": {"entries": {"totalCount": 214}},
+    "defaultBranch": null,
     "p3": {
       "number": 3, "mergeQueueEntry": {"position": 37}, "url": "https://github.com/acme/gadgets/pull/3", "title": "Gadget tweaks",
       "state": "OPEN", "isDraft": true, "headRefName": "feat/g", "headRefOid": "fedcba9876543210fedcba9876543210fedcba98",

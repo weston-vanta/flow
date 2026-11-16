@@ -225,6 +225,29 @@ fn a_queued_pr_has_its_merge_queue_position_and_size_and_is_never_behind() {
 }
 
 #[test]
+fn a_stacked_prs_checks_are_those_its_default_branch_requires() {
+    let ts = TestStore::new();
+    let log = fake_gh(&ts, &search_ok(), &gadgets_ok());
+    let mut flowd = ts.flowd();
+    flowd.wait_for_line(CYCLE);
+
+    let calls = calls(&log);
+    assert!(
+        calls.contains(r#"defaultBranch: ref(qualifiedName: "refs/heads/main")"#),
+        "{calls}"
+    );
+    // #8 is based on `feat/x`, which requires nothing; `main` requires `build`, not
+    // `ci/optional`.
+    let stacked = pr_get(&ts, "acme/widgets#8");
+    assert_eq!(stacked["github"]["baseRefName"], "feat/x");
+    assert_eq!(
+        stacked["github"]["checks"],
+        json!([{"name": "build", "status": "COMPLETED", "conclusion": "FAILURE",
+                "url": "https://github.com/acme/widgets/actions/runs/3/job/200"}])
+    );
+}
+
+#[test]
 fn the_default_branch_is_looked_up_once_per_repo_not_once_per_poll() {
     let ts = TestStore::new();
     let log = fake_gh(&ts, &search_ok(), &gadgets_ok());

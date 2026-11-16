@@ -1,6 +1,12 @@
 {"data": {
   "repo": {
     "mergeQueue": {"entries": {"totalCount": 6}},
+    "defaultBranch": {"rules": {"nodes": [
+      {"parameters": {}},
+      {"parameters": {"requiredStatusChecks": [{"context": "build"}, {"context": "ci/legacy"}]}},
+      {"parameters": null},
+      {"parameters": {"requiredStatusChecks": [{"context": "security"}, {"context": "test"}]}}
+    ]}},
     "p7": {
       "number": 7, "mergeQueueEntry": null, "url": "https://github.com/acme/widgets/pull/7", "title": "[ABC-123] Add widgets",
       "state": "OPEN", "isDraft": false, "headRefName": "feat/x", "headRefOid": "0123456789abcdef0123456789abcdef01234567",
@@ -37,10 +43,10 @@
       "statusCheckRollup": {"contexts": {
         "pageInfo": {"hasNextPage": true, "endCursor": "Y3Vyc29yOjEwMA=="},
         "nodes": [
-          {"__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "FAILURE", "databaseId": 100, "detailsUrl": "https://github.com/acme/widgets/actions/runs/1/job/100", "isRequired": true},
-          {"__typename": "CheckRun", "name": "lint", "status": "COMPLETED", "conclusion": "CANCELLED", "databaseId": 101, "detailsUrl": "https://github.com/acme/widgets/actions/runs/1/job/101", "isRequired": false},
-          {"__typename": "StatusContext", "context": "ci/legacy", "state": "PENDING", "targetUrl": "https://ci.example.com/acme/widgets/7", "isRequired": true},
-          {"__typename": "StatusContext", "context": "ci/optional", "state": "FAILURE", "targetUrl": null, "isRequired": false}
+          {"__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "FAILURE", "databaseId": 100, "detailsUrl": "https://github.com/acme/widgets/actions/runs/1/job/100"},
+          {"__typename": "CheckRun", "name": "lint", "status": "COMPLETED", "conclusion": "CANCELLED", "databaseId": 101, "detailsUrl": "https://github.com/acme/widgets/actions/runs/1/job/101"},
+          {"__typename": "StatusContext", "context": "ci/legacy", "state": "PENDING", "targetUrl": "https://ci.example.com/acme/widgets/7"},
+          {"__typename": "StatusContext", "context": "ci/optional", "state": "FAILURE", "targetUrl": null}
         ]
       }}
     },
@@ -56,7 +62,13 @@
       "headRef": {"compare": {"aheadBy": 3, "commits": {"nodes": [
         {"committedDate": "2026-11-09T04:00:00Z", "associatedPullRequests": {"nodes": [{"mergedAt": "2026-11-09T08:30:00Z"}]}}
       ]}}},
-      "statusCheckRollup": null
+      "statusCheckRollup": {"contexts": {
+        "pageInfo": {"hasNextPage": false, "endCursor": null},
+        "nodes": [
+          {"__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "FAILURE", "databaseId": 200, "detailsUrl": "https://github.com/acme/widgets/actions/runs/3/job/200"},
+          {"__typename": "StatusContext", "context": "ci/optional", "state": "FAILURE", "targetUrl": null}
+        ]
+      }}
     },
     "p5": {
       "number": 5, "mergeQueueEntry": null, "url": "https://github.com/acme/widgets/pull/5", "title": "Widget base",

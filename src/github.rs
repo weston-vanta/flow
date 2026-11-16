@@ -6,9 +6,10 @@
 //! PR whose `updatedAt` differs from the stored one, in per-repo batches of at most
 //! [`BATCH`] PRs, [`PARALLEL`] batches at a time. A batch that fails writes nothing.
 //! Detail compares each PR's head with its repository's default branch, whose name is looked
-//! up once per repository and kept in [`DefaultBranches`].
+//! up once per repository and kept in [`DefaultBranches`]. A PR's required checks are those
+//! the default branch's rulesets name, also for a PR based on another branch.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::thread;
@@ -394,24 +395,56 @@ enum Context {
         conclusion: Option<String>,
         database_id: Option<u64>,
         details_url: Option<String>,
-        is_required: bool,
     },
     StatusContext {
         context: String,
         state: String,
         target_url: Option<String>,
-        is_required: bool,
     },
 }
 
-/// The check-context selection for PR `number`, from the page after `after`.
-fn contexts(number: u64, after: Option<&str>) -> String {
+/// The check-context selection, from the page after `after`.
+fn contexts(after: Option<&str>) -> String {
     format!(
         "statusCheckRollup {{ contexts(first: 100{}) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ __typename \
-         ... on CheckRun {{ name status conclusion databaseId detailsUrl isRequired(pullRequestNumber: {number}) }} \
-         ... on StatusContext {{ context state targetUrl isRequired(pullRequestNumber: {number}) }} }} }} }}",
+         ... on CheckRun {{ name status conclusion databaseId detailsUrl }} \
+         ... on StatusContext {{ context state targetUrl }} }} }} }}",
         after_arg(after)
     )
+}
+
+/// The selection of the status checks `default_branch`'s rulesets require.
+fn required(default_branch: &str) -> String {
+    format!(
+        "defaultBranch: ref(qualifiedName: {}) {{ rules(first: 100) {{ nodes {{ parameters {{ \
+         ... on RequiredStatusChecksParameters {{ requiredStatusChecks {{ context }} }} }} }} }} }} ",
+        literal(&format!("refs/heads/{default_branch}"))
+    )
+}
+
+/// A branch, as far as its rules are asked for.
+#[derive(Deserialize)]
+struct RuledRef {
+    rules: Connection<Rule>,
+}
+
+#[derive(Deserialize)]
+struct Rule {
+    parameters: Option<RuleParameters>,
+}
+
+/// A rule's parameters; only a `REQUIRED_STATUS_CHECKS` rule's are asked for, so any other
+/// rule's are empty.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RuleParameters {
+    #[serde(default)]
+    required_status_checks: Vec<RequiredCheck>,
+}
+
+#[derive(Deserialize)]
+struct RequiredCheck {
+    context: String,
 }
 
 /// Fetches PRs `numbers` of `repo` in one query, pages through their check contexts, and
@@ -438,18 +471,27 @@ fn write_batch(
     };
     // Only a PR based on the default branch can be queued, so only its queue is asked about.
     let mut selections = format!(
-        "mergeQueue(branch: {}) {{ entries {{ totalCount }} }} ",
-        literal(&default_branch)
+        "mergeQueue(branch: {}) {{ entries {{ totalCount }} }} {}",
+        literal(&default_branch),
+        required(&default_branch)
     );
     for n in numbers {
         selections += &format!(
             "p{n}: pullRequest(number: {n}) {{ {PR_FIELDS} {compare} {} }} ",
-            contexts(*n, None)
+            contexts(None)
         );
     }
     let data = gh.query(&in_repo(selections))?;
     let queue: Option<Queue> = field(&data, &["repo", "mergeQueue"])?;
     let queue_size = queue.map(|queue| queue.entries.total_count);
+    let ruled: Option<RuledRef> = field(&data, &["repo", "defaultBranch"])?;
+    let required: HashSet<String> = ruled
+        .into_iter()
+        .flat_map(|branch| branch.rules.nodes)
+        .filter_map(|rule| rule.parameters)
+        .flat_map(|parameters| parameters.required_status_checks)
+        .map(|check| check.context)
+        .collect();
     let mut prs: Vec<RawPr> = numbers
         .iter()
         .map(|n| field(&data, &["repo", &format!("p{n}")]))
@@ -463,7 +505,7 @@ fn write_batch(
                 page.has_next_page.then(|| {
                     format!(
                         "p{n}: pullRequest(number: {n}) {{ {} }} ",
-                        contexts(pr.number, page.end_cursor.as_deref()),
+                        contexts(page.end_cursor.as_deref()),
                         n = pr.number
                     )
                 })
@@ -496,7 +538,7 @@ fn write_batch(
 
     let githubs: Vec<Github> = prs
         .into_iter()
-        .map(|raw| github(repo, &default_branch, queue_size, raw))
+        .map(|raw| github(repo, &default_branch, queue_size, &required, raw))
         .collect();
     for github in &githubs {
         let key = pr::key(repo, github.number);
@@ -512,7 +554,14 @@ fn write_batch(
 }
 
 /// `queue_size` is the size of `repo`'s merge queue for `default_branch`, `None` if it has none.
-fn github(repo: &str, default_branch: &str, queue_size: Option<u64>, raw: RawPr) -> Github {
+/// `required` names the status checks `default_branch`'s rulesets require.
+fn github(
+    repo: &str,
+    default_branch: &str,
+    queue_size: Option<u64>,
+    required: &HashSet<String>,
+    raw: RawPr,
+) -> Github {
     let contexts = raw
         .status_check_rollup
         .map(|rollup| rollup.contexts.nodes)
@@ -591,7 +640,7 @@ fn github(repo: &str, default_branch: &str, queue_size: Option<u64>, raw: RawPr)
                     .collect(),
             })
             .collect(),
-        checks: required_checks(contexts),
+        checks: required_checks(required, contexts),
         stack: raw.stack_entry.map(|entry| StackPosition {
             number: entry.stack.number,
             position: entry.position,
@@ -622,11 +671,11 @@ fn github(repo: &str, default_branch: &str, queue_size: Option<u64>, raw: RawPr)
     }
 }
 
-/// The required checks among `contexts`, one per name (the rerun GitHub created last), ordered
-/// by name. A commit status is mapped onto a check run's fields: `PENDING` and `EXPECTED`
-/// become the status with no conclusion; any other state is the conclusion of a `COMPLETED`
-/// status.
-fn required_checks(contexts: Vec<Context>) -> Vec<Check> {
+/// The checks among `contexts` named in `required`, one per name (the rerun GitHub created
+/// last), ordered by name. A commit status is mapped onto a check run's fields: `PENDING` and
+/// `EXPECTED` become the status with no conclusion; any other state is the conclusion of a
+/// `COMPLETED` status.
+fn required_checks(required: &HashSet<String>, contexts: Vec<Context>) -> Vec<Check> {
     let mut latest: BTreeMap<String, (u64, Check)> = BTreeMap::new();
     for context in contexts {
         let (rank, check) = match context {
@@ -636,7 +685,6 @@ fn required_checks(contexts: Vec<Context>) -> Vec<Check> {
                 conclusion,
                 database_id,
                 details_url,
-                is_required: true,
             } => (
                 database_id.unwrap_or(0),
                 Check {
@@ -650,7 +698,6 @@ fn required_checks(contexts: Vec<Context>) -> Vec<Check> {
                 context,
                 state,
                 target_url,
-                is_required: true,
             } => {
                 let pending = matches!(state.as_str(), "PENDING" | "EXPECTED");
                 let check = Check {
@@ -665,8 +712,10 @@ fn required_checks(contexts: Vec<Context>) -> Vec<Check> {
                 };
                 (0, check)
             }
-            _ => continue,
         };
+        if !required.contains(&check.name) {
+            continue;
+        }
         match latest.get(&check.name) {
             Some((kept, _)) if *kept > rank => {}
             _ => {
