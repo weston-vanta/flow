@@ -67,15 +67,21 @@
     const review = reviewLight(g);
     const lamps = [base, ci, feedback, review];
     const open = g.state === "OPEN";
-    const ready = open && !g.isDraft && review.count == null && lamps.every((l) => l.lamp === "fine");
+    const q = open ? g.mergeQueue : null;
+    const ready = !q && open && !g.isDraft && review.count == null && lamps.every((l) => l.lamp === "fine");
     return {
       pos,
       url: g.url,
       number: g.number,
       title: g.title,
       sizeTip: `${g.changedFiles} file${g.changedFiles === 1 ? "" : "s"}, +${g.additions} \u2212${g.deletions}`,
-      node: g.state === "MERGED" ? "merged" : g.state === "CLOSED" ? "closed" : ready ? "ready" : "open",
+      node: g.state === "MERGED" ? "merged" : g.state === "CLOSED" ? "closed" : q ? "queued" : ready ? "ready" : "open",
       draft: g.isDraft,
+      queue: q && {
+        label: `${q.position}/${q.size}`,
+        text: `in merge queue \xB7 ${q.position} of ${q.size}`,
+        at: q.size > 1 ? Math.min(Math.max((q.position - 1) / (q.size - 1), 0), 1) : 0
+      },
       base,
       ci,
       feedback,
@@ -237,7 +243,8 @@
     ["feedback", "feedback"],
     ["review", "review"]
   ];
-  var NODE_WORD = { merged: "merged", closed: "closed", ready: "mergeable" };
+  var NODE_WORD = { merged: "merged", closed: "closed", queued: "in merge queue", ready: "mergeable" };
+  var gauge = (q) => `<span class="gauge" style="--at:${q.at}" aria-hidden="true"><span class="ahead"></span><span class="mark"></span></span>`;
   var nodeWord = (p) => p.node === "open" ? p.draft ? "draft" : "not yet mergeable" : NODE_WORD[p.node];
   var nodeCell = (j, n, node) => `<span class="ncell">${j > 0 ? '<span class="up"></span>' : ""}${j < n - 1 ? '<span class="down"></span>' : ""}${node}</span>`;
   var led = (p, col, label) => {
@@ -250,7 +257,7 @@
     <span class="needle" aria-hidden="true"></span>
     <button type="button" class="pick" data-open="${esc(p.url)}" title="${esc(`#${p.number} ${p.title} \xB7 ${word}`)}" aria-label="${esc(`Tune in #${p.number}, ${p.title}, ${word}`)}" aria-pressed="${selected}">
       ${nodeCell(j, n, `<span class="node ${p.node}">${p.pos ?? ""}</span>`)}
-      <span class="title ${p.node}">${esc(p.title)}</span>
+      <span class="tline"><span class="title ${p.node}">${esc(p.title)}</span>${p.queue ? `<span class="queue" title="${esc(p.queue.text)}">${gauge(p.queue)}<span class="mono">${p.queue.label}</span></span>` : ""}</span>
     </button>
     ${COLUMNS.map(([col, label]) => led(p, col, label)).join("")}
   </div>`;
@@ -307,6 +314,7 @@
         ${CLOSE}
       </div>
       <h2>${esc(p.title)}</h2>
+      ${p.queue ? `<div class="wqueue">${gauge(p.queue)}<span>${esc(p.queue.text)}</span></div>` : ""}
     </header>${sections}`;
   }
   var EMPTY = `<header class="whead">
@@ -349,6 +357,7 @@
     <div><span class="lh">pull requests</span>
       <span class="li"><span class="node key open"></span>open or draft</span>
       <span class="li"><span class="node key ready"></span>mergeable</span>
+      <span class="li"><span class="node key queued"></span>in merge queue</span>
       <span class="li"><span class="node key merged"></span>merged</span>
       <span class="li"><span class="node key branch"></span>branch with no PR</span>
     </div>

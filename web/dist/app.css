@@ -228,6 +228,48 @@ button.hint kbd.down {
   border-color: var(--go);
   color: var(--white);
 }
+.node.queued {
+  border-color: var(--amber);
+  animation: pulse 2s ease-out infinite;
+}
+.node.key.queued {
+  background: transparent;
+  animation: none;
+}
+.gauge {
+  position: relative;
+  flex: none;
+  width: 40px;
+  height: 10px;
+  --track:#CFC9BE;
+  --ahead:#8C8981;
+}
+.gauge::before,
+.gauge .ahead {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 4px;
+  height: 2px;
+  border-radius: 1px;
+}
+.gauge::before {
+  right: 0;
+  background: var(--track);
+}
+.gauge .ahead {
+  width: calc(var(--at)*100%);
+  background: var(--ahead);
+}
+.gauge .mark {
+  position: absolute;
+  top: 0;
+  left: calc(var(--at)*(100% - 2px));
+  width: 2px;
+  height: 10px;
+  border-radius: 1px;
+  background: var(--amber);
+}
 .node.merged,
 .node.closed {
   background: var(--fine);
@@ -496,6 +538,21 @@ button.pick:hover .node {
   top: 50%;
   bottom: 0;
 }
+.tline {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.queue {
+  flex: none;
+  margin: 0 12px 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  line-height: 14px;
+  color: var(--ink2);
+}
 .title {
   min-width: 0;
   padding: 0 12px 0 2px;
@@ -614,6 +671,22 @@ button.led:hover {
   background: var(--go);
   border-color: var(--go);
   box-shadow: 0 0 0 3px rgba(115, 107, 30, .18), 0 0 10px rgba(115, 107, 30, .5);
+}
+.wline .node.queued {
+  border-color: var(--amber);
+}
+.wqueue {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--ro2);
+}
+.wqueue .gauge {
+  width: 64px;
+  --track:#4A4844;
+  --ahead:var(--ro2);
 }
 .wline .node.merged,
 .wline .node.closed {

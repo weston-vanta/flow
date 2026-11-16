@@ -72,6 +72,8 @@ export interface Github {
   threads: Thread[];
   /** When the oldest default-branch commit the head lacks landed; null unless open and behind. */
   behindSince: string | null;
+  /** Its place in its repository's merge queue (1 merges next); null unless queued. */
+  mergeQueue: { position: number; size: number } | null;
 }
 
 export interface Pr {
@@ -109,9 +111,13 @@ export interface PrView {
   title: string;
   /** `3 files, +500 −40`. */
   sizeTip: string;
-  /** ready: mergeable (open, not a draft, all four columns fine). */
-  node: "merged" | "closed" | "ready" | "open";
+  /** ready: mergeable (open, not a draft, all four columns fine). queued: open and in the
+   * merge queue, so never ready. */
+  node: "merged" | "closed" | "queued" | "ready" | "open";
   draft: boolean;
+  /** An open PR's place in the merge queue: `37/214`, `in merge queue · 37 of 214`, and the
+   * needle's place on the gauge, 0 at the front to 1 at the back. Null unless queued. */
+  queue: { label: string; text: string; at: number } | null;
   base: Light;
   ci: Light;
   feedback: Light;
@@ -227,15 +233,21 @@ export function prView(g: Github, pos: number | null, below: number | null = nul
   const review = reviewLight(g);
   const lamps = [base, ci, feedback, review];
   const open = g.state === "OPEN";
-  const ready = open && !g.isDraft && review.count == null && lamps.every((l) => l.lamp === "fine");
+  const q = open ? g.mergeQueue : null;
+  const ready = !q && open && !g.isDraft && review.count == null && lamps.every((l) => l.lamp === "fine");
   return {
     pos,
     url: g.url,
     number: g.number,
     title: g.title,
     sizeTip: `${g.changedFiles} file${g.changedFiles === 1 ? "" : "s"}, +${g.additions} −${g.deletions}`,
-    node: g.state === "MERGED" ? "merged" : g.state === "CLOSED" ? "closed" : ready ? "ready" : "open",
+    node: g.state === "MERGED" ? "merged" : g.state === "CLOSED" ? "closed" : q ? "queued" : ready ? "ready" : "open",
     draft: g.isDraft,
+    queue: q && {
+      label: `${q.position}/${q.size}`,
+      text: `in merge queue · ${q.position} of ${q.size}`,
+      at: q.size > 1 ? Math.min(Math.max((q.position - 1) / (q.size - 1), 0), 1) : 0,
+    },
     base,
     ci,
     feedback,
