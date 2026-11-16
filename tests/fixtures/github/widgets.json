@@ -1,7 +1,8 @@
 {"data": {
   "repo": {
+    "mergeQueue": {"entries": {"totalCount": 6}},
     "p7": {
-      "number": 7, "url": "https://github.com/acme/widgets/pull/7", "title": "[ABC-123] Add widgets",
+      "number": 7, "mergeQueueEntry": null, "url": "https://github.com/acme/widgets/pull/7", "title": "[ABC-123] Add widgets",
       "state": "OPEN", "isDraft": false, "headRefName": "feat/x", "headRefOid": "0123456789abcdef0123456789abcdef01234567",
       "baseRefName": "main", "mergeable": "MERGEABLE", "reviewDecision": "REVIEW_REQUIRED",
       "updatedAt": "2026-11-10T11:00:00Z", "additions": 120, "deletions": 4, "changedFiles": 6,
@@ -44,7 +45,7 @@
       }}
     },
     "p8": {
-      "number": 8, "url": "https://github.com/acme/widgets/pull/8", "title": "[ABC-124] Polish widgets",
+      "number": 8, "mergeQueueEntry": null, "url": "https://github.com/acme/widgets/pull/8", "title": "[ABC-124] Polish widgets",
       "state": "OPEN", "isDraft": false, "headRefName": "feat/y", "headRefOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "baseRefName": "feat/x", "mergeable": "MERGEABLE", "reviewDecision": "REVIEW_REQUIRED",
       "updatedAt": "2026-11-10T11:30:00Z", "additions": 8, "deletions": 2, "changedFiles": 2,
@@ -58,7 +59,7 @@
       "statusCheckRollup": null
     },
     "p5": {
-      "number": 5, "url": "https://github.com/acme/widgets/pull/5", "title": "Widget base",
+      "number": 5, "mergeQueueEntry": null, "url": "https://github.com/acme/widgets/pull/5", "title": "Widget base",
       "state": "MERGED", "isDraft": false, "headRefName": "feat/base", "headRefOid": "89abcdef0123456789abcdef0123456789abcdef",
       "baseRefName": "main", "mergeable": "UNKNOWN", "reviewDecision": "APPROVED",
       "updatedAt": "2026-11-01T09:00:00Z", "additions": 30, "deletions": 0, "changedFiles": 3,

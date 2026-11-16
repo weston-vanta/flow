@@ -20,7 +20,9 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::pr::{self, Check, Github, PrState, Review, ReviewRequest, StackPosition, Thread};
+use crate::pr::{
+    self, Check, Github, MergeQueue, PrState, Review, ReviewRequest, StackPosition, Thread,
+};
 use crate::store::Store;
 
 /// How often `flowd` polls.
@@ -227,6 +229,7 @@ fn discover(gh: &Gh) -> Result<Vec<Found>> {
 /// The PR fields fetched in detail, other than check contexts and the default-branch compare.
 const PR_FIELDS: &str = "number url title state isDraft headRefName headRefOid baseRefName \
     mergeable reviewDecision updatedAt additions deletions changedFiles stackEntry { position stack { number } } \
+    mergeQueueEntry { position } \
     reviewRequests(first: 20) { nodes { asCodeOwner requestedReviewer { ... on User { login } ... on Bot { login } ... on Mannequin { login } ... on Team { slug } } } } \
     latestOpinionatedReviews(first: 20, writersOnly: true) { nodes { author { login } state onBehalfOf(first: 5) { nodes { slug } } } } \
     reviewThreads(first: 100) { nodes { isResolved isOutdated path line comments(first: 1) { nodes { author { login } bodyText url createdAt } } } }";
@@ -260,11 +263,29 @@ struct RawPr {
     deletions: u64,
     changed_files: u64,
     stack_entry: Option<StackEntry>,
+    merge_queue_entry: Option<QueueEntry>,
     review_requests: Connection<RequestNode>,
     latest_opinionated_reviews: Connection<RawReview>,
     review_threads: Connection<RawThread>,
     head_ref: Option<HeadRef>,
     status_check_rollup: Option<Rollup>,
+}
+
+#[derive(Deserialize)]
+struct QueueEntry {
+    position: u64,
+}
+
+/// A repository's merge queue for one branch: only its size is asked for.
+#[derive(Deserialize)]
+struct Queue {
+    entries: Count,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Count {
+    total_count: u64,
 }
 
 #[derive(Deserialize)]
@@ -415,16 +436,20 @@ fn write_batch(
             literal(name)
         )
     };
-    let selections: String = numbers
-        .iter()
-        .map(|n| {
-            format!(
-                "p{n}: pullRequest(number: {n}) {{ {PR_FIELDS} {compare} {} }} ",
-                contexts(*n, None)
-            )
-        })
-        .collect();
+    // Only a PR based on the default branch can be queued, so only its queue is asked about.
+    let mut selections = format!(
+        "mergeQueue(branch: {}) {{ entries {{ totalCount }} }} ",
+        literal(&default_branch)
+    );
+    for n in numbers {
+        selections += &format!(
+            "p{n}: pullRequest(number: {n}) {{ {PR_FIELDS} {compare} {} }} ",
+            contexts(*n, None)
+        );
+    }
     let data = gh.query(&in_repo(selections))?;
+    let queue: Option<Queue> = field(&data, &["repo", "mergeQueue"])?;
+    let queue_size = queue.map(|queue| queue.entries.total_count);
     let mut prs: Vec<RawPr> = numbers
         .iter()
         .map(|n| field(&data, &["repo", &format!("p{n}")]))
@@ -471,7 +496,7 @@ fn write_batch(
 
     let githubs: Vec<Github> = prs
         .into_iter()
-        .map(|raw| github(repo, &default_branch, raw))
+        .map(|raw| github(repo, &default_branch, queue_size, raw))
         .collect();
     for github in &githubs {
         let key = pr::key(repo, github.number);
@@ -486,18 +511,28 @@ fn write_batch(
     Ok(githubs.len())
 }
 
-fn github(repo: &str, default_branch: &str, raw: RawPr) -> Github {
+/// `queue_size` is the size of `repo`'s merge queue for `default_branch`, `None` if it has none.
+fn github(repo: &str, default_branch: &str, queue_size: Option<u64>, raw: RawPr) -> Github {
     let contexts = raw
         .status_check_rollup
         .map(|rollup| rollup.contexts.nodes)
         .unwrap_or_default();
+    let merge_queue = raw
+        .merge_queue_entry
+        .zip(queue_size)
+        .map(|(entry, size)| MergeQueue {
+            position: entry.position,
+            size,
+        });
     // When the oldest commit the head lacks landed: its PR's merge, as a merge queue commits
     // hours before landing, else its commit date. Past 1,000 commits behind GitHub lists only
-    // the newest 1,000, so this is then an upper bound.
+    // the newest 1,000, so this is then an upper bound. A queued PR is never behind: the
+    // queue tests it against the latest default branch.
     let behind_since = raw
         .head_ref
         .and_then(|head| head.compare)
         .filter(|_| raw.state == PrState::Open && raw.base_ref_name == default_branch)
+        .filter(|_| merge_queue.is_none())
         .filter(|compare| compare.ahead_by > 0)
         .and_then(|compare| compare.commits.nodes.into_iter().next())
         .map(|commit| {
@@ -583,6 +618,7 @@ fn github(repo: &str, default_branch: &str, raw: RawPr) -> Github {
             })
             .collect(),
         behind_since,
+        merge_queue,
     }
 }
 
