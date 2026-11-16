@@ -25,11 +25,11 @@ A Session the Director uses to delegate Tasks to ICs and to report on them. It n
 _Avoid_: supervisor, coordinator, orchestrator, lead
 
 **IC**:
-The Session that owns one Task through to its deliverable: it aligns with the Director, plans, dispatches Builders and Reviewers, and owns the resulting PRs. It never touches code itself. A role, not a kind of Session.
+A Session on a Task that owns it through to its deliverable: it aligns with the Director, plans, dispatches Builders and Reviewers, and owns the resulting PRs. It never touches code itself. A role, not a kind of Session.
 _Avoid_: worker, agent, implementer
 
 **Task**:
-One piece of work the Director delegates through a Manager, from its brief to its deliverable: PRs, a spec, or an answer. Each Task has one IC.
+One piece of work the Director delegates through a Manager, from its brief to its deliverable: PRs, a spec, or an answer. Identified by its slug. A Task is the Sessions that joined it, usually one IC at a time; its Branches and PRs are the ones those Sessions own. A Session is on at most one Task, and only by joining it explicitly: `/clear` leaves the new Session on none. A Task is listed while any of its Sessions is. It can point at any number of Resources.
 _Avoid_: job, ticket, work item, assignment
 
 **Builder**:
@@ -69,6 +69,14 @@ _Avoid_: summary, recap, status
 **PR**:
 One GitHub pull request, identified by its repository and number. Only PRs a Session owns are shown.
 _Avoid_: pull, change, diff
+
+**Jira issue**:
+One issue in Jira, identified by its key (such as `ABC-123`). An epic is a Jira issue like any other. flow knows a Jira issue only as the one a Branch implements: each Branch has at most one. A Jira issue a Task points at (its Source, an epic) is just a Resource. flow never changes Jira issues in Jira.
+_Avoid_: ticket, card, story
+
+**Resource**:
+Something outside flow that a Task points at, such as a Jira issue, a doc or an Explainer, identified by its URL.
+_Avoid_: link, attachment, external record, reference
 
 **Feedback**:
 A PR's review threads that are unresolved and not outdated: what is still left to address. Resolved threads, threads on code that has since changed, top-level comments and review bodies are not feedback.
