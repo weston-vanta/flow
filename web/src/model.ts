@@ -177,12 +177,19 @@ export interface SessionView {
   repo: string | null;
   cde: string | null;
   activity: string | null;
-  /** The Session's Stacks, oldest first, each bottom first. */
-  stacks: PrView[][];
-  /** The PRs of `stacks`, flattened in the same order. */
+  /** The Session's Stacks and Branches with no PR, as drawn. */
+  groups: Group[];
+  /** The PRs of `groups`, flattened in the order they are drawn. */
   prs: PrView[];
-  /** The Session's Branches that head no PR, oldest worktree first. */
-  branches: BranchView[];
+}
+
+/** What the rack draws as one unit. An ordinary Stack has a null `head` and is the one entry
+ * of `stacks`. A Branch with no PR is its BranchView with no `stacks`. A Feature branch is its feature
+ * PR, or its name before that PR exists, with the Stacks its owner based on it, oldest bottom
+ * PR first. */
+export interface Group {
+  head: PrView | BranchView | null;
+  stacks: PrView[][];
 }
 
 const FAILING = new Set([
@@ -427,7 +434,7 @@ export function trayView(g: Github, below: number | null = null, now = Date.now(
         ? "approved"
         : "not required";
   return {
-    base: section(baseProblems(g, below, now), below == null ? "no conflict, up to date" : "no conflict"),
+    base: section(baseProblems(g, below, now), below == null ? `no conflict, up to date with ${g.baseRefName}` : "no conflict"),
     ci: section(
       failingChecks(g).map((c) => ({ name: c.name, url: c.url })),
       running ? "running" : "passing",
@@ -481,15 +488,31 @@ export function sessionViews(sessions: Session[], prs: Pr[], branches: Branch[] 
   const done = (s: Session) => (s.status?.state === "done" ? 1 : 0);
   const started = (s: Session) => (s.origin ? Date.parse(s.origin.at) : -Infinity);
   const sorted = [...sessions].sort((a, b) => done(a) - done(b) || started(b) - started(a));
+  // Branches that are not the default branch: every PR's head and every listed Branch.
+  const named = new Set([...heads, ...branches.map((b) => b.key)]);
+  const head = (g: Github) => `${g.repo}:${g.headRefName}`;
+  const base = (g: Github) => `${g.repo}:${g.baseRefName}`;
   return sorted.map((s) => {
     const raw = stacksOf(s.id, prs);
-    const stacks = raw.map((stack) =>
+    const view = (stack: Github[]) =>
       stack.map((g, i) => {
         const below = stack.find((o) => o.headRefName === g.baseRefName)?.number ?? null;
         return prView(g, stack.length > 1 ? i + 1 : null, below, now, jiras.get(g.url) ?? null);
-      }),
-    );
+      });
+    /** The Session's Stacks based on the Branch `key`, as Feature-branch Stacks are. */
+    const on = (key: string) => raw.filter((st) => base(st[0]) === key).map(view);
     const own = loose.filter((b) => b.owner === s.id);
+    // A feature PR: a Stack of one based on the default branch, with Stacks based on its head.
+    const feature = new Set(raw.filter((st) => st.length === 1 && !named.has(base(st[0])) && on(head(st[0])).length).map((st) => head(st[0])));
+    const fbranches = new Set([...feature, ...own.map((b) => b.key)]);
+    const groups: Group[] = [
+      ...raw.flatMap((st): Group[] => {
+        if (fbranches.has(base(st[0]))) return [];
+        if (feature.has(head(st[0]))) return [{ head: view(st)[0], stacks: on(head(st[0])) }];
+        return [{ head: null, stacks: [view(st)] }];
+      }),
+      ...own.map((b) => ({ head: { name: b.branch, jira: jiraView(b.jira) }, stacks: on(b.key) })),
+    ];
     const state = s.status?.state ?? null;
     const cwd = s.origin?.cwd;
     const title = s.context?.title ?? null;
@@ -501,9 +524,8 @@ export function sessionViews(sessions: Session[], prs: Pr[], branches: Branch[] 
       repo: raw[0]?.[0].repo ?? own[0]?.repo ?? (cwd ? cwd.split("/").filter(Boolean).pop() ?? null : null),
       cde: s.origin?.cde ?? null,
       activity: activityLine(s),
-      stacks,
-      prs: stacks.flat(),
-      branches: own.map((b) => ({ name: b.branch, jira: jiraView(b.jira) })),
+      groups,
+      prs: groups.flatMap((g) => [...(g.head && !("name" in g.head) ? [g.head] : []), ...g.stacks.flat()]),
     };
   });
 }

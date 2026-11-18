@@ -11,6 +11,7 @@ use crate::cde;
 use crate::services::STORE_ERROR_HELP;
 use crate::session;
 use crate::store::Store;
+use crate::task;
 
 /// How long `herdr agent start` may wait for Claude to be ready, in milliseconds.
 const AGENT_START_TIMEOUT_MS: &str = "60000";
@@ -82,7 +83,7 @@ pub struct Outcome {
 /// defaults the workspace to the calling Session's, then launches here or on `request.cde`.
 pub fn session_start(store: &Store, request: Request) -> Result<Outcome, Failure> {
     let name = request.name;
-    if !is_agent_name(name) {
+    if !task::is_slug(name) {
         return Err(usage(
             format!("--name {name:?} is not a usable Task slug"),
             "use lowercase letters, digits, `-` and `_`, starting with a letter, at most 32 characters",
@@ -148,14 +149,6 @@ fn is_uuid(id: &str) -> bool {
             8 | 13 | 18 | 23 => c == '-',
             _ => c.is_ascii_hexdigit(),
         })
-}
-
-/// Whether `name` is usable as a herdr agent name: `[a-z][a-z0-9_-]{0,31}`.
-fn is_agent_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    chars.next().is_some_and(|c| c.is_ascii_lowercase())
-        && name.len() <= 32
-        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
 }
 
 /// The workspace label for ICs launched by the Session `manager`: its title in the Store,

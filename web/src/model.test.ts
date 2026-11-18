@@ -18,7 +18,7 @@ import {
   stepPr,
   trayView,
 } from "./model.ts";
-import type { Branch, Check, Github, Jira, Pr, Session, Thread } from "./model.ts";
+import type { Branch, Check, Github, Jira, Pr, Session, SessionView, Thread } from "./model.ts";
 
 const AT = "2026-11-10T12:00:00.000000Z";
 
@@ -149,7 +149,7 @@ test("size tip: files changed, with the lines added and removed", () => {
 
 test("tray: every section gives its fine statement when nothing is wrong", () => {
   const t = trayView(gh(), null, NOW);
-  assert.deepEqual(t.base, { fine: "no conflict, up to date", items: null });
+  assert.deepEqual(t.base, { fine: "no conflict, up to date with main", items: null });
   assert.deepEqual(t.ci, { fine: "passing", items: null });
   assert.deepEqual(t.feedback, { fine: "no open threads", items: null });
   assert.deepEqual(t.review, { fine: "approved", items: null });
@@ -158,7 +158,7 @@ test("tray: every section gives its fine statement when nothing is wrong", () =>
   assert.equal(trayView(gh({ reviewDecision: "REVIEW_REQUIRED" }), null, NOW).review.fine, "required, none requested");
   assert.equal(trayView(gh({ reviewDecision: null }), null, NOW).review.fine, "not required");
   // Behind for less than a day is not a base problem yet.
-  assert.equal(trayView(gh({ behindSince: hoursAgo(23) }), null, NOW).base.fine, "no conflict, up to date");
+  assert.equal(trayView(gh({ behindSince: hoursAgo(23) }), null, NOW).base.fine, "no conflict, up to date with main");
 });
 
 test("tray: merged and closed PRs give every section's fine statement", () => {
@@ -247,7 +247,7 @@ test("session views name a stacked PR's base by the PR below it", () => {
     pr("s", { number: 2, stack: { number: 1, position: 2 }, headRefName: "b", baseRefName: "a", mergeable: "CONFLICTING" }),
     pr("s", { number: 1, stack: { number: 1, position: 1 }, headRefName: "a", baseRefName: "main" }),
   ];
-  const [[, top]] = sessionViews([session("s")], prs, [], NOW)[0].stacks;
+  const [, top] = sessionViews([session("s")], prs, [], NOW)[0].groups[0].stacks[0];
   assert.equal(top.number, 2);
   assert.deepEqual(top.tray.base.items, ["Merge conflict with #1"]);
 });
@@ -384,7 +384,7 @@ test("each Stack numbers its own PRs; a Stack of one has no number", () => {
   ];
   const [v] = sessionViews([session("s")], prs, [], NOW);
   assert.deepEqual(
-    v.stacks.map((s) => s.map((p) => [p.number, p.pos])),
+    v.groups.map((g) => g.stacks[0].map((p) => [p.number, p.pos])),
     [
       [[4, 1], [8, 2]],
       [[5, null]],
@@ -431,17 +431,22 @@ test("session views join Sessions to their Stacks and tolerate null facets", () 
   assert.equal(one.cde, "flow");
   assert.equal(one.repo, "acme/api");
   assert.deepEqual(
-    one.stacks.map((s) => s.map((p) => [p.pos, p.number, p.title])),
+    one.groups.map((g) => g.stacks[0].map((p) => [p.pos, p.number, p.title])),
     [[[null, 8, "[ABC-12] Add widgets"]]],
   );
   // Until its first Stop writes a title, a Session shows a placeholder, not its id.
   assert.equal(two.title, "New session");
   assert.equal(two.untitled, true);
   assert.equal(two.repo, null);
-  assert.deepEqual(two.stacks, []);
+  assert.deepEqual(two.groups, []);
   // Without PRs the repo falls back to the cwd's last segment.
   assert.equal(sessionViews([sessions[0]], [])[0].repo, "obsidian");
 });
+
+/** Each group as [head, Stacks by PR number]: the head is "#n" for a feature PR, a Branch's
+ * name, or null for an ordinary Stack. */
+const shape = (v: SessionView) =>
+  v.groups.map((g) => [g.head && "name" in g.head ? g.head.name : g.head && `#${g.head.number}`, g.stacks.map((s) => s.map((p) => p.number))]);
 
 const branch = (owner: string, name: string, at: string, repo = "acme/widgets"): Branch => ({
   key: `${repo}:${name}`,
@@ -465,14 +470,19 @@ test("a Session's Branches without a PR follow its Stacks, oldest first", () => 
   ];
   const prs = [pr("s", { number: 7, headRefName: "feat/x", isDraft: true }), pr("s", { number: 8, headRefName: "feat/done", state: "MERGED" })];
   const [v] = sessionViews([session("s")], prs, branches, NOW);
-  assert.deepEqual(v.stacks.flat().map((p) => p.number), [7, 8]);
-  assert.deepEqual(v.branches.map((b) => b.name), ["feat/old", "feat/x", "feat/new"]);
+  assert.deepEqual(shape(v), [
+    [null, [[7]]],
+    [null, [[8]]],
+    ["feat/old", []],
+    ["feat/x", []],
+    ["feat/new", []],
+  ]);
   // Branch rows count towards neither the folded light nor its PR count.
   assert.deepEqual(attentionLight(v), { lamp: "fine", tip: "2 pull requests: nothing needs action" });
   // A Session with only a Branch takes its repo from it.
   const [only] = sessionViews([session("o")], [], [branch("o", "feat/y", AT, "acme/api")]);
   assert.equal(only.repo, "acme/api");
-  assert.deepEqual(only.branches.map((b) => b.name), ["feat/y"]);
+  assert.deepEqual(shape(only), [["feat/y", []]]);
 });
 
 test("done Sessions go last; each group newest first, unstarted last", () => {
@@ -510,7 +520,7 @@ test("folded Session light: act if waiting or any PR needs attention, else fine"
   assert.equal(attentionLight(view(st("idle"), { mergeable: "CONFLICTING", reviewRequests: [{ login: "a", asCodeOwner: false }] })).lamp, "act");
   // Over all of a Session's Stacks: the act is in a second Stack.
   const two = view(st("idle"), { reviewRequests: [{ login: "a", asCodeOwner: false }] }, { stack: { number: 9, position: 1 }, mergeable: "CONFLICTING" });
-  assert.equal(two.stacks.length, 2);
+  assert.equal(two.groups.length, 2);
   assert.deepEqual(attentionLight(two), { lamp: "act", tip: "2 pull requests: something needs action" });
 });
 
@@ -596,6 +606,86 @@ test("step order: null with no visible PR", () => {
   assert.equal(stepPr([], new Set(), null, -1), null);
 });
 
+test("feature branch: a PR on the default branch heads the Stacks its owner based on its head", () => {
+  const prs = [
+    pr("s", { number: 20, headRefName: "feature/x", baseRefName: "main", isDraft: true }),
+    pr("s", { number: 21, headRefName: "a", baseRefName: "feature/x", stack: { number: 21, position: 1 } }),
+    pr("s", { number: 22, headRefName: "b", baseRefName: "a", stack: { number: 21, position: 2 } }),
+    pr("s", { number: 23, headRefName: "c", baseRefName: "feature/x" }),
+    pr("s", { number: 30, headRefName: "other", baseRefName: "main" }),
+  ];
+  const [v] = sessionViews([session("s")], prs, [], NOW);
+  assert.deepEqual(shape(v), [
+    ["#20", [[21, 22], [23]]],
+    [null, [[30]]],
+  ]);
+  // Stepping runs through the group as drawn: the feature PR, then its Stacks.
+  assert.deepEqual(v.prs.map((p) => p.number), [20, 21, 22, 23, 30]);
+});
+
+test("feature branch: before its feature PR exists, the Branch heads its group", () => {
+  const prs = [
+    pr("s", { number: 21, headRefName: "a", baseRefName: "feature/x" }),
+    pr("s", { number: 22, headRefName: "b", baseRefName: "a" }),
+  ];
+  const [v] = sessionViews([session("s")], prs, [branch("s", "feature/x", AT), branch("s", "a", AT)], NOW);
+  // #21 is based on a Branch, not the default branch, so #22 on its head stays an ordinary
+  // Stack. Branch groups follow the Stacks, as Branches with no PR do.
+  assert.deepEqual(shape(v), [
+    [null, [[22]]],
+    ["feature/x", [[21]]],
+  ]);
+  assert.deepEqual(v.prs.map((p) => p.number), [22, 21]);
+});
+
+test("feature branch: gathers only its owner's Stacks; another Session's Stack names it as its base", () => {
+  const prs = [
+    pr("s", { number: 20, headRefName: "feature/x", baseRefName: "main" }),
+    pr("s", { number: 21, headRefName: "a", baseRefName: "feature/x" }),
+    pr("t", { number: 22, headRefName: "b", baseRefName: "feature/x", mergeable: "CONFLICTING" }),
+  ];
+  const [s, t] = sessionViews([session("s"), session("t")], prs, [], NOW);
+  assert.deepEqual(shape(s), [["#20", [[21]]]]);
+  assert.deepEqual(shape(t), [[null, [[22]]]]);
+  assert.deepEqual(t.prs[0].tray.base.items, ["Merge conflict with feature/x"]);
+  const healthy = sessionViews([session("t")], [{ ...prs[2], github: { ...prs[2].github!, mergeable: "MERGEABLE" } }], [], NOW)[0];
+  assert.equal(healthy.prs[0].tray.base.fine, "no conflict, up to date with feature/x");
+  // Another Session's Stack on it alone doesn't make it a Feature branch.
+  const [lone] = sessionViews([session("s"), session("t")], [prs[0], prs[2]], [], NOW);
+  assert.deepEqual(shape(lone), [[null, [[20]]]]);
+});
+
+test("feature branch: its Stacks in base-first order, oldest bottom PR first", () => {
+  const prs = [
+    pr("s", { number: 25, headRefName: "c", baseRefName: "feature/x" }),
+    pr("s", { number: 24, headRefName: "b2", baseRefName: "b1", stack: { number: 9, position: 2 } }),
+    pr("s", { number: 22, headRefName: "b1", baseRefName: "feature/x", stack: { number: 9, position: 1 } }),
+    pr("s", { number: 23, headRefName: "a", baseRefName: "feature/x" }),
+    pr("s", { number: 20, headRefName: "feature/x", baseRefName: "main" }),
+  ];
+  const [v] = sessionViews([session("s")], prs, [], NOW);
+  assert.deepEqual(shape(v), [["#20", [[22, 24], [23], [25]]]]);
+});
+
+test("feature branch: a feature PR with nothing based on it is an ordinary draft PR", () => {
+  const prs = [pr("s", { number: 20, headRefName: "feature/x", baseRefName: "main", isDraft: true })];
+  const [v] = sessionViews([session("s")], prs, [branch("s", "feature/x", AT)], NOW);
+  assert.deepEqual(shape(v), [[null, [[20]]]]);
+  assert.equal(v.prs[0].draft, true);
+});
+
+test("feature branch: a hand-made branching stack reads as one", () => {
+  // Two native stacks based on #10's head, which is based on the default branch.
+  const prs = [
+    pr("s", { number: 10, headRefName: "base-work", baseRefName: "main" }),
+    pr("s", { number: 11, headRefName: "x1", baseRefName: "base-work", stack: { number: 11, position: 1 } }),
+    pr("s", { number: 12, headRefName: "x2", baseRefName: "x1", stack: { number: 11, position: 2 } }),
+    pr("s", { number: 13, headRefName: "y1", baseRefName: "base-work", stack: { number: 13, position: 1 } }),
+  ];
+  const [v] = sessionViews([session("s")], prs, [], NOW);
+  assert.deepEqual(shape(v), [["#10", [[11, 12], [13]]]]);
+});
+
 /** A Branch's Jira issue as `flow` prints it: fetched with `o`, or never fetched. */
 const jira = (o: Partial<Jira> = {}): Jira => ({
   key: "ABC-12",
@@ -661,7 +751,8 @@ test("Session views carry each PR's and each Branch's Jira issue", () => {
   const branches = [{ ...branch("s", "feat/z", AT), jira: missing }, branch("s", "feat/w", hoursAgo(1))];
   const [v] = sessionViews([session("s")], prs, branches, NOW);
   assert.deepEqual(v.prs.map((p) => p.jira?.key ?? null), ["ABC-1", null]);
-  assert.deepEqual(v.branches.map((b) => [b.name, b.jira?.state ?? null]), [["feat/w", null], ["feat/z", "not found"]]);
+  const heads = v.groups.flatMap((g) => (g.head && "name" in g.head ? [[g.head.name, g.head.jira?.state ?? null]] : []));
+  assert.deepEqual(heads, [["feat/w", null], ["feat/z", "not found"]]);
 });
 
 test("Jira data age: minutes since the oldest fetch among listed Branches, only when over 15 minutes", () => {
