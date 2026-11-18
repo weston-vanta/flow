@@ -333,7 +333,7 @@ fn branch_list_prints_every_branch_a_listed_session_owns() {
         x,
         &json!({
             "key": "acme/widgets:feat/x", "repo": "acme/widgets", "branch": "feat/x",
-            "owner": "s1", "at": x["at"],
+            "owner": "s1", "at": x["at"], "jira": null,
         })
     );
     assert_eq!(branches[1]["key"], "acme/widgets:feat/z");
