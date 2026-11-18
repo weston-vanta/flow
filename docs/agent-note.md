@@ -27,10 +27,11 @@ prints this note.
   `{key, url, found, at, summary, status, category, type}`, where `url` is the issue's browse
   URL and the rest are null until flow first fetches the key from Jira (`found` false: Jira
   has no such key).
-- Managers launch an IC with `flow session start --name <task-slug> --brief <path> <repo-dir>`.
-  It opens a new, unfocused herdr tab in `<repo-dir>` (the repo's main checkout, which needs a
-  wt base), in a workspace named after your Session, starts Claude there with a fresh Session
-  id, sends `/flow:ic <brief path>`, and prints `{id, name, cde, pane}`. Keep the brief on
-  `/efs-home`. Add `--cde <name>` to launch on another running CDE (it never starts one); the
-  output is the same, with that CDE's name as `cde`. On failure it prints `{error, help}`, leaves the pane as it is and retries
-  nothing: show the error to the Director rather than trying again.
+- Managers launch an IC on a Task with `flow session start --task <slug> <repo-dir>`. The Task
+  directory must hold the brief, `brief.md`. It opens a new, unfocused herdr tab named after
+  the slug in `<repo-dir>` (the repo's main checkout, which needs a wt base), in a workspace
+  named after your Session, starts Claude there with a fresh Session id named after the slug,
+  sends `/flow:ic <slug>`, and prints `{id, name, cde, pane}`. Add `--cde <name>` to launch on
+  another running CDE (it never starts one); the output is the same, with that CDE's name as
+  `cde`. On failure it prints `{error, help}`, leaves the pane as it is and retries nothing:
+  show the error to the Director rather than trying again.
