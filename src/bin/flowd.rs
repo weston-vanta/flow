@@ -1,6 +1,6 @@
 //! `flowd`: the daemon on the Flow CDE, run in the foreground. It serves the read API
-//! (`GET /api/sessions`, `GET /api/prs`, `GET /api/branches`, the same JSON as
-//! `flow session list`, `flow pr list` and `flow branch list`) and the embedded frontend, on `127.0.0.1` only. Every request reads the
+//! (`GET /api/sessions`, `GET /api/prs`, `GET /api/branches`, `GET /api/tasks`, the same
+//! JSON as `flow session list`, `flow pr list`, `flow branch list` and `flow task list`) and the embedded frontend, on `127.0.0.1` only. Every request reads the
 //! Store fresh.
 
 use std::io::Cursor;
@@ -14,7 +14,7 @@ use serde::Serialize;
 use tiny_http::{Header, Method, Request, Response, Server};
 
 use flow::store::Store;
-use flow::{github, retention, services};
+use flow::{github, retention, services, task};
 
 /// Serve flow's read API and web app on 127.0.0.1.
 #[derive(Parser)]
@@ -132,6 +132,7 @@ fn respond(store: &Store, request: &Request) -> Response<Cursor<Vec<u8>>> {
         "/api/sessions" => json(services::session_list(store)),
         "/api/prs" => json(services::pr_list(store)),
         "/api/branches" => json(services::branch_list(store)),
+        "/api/tasks" => json(task::list(store, &task::root_from_env())),
         _ => match ASSETS.iter().find(|(asset, ..)| *asset == path) {
             Some((_, content_type, body)) => {
                 Response::from_data(body.to_vec()).with_header(header(content_type))

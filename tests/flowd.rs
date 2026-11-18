@@ -86,6 +86,39 @@ fn api_returns_the_cli_json_byte_for_byte() {
 }
 
 #[test]
+fn api_tasks_returns_the_task_list_json_byte_for_byte() {
+    let ts = TestStore::new();
+    session_start(&ts, SESSION);
+    ts.flow()
+        .args(["task", "create", "widgets"])
+        .assert()
+        .success();
+    ts.flow()
+        .args(["task", "join", "widgets"])
+        .env("CLAUDE_CODE_SESSION_ID", SESSION)
+        .assert()
+        .success();
+    ts.flow()
+        .args([
+            "task",
+            "resource",
+            "add",
+            "https://example.com/doc",
+            "--title",
+            "Doc",
+        ])
+        .env("CLAUDE_CODE_SESSION_ID", SESSION)
+        .assert()
+        .success();
+    let flowd = ts.flowd();
+
+    let tasks = cli_stdout(&ts, &["task", "list"]);
+    assert!(tasks.contains("https://example.com/doc"), "{tasks}");
+    assert!(tasks.contains(SESSION), "{tasks}");
+    assert_eq!(flowd.get("/api/tasks"), (200, tasks));
+}
+
+#[test]
 fn a_hook_write_after_start_appears_in_the_next_response() {
     let ts = TestStore::new();
     let flowd = ts.flowd();

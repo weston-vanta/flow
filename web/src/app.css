@@ -10,7 +10,6 @@ a{color:inherit}
 button{font:inherit;color:inherit}
 :focus-visible{outline:2px solid var(--amber);outline-offset:2px}
 .mono{font-family:var(--mono)}
-.muted{color:var(--ink2)}
 
 /* The face: a flat panel holding the header strip and the deck. */
 .face{max-width:1280px;margin:0 auto;border-radius:4px;background:#E9E6E0;box-shadow:0 0 0 1px #C9C4BA}
@@ -66,7 +65,9 @@ button.hint kbd.down{background:#D6D1C8}
 /* A Session channel: the square push key, its title, Activity and meta, then its plates. */
 .chan{border-radius:4px;background:var(--chan);box-shadow:0 0 0 1px #D6D1C7}
 .chan.folded{cursor:pointer}
-.chead{display:flex;align-items:flex-start;gap:12px;padding:17px 16px 12px}
+.chead{position:relative;display:flex;align-items:flex-start;gap:12px;padding:17px 16px 12px}
+.chead .needle{top:27px}
+.chan.open .chead .needle{background:var(--needle)}
 .folded .chead{padding-bottom:16px}
 /* Latched (open) the key is filled in the plate tone; released (folded) it is an outline on the card. */
 .skey{flex:none;display:flex;align-items:center;justify-content:center;width:24px;height:24px;margin:-1px 0 0;padding:0;border:1px solid var(--plate);border-radius:3px;background:var(--plate);transition:background-color .12s ease,border-color .12s ease;cursor:pointer}
@@ -78,6 +79,10 @@ button.hint kbd.down{background:#D6D1C8}
 .cline{display:flex;align-items:baseline;gap:16px;min-width:0}
 .cline h2{flex:1 1 auto;min-width:0;margin:0;font-size:15px;line-height:22px;font-weight:600;overflow-wrap:anywhere}
 .folded .cline h2{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* The title is a button opening the Session panel: muted, full ink while its panel is open. */
+.stitle{max-width:100%;margin:0;padding:0;border:0;background:transparent;font-weight:inherit;text-align:left;color:#57544F;cursor:pointer;transition:color .15s ease;overflow-wrap:anywhere}
+.folded .stitle{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stitle:hover,.chan.open .stitle{color:var(--ink)}
 .attn{flex:none;width:56px;height:22px;display:flex;align-items:center;justify-content:center;align-self:flex-start}
 .activity{font-size:12px;line-height:17px;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .smeta{display:flex;align-items:baseline;min-width:0;font-size:11px;line-height:15px;color:var(--ink2);white-space:nowrap}
@@ -160,6 +165,29 @@ a.jira:hover{color:var(--ink)}
 .wjira .jsq{color:#D9D2C6}
 .wjira.missing{cursor:default}
 .whint{font-size:12px;line-height:17px;color:var(--ro3)}
+
+/* The Session panel: the status lamp in a square key, the Session's lines, then its Task. */
+.wkey{flex:none;width:20px;height:20px;border:1px solid #6A6862;border-radius:3px;display:flex;align-items:center;justify-content:center}
+.whead .lamp.fine,.psess .lamp.fine{background:var(--ro-fine);border-color:var(--ro-fine)}
+.whead .lamp.run,.psess .lamp.run{background:transparent}
+.wline .act,.pstatus .act{color:var(--act)}
+.wactivity{font-size:12px;line-height:17px;color:var(--ro);overflow-wrap:anywhere;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden}
+.wmeta{font-size:11px;line-height:15px;color:var(--ro2)}
+.wmeta .dot{padding:0 5px}
+.psec{padding:16px 24px 18px;border-bottom:1px solid var(--ro-rule);display:flex;flex-direction:column;gap:10px}
+.psec .thd span{font-size:11px}
+.pres{display:flex;flex-direction:column;gap:8px}
+.rrow{display:flex;align-items:baseline;gap:12px;min-width:0}
+.rlabel{flex:0 1 auto;min-width:0;font-size:12px;line-height:17px;color:var(--ro);overflow-wrap:anywhere}
+.rlabel.mono{font-size:11px}
+.rhost{flex:none;margin-left:auto;font-size:10px;color:var(--ro2)}
+.pothers{display:flex;flex-direction:column;gap:2px;margin-top:6px}
+.plabel{font-size:11px;line-height:16px;color:var(--ro2)}
+.psess{display:grid;grid-template-columns:18px minmax(0,1fr) auto;column-gap:10px;align-items:center;margin:0 -8px;padding:6px 8px;border:0;border-radius:3px;background:transparent;color:var(--ro);text-align:left;cursor:pointer}
+.psess:hover{background:rgba(255,255,255,.06)}
+.psess .lamp{justify-self:center}
+.ptitle{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;line-height:17px}
+.pstatus{font-size:11px;color:var(--ro2)}
 .tsec{padding:16px 24px 18px;border-bottom:1px solid var(--ro-rule);display:grid;grid-template-columns:18px minmax(0,1fr);column-gap:10px;row-gap:10px;transition:background-color .4s ease}
 .tsec.idle{align-items:center}
 .tsec.focus{background:#33322F}

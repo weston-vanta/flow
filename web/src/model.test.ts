@@ -12,13 +12,15 @@ import {
   prDataAge,
   prView,
   reviewLight,
+  sessionPanel,
   sessionViews,
+  shortUrl,
   stacksOf,
   statusLight,
   stepPr,
   trayView,
 } from "./model.ts";
-import type { Branch, Check, Github, Jira, Pr, Session, SessionView, Thread } from "./model.ts";
+import type { Branch, Check, Github, Jira, Pr, Session, SessionView, Task, Thread } from "./model.ts";
 
 const AT = "2026-11-10T12:00:00.000000Z";
 
@@ -63,6 +65,7 @@ const session = (id: string, o: Partial<Session> = {}): Session => ({
   status: null,
   context: null,
   activity: null,
+  task: null,
   ...o,
 });
 
@@ -767,4 +770,81 @@ test("Jira data age: minutes since the oldest fetch among listed Branches, only 
   assert.equal(jiraDataAge([onPr({ ...missing, at: new Date(NOW - 30 * 60_000).toISOString() })], [], NOW), 30);
   // Never-fetched keys don't count.
   assert.equal(jiraDataAge([onPr(unfetched)], [onBranch(unfetched)], NOW), null);
+});
+
+const task = (slug: string, sessions: string[], resources: Task["resources"] = []): Task => ({
+  slug,
+  dir: `/efs-home/flow/tasks/${slug}`,
+  sessions,
+  resources,
+});
+
+test("session panel: counts PRs and Branches with no PR, or says there are none", () => {
+  const prs = [pr("s", { number: 7, headRefName: "feat/x" }), pr("s", { number: 8, headRefName: "feat/y" })];
+  const branches = [branch("s", "feat/z", AT), branch("one", "feat/w", AT)];
+  const views = sessionViews([session("s"), session("one"), session("none")], prs, branches, NOW);
+  const counts = (id: string) => sessionPanel(id, views, [])!.counts;
+  assert.equal(counts("s"), "2 pull requests · 1 branch");
+  assert.equal(counts("one"), "1 branch");
+  assert.equal(counts("none"), "no pull requests");
+  const [solo] = sessionViews([session("p")], [pr("p")], [], NOW);
+  assert.equal(sessionPanel("p", [solo], [])!.counts, "1 pull request");
+  // A Feature branch with no PR yet heading Stacks counts as a Branch.
+  const [f] = sessionViews([session("f")], [pr("f", { number: 9, headRefName: "s1", baseRefName: "feature/a" })], [branch("f", "feature/a", AT)], NOW);
+  assert.equal(sessionPanel("f", [f], [])!.counts, "1 pull request · 1 branch");
+});
+
+test("session panel: a Session on no Task, or on one not listed, is not part of a task", () => {
+  const views = sessionViews([session("a"), session("b", { task: "gone" })], [], [], NOW);
+  assert.equal(sessionPanel("a", views, [task("other", ["x"])])!.task, null);
+  assert.equal(sessionPanel("b", views, [task("other", ["x"])])!.task, null);
+  assert.equal(sessionPanel("missing", views, []), null);
+});
+
+test("session panel: resource and session counts, every Resource in order", () => {
+  const res = Array.from({ length: 7 }, (_, i) => ({ url: `https://example.com/${i}`, title: null }));
+  const views = sessionViews([session("a", { task: "w" }), session("b", { task: "w" })], [], [], NOW);
+  const one = sessionPanel("a", views, [task("w", ["a"], res.slice(0, 1))])!;
+  assert.equal(one.task!.counts, "1 resource");
+  const many = sessionPanel("a", views, [task("w", ["a", "b"], res)])!;
+  assert.equal(many.task!.counts, "7 resources · 2 sessions");
+  assert.deepEqual(many.task!.resources.map((r) => r.url), res.map((r) => r.url));
+  assert.equal(sessionPanel("a", views, [task("w", ["a"])])!.task!.counts, "0 resources");
+});
+
+test("resource: its title, else its URL shortened in mono; the host; file:// is path text", () => {
+  const views = sessionViews([session("a", { task: "w" })], [], [], NOW);
+  const resources = [
+    { url: "https://docs.google.com/document/d/abc/edit?tab=t.0", title: "Design doc" },
+    { url: "https://www.example.com/path/edit?x=1#y", title: null },
+    { url: "file:///efs-home/weston/plan.md", title: null },
+  ];
+  const [titled, bare, file] = sessionPanel("a", views, [task("w", ["a"], resources)])!.task!.resources;
+  assert.deepEqual(titled, { url: resources[0].url, label: "Design doc", mono: false, host: "docs.google.com", link: true });
+  assert.deepEqual(bare, { url: resources[1].url, label: "example.com/path", mono: true, host: "example.com", link: true });
+  assert.deepEqual(file, { url: resources[2].url, label: "/efs-home/weston/plan.md", mono: true, host: "", link: false });
+});
+
+test("short URL: drops the scheme, www., query and a trailing /edit", () => {
+  assert.equal(shortUrl("https://www.notion.so/acme/Plan-123?pvs=4"), "notion.so/acme/Plan-123");
+  assert.equal(shortUrl("http://acme.atlassian.net/browse/ABC-12"), "acme.atlassian.net/browse/ABC-12");
+  assert.equal(shortUrl("https://docs.google.com/document/d/abc/edit"), "docs.google.com/document/d/abc");
+  assert.equal(shortUrl("https://example.com/edits"), "example.com/edits");
+});
+
+test("session panel: also on this task lists the Task's other listed Sessions in rack order", () => {
+  const views = sessionViews(
+    [
+      session("a", { task: "w", origin: { at: hoursAgo(3), cde: null, cdeId: null, pane: null, herdrSocket: null, cwd: null, transcriptPath: null } }),
+      session("b", { task: "w", origin: { at: hoursAgo(1), cde: null, cdeId: null, pane: null, herdrSocket: null, cwd: null, transcriptPath: null } }),
+      session("c", { task: "other" }),
+      session("d", { task: "w", status: { at: AT, state: "done" } }),
+    ],
+    [],
+    [],
+    NOW,
+  );
+  const tasks = [task("w", ["a", "b", "d", "unlisted"]), task("other", ["c"])];
+  assert.deepEqual(sessionPanel("a", views, tasks)!.task!.others.map((v) => v.id), ["b", "d"]);
+  assert.deepEqual(sessionPanel("c", views, tasks)!.task!.others, []);
 });

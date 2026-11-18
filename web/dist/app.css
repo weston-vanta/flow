@@ -55,9 +55,6 @@ button {
 .mono {
   font-family: var(--mono);
 }
-.muted {
-  color: var(--ink2);
-}
 .face {
   max-width: 1280px;
   margin: 0 auto;
@@ -315,10 +312,17 @@ button.hint kbd.down {
   cursor: pointer;
 }
 .chead {
+  position: relative;
   display: flex;
   align-items: flex-start;
   gap: 12px;
   padding: 17px 16px 12px;
+}
+.chead .needle {
+  top: 27px;
+}
+.chan.open .chead .needle {
+  background: var(--needle);
 }
 .folded .chead {
   padding-bottom: 16px;
@@ -381,6 +385,28 @@ button.hint kbd.down {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.stitle {
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-weight: inherit;
+  text-align: left;
+  color: #57544F;
+  cursor: pointer;
+  transition: color .15s ease;
+  overflow-wrap: anywhere;
+}
+.folded .stitle {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.stitle:hover,
+.chan.open .stitle {
+  color: var(--ink);
 }
 .attn {
   flex: none;
@@ -796,6 +822,128 @@ a.jira:hover {
   font-size: 12px;
   line-height: 17px;
   color: var(--ro3);
+}
+.wkey {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border: 1px solid #6A6862;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.whead .lamp.fine,
+.psess .lamp.fine {
+  background: var(--ro-fine);
+  border-color: var(--ro-fine);
+}
+.whead .lamp.run,
+.psess .lamp.run {
+  background: transparent;
+}
+.wline .act,
+.pstatus .act {
+  color: var(--act);
+}
+.wactivity {
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--ro);
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+.wmeta {
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--ro2);
+}
+.wmeta .dot {
+  padding: 0 5px;
+}
+.psec {
+  padding: 16px 24px 18px;
+  border-bottom: 1px solid var(--ro-rule);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.psec .thd span {
+  font-size: 11px;
+}
+.pres {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.rrow {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+}
+.rlabel {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--ro);
+  overflow-wrap: anywhere;
+}
+.rlabel.mono {
+  font-size: 11px;
+}
+.rhost {
+  flex: none;
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--ro2);
+}
+.pothers {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 6px;
+}
+.plabel {
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--ro2);
+}
+.psess {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  column-gap: 10px;
+  align-items: center;
+  margin: 0 -8px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--ro);
+  text-align: left;
+  cursor: pointer;
+}
+.psess:hover {
+  background: rgba(255, 255, 255, .06);
+}
+.psess .lamp {
+  justify-self: center;
+}
+.ptitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 17px;
+}
+.pstatus {
+  font-size: 11px;
+  color: var(--ro2);
 }
 .tsec {
   padding: 16px 24px 18px;
