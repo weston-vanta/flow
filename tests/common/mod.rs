@@ -22,7 +22,7 @@ const INHERITED_ENV: &[&str] = &[
     "HERDR_SOCKET_PATH",
 ];
 
-/// A temp directory holding the binaries' Store (through `FLOW_STORE`), the hook log beside
+/// A temp directory the binaries get as `FLOW_HOME`, holding their Store, the hook log beside
 /// it, and a `bin` directory put first on PATH for fake executables (holding a `gh` that
 /// always fails until a test replaces it); removed on drop.
 pub struct TestStore {
@@ -39,7 +39,7 @@ impl TestStore {
         ts
     }
 
-    /// The `flow` CLI with `FLOW_STORE` set to this Store.
+    /// The `flow` CLI with `FLOW_HOME` set to this temp dir.
     pub fn flow(&self) -> Command {
         self.command("flow")
     }
@@ -90,7 +90,7 @@ impl TestStore {
         Store::new(self.store_path())
     }
 
-    /// The Store's root directory, which the binaries get as `FLOW_STORE`.
+    /// The Store's root directory, `$FLOW_HOME/store`.
     pub fn store_path(&self) -> PathBuf {
         self.dir.path().join("store")
     }
@@ -136,7 +136,7 @@ impl TestStore {
 
     fn std_command(&self, program: &Path) -> std::process::Command {
         let mut cmd = std::process::Command::new(program);
-        cmd.env("FLOW_STORE", self.store_path());
+        cmd.env("FLOW_HOME", self.dir.path());
         for name in INHERITED_ENV {
             cmd.env_remove(name);
         }
