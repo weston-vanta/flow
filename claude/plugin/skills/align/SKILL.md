@@ -27,4 +27,4 @@ Agree with the Director what the Task delivers before any work is shaped, then a
 
    Its test is not a template: could the Director judge the draft PRs against it without having been in the grilling? For a spec or answer deliverable, Align ends here.
 4. Draft `plan.md` with `flow:plan`. Present it for a reader who wasn't in the grilling, written with `flow:explain`, and ask two things: does the Director approve it, and do they want Resources made from it (Jira issues matching the plan through `acli jira`, an Explainer, a doc through `gws`, or others). Revise until they approve. The approval, whose picture shows the Stacks, counts as the Director asking for a Stack.
-5. Create those Resources through Subagents, record each as `flow:ic` says, and write the builder briefs with `flow:plan`.
+5. Create those Resources through Subagents, record each as `flow:ic` says, and write the builder briefs with `flow:plan`. Pair each PR in `plan.md` that has a Jira issue with its key, whether a Subagent created the Jira issue or the Director named an existing one to adopt.
