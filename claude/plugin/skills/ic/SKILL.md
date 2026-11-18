@@ -41,7 +41,7 @@ Align settles the deliverable: PRs, a spec, or an answer. Stop once it is done: 
 3. **Revise.** When the Director has reviewed on GitHub, give each PR with comments to a fresh Builder with `flow:build` and `flow:revise`, and report the outcomes in your pane. A comment that changes a requirement goes back to the Director as a spec change.
 4. **Done**, on the Director's word: once every PR, feature PRs included, is merged or closed, `wt remove` each clean worktree, bring the Resources and your Branches' Jira issues to their final state, and report that the Session can be ended.
 
-Keep `plan.md` and the builder briefs current with `flow:plan` as the plan changes. As PRs open, are reviewed and merge or close, keep the Resources and your Branches' Jira issues current through Subagents: for a Jira issue, one using `acli jira` moves its status and comments the PR's URL. flow reads Jira and never writes it.
+Keep `plan.md` and the builder briefs current with `flow:plan` as the plan changes. As PRs open, are reviewed and merge or close, keep the Resources and your Branches' Jira issues current through Subagents: for a Jira issue, one using `acli jira` moves its status. flow reads Jira and never writes it.
 
 ## Resources
 
