@@ -1,5 +1,5 @@
 // Polls flowd's read API, keeps the last good data in memory and redraws with innerHTML.
-import { prDataAge, sessionViews, stepPr } from "./model.ts";
+import { jiraDataAge, prDataAge, sessionViews, stepPr } from "./model.ts";
 import type { Branch, Pr, Session } from "./model.ts";
 import { render } from "./render.ts";
 import type { Column, TrayState } from "./render.ts";
@@ -39,6 +39,8 @@ function page(): string {
   }
   const stale = prDataAge(prs);
   if (stale != null) notices.push(`PR data ${stale} min old`);
+  const jiraStale = jiraDataAge(prs, branches);
+  if (jiraStale != null) notices.push(`Jira data ${jiraStale} min old`);
   const views = sessionViews(sessions, prs, branches);
   if (tray && !views.some((v) => v.prs.some((p) => p.url === tray!.url))) tray = null;
   return render(views, toggled, notices, !failing, legend, tray);

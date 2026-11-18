@@ -7,6 +7,8 @@ import {
   baseLight,
   ciLight,
   feedbackLight,
+  jiraDataAge,
+  jiraView,
   prDataAge,
   prView,
   reviewLight,
@@ -16,7 +18,7 @@ import {
   stepPr,
   trayView,
 } from "./model.ts";
-import type { Branch, Check, Github, Pr, Session, SessionView, Thread } from "./model.ts";
+import type { Branch, Check, Github, Jira, Pr, Session, SessionView, Thread } from "./model.ts";
 
 const AT = "2026-11-10T12:00:00.000000Z";
 
@@ -52,6 +54,7 @@ const pr = (owner: string | null, o: Partial<Github> = {}): Pr => ({
   key: `acme/widgets#${o.number ?? 7}`,
   owner,
   github: { at: AT, ...gh(o) },
+  jira: null,
 });
 
 const session = (id: string, o: Partial<Session> = {}): Session => ({
@@ -443,7 +446,7 @@ test("session views join Sessions to their Stacks and tolerate null facets", () 
 /** Each group as [head, Stacks by PR number]: the head is "#n" for a feature PR, a Branch's
  * name, or null for an ordinary Stack. */
 const shape = (v: SessionView) =>
-  v.groups.map((g) => [typeof g.head === "string" ? g.head : g.head && `#${g.head.number}`, g.stacks.map((s) => s.map((p) => p.number))]);
+  v.groups.map((g) => [g.head && "name" in g.head ? g.head.name : g.head && `#${g.head.number}`, g.stacks.map((s) => s.map((p) => p.number))]);
 
 const branch = (owner: string, name: string, at: string, repo = "acme/widgets"): Branch => ({
   key: `${repo}:${name}`,
@@ -451,6 +454,7 @@ const branch = (owner: string, name: string, at: string, repo = "acme/widgets"):
   branch: name,
   owner,
   at,
+  jira: null,
 });
 
 test("a Session's Branches without a PR follow its Stacks, oldest first", () => {
@@ -548,13 +552,14 @@ test("PR data age: minutes since the oldest open PR was fetched, only when over 
     key: "k",
     owner: null,
     github: { ...gh({ state }), at: new Date(now - min * 60_000).toISOString() },
+    jira: null,
   });
   assert.equal(prDataAge([], now), null);
   assert.equal(prDataAge([fetched(1), fetched(3)], now), null);
   assert.equal(prDataAge([fetched(1), fetched(7.5)], now), 7);
   // Closed and merged PRs are fetched once, so their age says nothing.
   assert.equal(prDataAge([fetched(1), fetched(60, "MERGED"), fetched(60, "CLOSED")], now), null);
-  assert.equal(prDataAge([{ key: "k", owner: null, github: null }], now), null);
+  assert.equal(prDataAge([{ key: "k", owner: null, github: null, jira: null }], now), null);
 });
 
 /** PR `n` owned by `owner`, at `url` "#n"; `stack` places it in a GitHub stack. */
@@ -679,4 +684,87 @@ test("feature branch: a hand-made branching stack reads as one", () => {
   ];
   const [v] = sessionViews([session("s")], prs, [], NOW);
   assert.deepEqual(shape(v), [["#10", [[11, 12], [13]]]]);
+});
+
+/** A Branch's Jira issue as `flow` prints it: fetched with `o`, or never fetched. */
+const jira = (o: Partial<Jira> = {}): Jira => ({
+  key: "ABC-12",
+  url: "https://vanta.atlassian.net/browse/ABC-12",
+  found: true,
+  at: AT,
+  summary: "Add widgets",
+  status: "To Do",
+  category: "new",
+  type: "Story",
+  ...o,
+});
+const unfetched = jira({ found: null, at: null, summary: null, status: null, category: null, type: null });
+const missing = jira({ found: false, summary: null, status: null, category: null, type: null });
+
+test("Jira state: by status category, in review by status name, then not fetched and not found", () => {
+  const state = (j: Jira) => jiraView(j)!.state;
+  assert.equal(state(jira({ status: "To Do", category: "new" })), "to do");
+  assert.equal(state(jira({ status: "In Progress", category: "indeterminate" })), "in progress");
+  assert.equal(state(jira({ status: "Code Review", category: "indeterminate" })), "in review");
+  assert.equal(state(jira({ status: "Review", category: "indeterminate" })), "in review");
+  assert.equal(state(jira({ status: "Done", category: "done" })), "done");
+  // "Reviewed" in the done category is done, not in review.
+  assert.equal(state(jira({ status: "Reviewed", category: "done" })), "done");
+  assert.equal(state(unfetched), "not fetched");
+  assert.equal(state(missing), "not found");
+  assert.equal(jiraView(null), null);
+});
+
+test("Jira view: the square and link, drawn as to do before the first fetch, bare text when not found", () => {
+  const url = "https://vanta.atlassian.net/browse/ABC-12";
+  assert.deepEqual(jiraView(jira({ status: "Code Review", category: "indeterminate" })), {
+    key: "ABC-12",
+    url,
+    state: "in review",
+    square: "review",
+    status: "Code Review",
+    tip: "ABC-12 · Code Review · open in Jira",
+  });
+  assert.equal(jiraView(jira())!.square, "todo");
+  assert.equal(jiraView(jira({ status: "In Progress", category: "indeterminate" }))!.square, "progress");
+  assert.equal(jiraView(jira({ status: "Done", category: "done" }))!.square, "done");
+  assert.deepEqual(jiraView(unfetched), {
+    key: "ABC-12",
+    url,
+    state: "not fetched",
+    square: "todo",
+    status: null,
+    tip: "not fetched yet",
+  });
+  assert.deepEqual(jiraView(missing), {
+    key: "ABC-12",
+    url: null,
+    state: "not found",
+    square: null,
+    status: null,
+    tip: "not found in Jira",
+  });
+});
+
+test("Session views carry each PR's and each Branch's Jira issue", () => {
+  const prs = [{ ...pr("s", { headRefName: "feat/x" }), jira: jira({ key: "ABC-1" }) }, pr("s", { number: 8, url: "#8", headRefName: "feat/y" })];
+  const branches = [{ ...branch("s", "feat/z", AT), jira: missing }, branch("s", "feat/w", hoursAgo(1))];
+  const [v] = sessionViews([session("s")], prs, branches, NOW);
+  assert.deepEqual(v.prs.map((p) => p.jira?.key ?? null), ["ABC-1", null]);
+  const heads = v.groups.flatMap((g) => (g.head && "name" in g.head ? [[g.head.name, g.head.jira?.state ?? null]] : []));
+  assert.deepEqual(heads, [["feat/w", null], ["feat/z", "not found"]]);
+});
+
+test("Jira data age: minutes since the oldest fetch among listed Branches, only when over 15 minutes", () => {
+  const ago = (min: number) => jira({ at: new Date(NOW - min * 60_000).toISOString() });
+  const onPr = (j: Jira | null): Pr => ({ ...pr("s"), jira: j });
+  const onBranch = (j: Jira | null): Branch => ({ ...branch("s", "b", AT), jira: j });
+  assert.equal(jiraDataAge([], [], NOW), null);
+  assert.equal(jiraDataAge([onPr(ago(1)), onPr(null)], [onBranch(ago(15))], NOW), null);
+  assert.equal(jiraDataAge([onPr(ago(1)), onPr(ago(20.5))], [onBranch(ago(3))], NOW), 20);
+  assert.equal(jiraDataAge([onPr(ago(1))], [onBranch(ago(42))], NOW), 42);
+  // A key not found in Jira was still fetched, so its age counts.
+  assert.equal(jiraDataAge([onPr({ ...missing, at: new Date(NOW - 30 * 60_000).toISOString() })], [], NOW), 30);
+  // Never-fetched keys don't count.
+  assert.equal(jiraDataAge([onPr(unfetched)], [onBranch(unfetched)], NOW), null);
 });
