@@ -38,7 +38,7 @@ enum Command {
     /// Read PRs: GitHub pull requests, each with its owner Session.
     #[command(subcommand)]
     Pr(PrCommand),
-    /// Read Branches: git branches a Session created a worktree for.
+    /// Read Branches: git branches a Session created a worktree for; record their Jira issues.
     #[command(subcommand)]
     Branch(BranchCommand),
     /// Tasks: units of delegated work, each with a Task directory; create, join and read them.
@@ -116,8 +116,30 @@ enum PrCommand {
 #[derive(Subcommand)]
 enum BranchCommand {
     /// Print every Branch whose owner is a listed Session as a JSON array; `at` is when its
-    /// worktree was created.
+    /// worktree was created and `jira` its Jira issue.
     List,
+    /// Record the Jira issue a Branch implements.
+    #[command(subcommand)]
+    Jira(JiraCommand),
+}
+
+#[derive(Subcommand)]
+enum JiraCommand {
+    /// Record `<key>` as the Jira issue of the Branch checked out here (or `--branch`),
+    /// replacing any earlier one. Checks neither ownership nor Jira.
+    Set {
+        /// The Jira key, such as `ABC-123`.
+        key: String,
+        /// A branch of the current directory's repository, instead of the one checked out.
+        #[arg(long)]
+        branch: Option<String>,
+    },
+    /// Unlink the Branch checked out here (or `--branch`) from its Jira issue.
+    Clear {
+        /// A branch of the current directory's repository, instead of the one checked out.
+        #[arg(long)]
+        branch: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -218,6 +240,12 @@ fn main() -> ExitCode {
             Ok(branches) => print_json(&branches),
             Err(err) => store_error(&err),
         },
+        Some(Command::Branch(BranchCommand::Jira(JiraCommand::Set { key, branch }))) => {
+            branch_jira(&store, branch.as_deref(), Some(&key))
+        }
+        Some(Command::Branch(BranchCommand::Jira(JiraCommand::Clear { branch }))) => {
+            branch_jira(&store, branch.as_deref(), None)
+        }
         Some(Command::Task(command)) => task(&store, command),
         Some(Command::Wt(WtCommand::Create { branch, args })) => wt_create(&store, &branch, &args),
         Some(Command::Guide) => {
@@ -314,6 +342,31 @@ fn wt_create(store: &Store, branch: &str, args: &[String]) -> ExitCode {
             }
         }
         Err(err) => error(1, &format!("{err:#}"), "`wt` must be on PATH"),
+    }
+}
+
+/// Runs `flow branch jira set/clear`, printing `{branch, jira}`: the Branch's key and the
+/// recorded `{key}` or null.
+fn branch_jira(store: &Store, branch: Option<&str>, jira: Option<&str>) -> ExitCode {
+    if let Some(key) = jira
+        && !flow::jira::is_key(key)
+    {
+        return error(
+            2,
+            &format!("{key:?} is not a Jira key"),
+            "a Jira key is the project key, a dash and the issue number, such as `ABC-123`",
+        );
+    }
+    match services::branch_jira(store, branch, jira) {
+        Ok(branch) => print_json(&serde_json::json!({
+            "branch": branch,
+            "jira": jira.map(|key| serde_json::json!({ "key": key })),
+        })),
+        Err(err) => error(
+            1,
+            &format!("{err:#}"),
+            "run it inside the repository, whose origin remote must be a GitHub URL, with the branch checked out or named with --branch",
+        ),
     }
 }
 

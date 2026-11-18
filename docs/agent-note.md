@@ -19,6 +19,14 @@ prints this note.
   `flow task list` prints every Task a listed Session is on, in slug order, and
   `flow task get <slug>` prints one; each is `{slug, dir, sessions: [ids], resources}`.
   `flow session list` and `flow session get` carry `task`: the Session's Task slug, or null.
+- Record the Jira issue a Branch implements with `flow branch jira set <KEY>` in its worktree,
+  or `flow branch jira set <KEY> --branch <name>` from the repo's main checkout (right after
+  `flow wt create`); `set` replaces any earlier key and `flow branch jira clear [--branch <name>]`
+  unlinks it. It checks neither ownership nor Jira. `flow branch list`, `flow pr list` and
+  `flow pr get` (through the PR's head Branch) carry it as `jira`: null, or
+  `{key, url, found, at, summary, status, category, type}`, where `url` is the issue's browse
+  URL and the rest are null until flow first fetches the key from Jira (`found` false: Jira
+  has no such key).
 - Managers launch an IC with `flow session start --name <task-slug> --brief <path> <repo-dir>`.
   It opens a new, unfocused herdr tab in `<repo-dir>` (the repo's main checkout, which needs a
   wt base), in a workspace named after your Session, starts Claude there with a fresh Session
