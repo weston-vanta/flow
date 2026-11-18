@@ -5,9 +5,10 @@
 //! in the last [`RECENT_DAYS`] days. Detail fetches every open PR, plus each closed or merged
 //! PR whose `updatedAt` differs from the stored one, in per-repo batches of at most
 //! [`BATCH`] PRs, [`PARALLEL`] batches at a time. A batch that fails writes nothing.
-//! Detail compares each PR's head with its repository's default branch, whose name is looked
-//! up once per repository and kept in [`DefaultBranches`]. A PR's required checks are those
-//! the default branch's rulesets name, also for a PR based on another branch.
+//! Detail compares each PR's head with its own base, named by discovery. Each repository's
+//! default branch, for its merge queue and required checks, is looked up once and kept in
+//! [`DefaultBranches`]. A PR's required checks are those the default branch's rulesets name,
+//! also for a PR based on another branch.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::process::{Command, Stdio};
@@ -95,9 +96,11 @@ pub fn poll_prs(store: &Store, timeout: Duration, branches: &DefaultBranches) ->
                                 .iter()
                                 .skip(i)
                                 .step_by(PARALLEL)
-                                .map(|(repo, numbers)| {
-                                    write_batch(store, gh, branches, repo, numbers).with_context(
+                                .map(|(repo, targets)| {
+                                    write_batch(store, gh, branches, repo, targets).with_context(
                                         || {
+                                            let numbers: Vec<u64> =
+                                                targets.iter().map(|(n, _)| *n).collect();
                                             format!(
                                                 "batch {repo} {numbers:?} failed; nothing written"
                                             )
@@ -125,8 +128,12 @@ pub fn poll_prs(store: &Store, timeout: Duration, branches: &DefaultBranches) ->
     cycle
 }
 
-/// Discovers the user's PRs and returns the batches to fetch: `(owner/name, numbers)`.
-fn plan(store: &Store, gh: &Gh) -> Result<Vec<(String, Vec<u64>)>> {
+/// A PR to fetch in detail: its number and, if it is open, its base branch to compare with.
+/// A closed PR is never behind, and its base may be gone.
+type Target = (u64, Option<String>);
+
+/// Discovers the user's PRs and returns the batches to fetch: `(owner/name, targets)`.
+fn plan(store: &Store, gh: &Gh) -> Result<Vec<(String, Vec<Target>)>> {
     let found = discover(gh)?;
     let stored: HashMap<String, Option<String>> = store
         .list(pr::KIND)?
@@ -139,18 +146,22 @@ fn plan(store: &Store, gh: &Gh) -> Result<Vec<(String, Vec<u64>)>> {
             (entity.id, updated_at)
         })
         .collect();
-    let mut by_repo: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    let mut by_repo: BTreeMap<String, Vec<Target>> = BTreeMap::new();
     for pr in found {
         let repo = pr.repository.name_with_owner;
         let stored = stored.get(&pr::key(&repo, pr.number)).cloned().flatten();
-        if pr.state == PrState::Open || stored.as_ref() != Some(&pr.updated_at) {
-            by_repo.entry(repo).or_default().push(pr.number);
+        let open = pr.state == PrState::Open;
+        if open || stored.as_ref() != Some(&pr.updated_at) {
+            by_repo
+                .entry(repo)
+                .or_default()
+                .push((pr.number, open.then_some(pr.base_ref_name)));
         }
     }
     Ok(by_repo
         .into_iter()
-        .flat_map(|(repo, numbers)| {
-            numbers
+        .flat_map(|(repo, targets)| {
+            targets
                 .chunks(BATCH)
                 .map(|chunk| (repo.clone(), chunk.to_vec()))
                 .collect::<Vec<_>>()
@@ -162,6 +173,7 @@ fn plan(store: &Store, gh: &Gh) -> Result<Vec<(String, Vec<u64>)>> {
 #[serde(rename_all = "camelCase")]
 struct Found {
     number: u64,
+    base_ref_name: String,
     state: PrState,
     updated_at: String,
     repository: Repository,
@@ -207,7 +219,7 @@ fn discover(gh: &Gh) -> Result<Vec<Found>> {
             .iter()
             .map(|(alias, search, after)| {
                 format!(
-                    "{alias}: search(type: ISSUE, first: 100, query: {}{}) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ ... on PullRequest {{ number state updatedAt repository {{ nameWithOwner }} }} }} }} ",
+                    "{alias}: search(type: ISSUE, first: 100, query: {}{}) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ ... on PullRequest {{ number baseRefName state updatedAt repository {{ nameWithOwner }} }} }} }} ",
                     literal(search),
                     after_arg(after.as_deref()),
                 )
@@ -227,7 +239,7 @@ fn discover(gh: &Gh) -> Result<Vec<Found>> {
     Ok(found)
 }
 
-/// The PR fields fetched in detail, other than check contexts and the default-branch compare.
+/// The PR fields fetched in detail, other than check contexts and the compare with its base.
 const PR_FIELDS: &str = "number url title state isDraft headRefName headRefOid baseRefName \
     mergeable reviewDecision updatedAt additions deletions changedFiles stackEntry { position stack { number } } \
     mergeQueueEntry { position } \
@@ -235,14 +247,14 @@ const PR_FIELDS: &str = "number url title state isDraft headRefName headRefOid b
     latestOpinionatedReviews(first: 20, writersOnly: true) { nodes { author { login } state onBehalfOf(first: 5) { nodes { slug } } } } \
     reviewThreads(first: 100) { nodes { isResolved isOutdated path line comments(first: 1) { nodes { author { login } bodyText url createdAt } } } }";
 
-/// The selection comparing the PR's head with `default_branch`: how far that branch is ahead,
+/// The selection comparing the PR's head with its base branch `base`: how far `base` is ahead,
 /// and its oldest commit the head lacks, with the PR that landed it. `associatedPullRequests`
 /// is asked of that one commit only; across many commits GitHub answers HTTP 502.
-fn compare(default_branch: &str) -> String {
+fn compare(base: &str) -> String {
     format!(
         "headRef {{ compare(headRef: {}) {{ aheadBy commits(first: 1) {{ nodes {{ committedDate \
          associatedPullRequests(first: 1) {{ nodes {{ mergedAt }} }} }} }} }} }}",
-        literal(default_branch)
+        literal(base)
     )
 }
 
@@ -447,21 +459,20 @@ struct RequiredCheck {
     context: String,
 }
 
-/// Fetches PRs `numbers` of `repo` in one query, pages through their check contexts, and
+/// Fetches the PRs `targets` of `repo` in one query, pages through their check contexts, and
 /// writes them all, stamped with the time the fetch began. Returns how many were written.
 fn write_batch(
     store: &Store,
     gh: &Gh,
     branches: &DefaultBranches,
     repo: &str,
-    numbers: &[u64],
+    targets: &[Target],
 ) -> Result<usize> {
     let at = Timestamp::now();
     let (owner, name) = repo
         .split_once('/')
         .ok_or_else(|| anyhow!("repo {repo:?} is not owner/name"))?;
     let default_branch = branches.get(gh, owner, name, repo)?;
-    let compare = compare(&default_branch);
     let in_repo = |prs: String| {
         format!(
             "repo: repository(owner: {}, name: {}) {{ {prs} }}",
@@ -475,9 +486,10 @@ fn write_batch(
         literal(&default_branch),
         required(&default_branch)
     );
-    for n in numbers {
+    for (n, base) in targets {
         selections += &format!(
-            "p{n}: pullRequest(number: {n}) {{ {PR_FIELDS} {compare} {} }} ",
+            "p{n}: pullRequest(number: {n}) {{ {PR_FIELDS} {} {} }} ",
+            base.as_deref().map(compare).unwrap_or_default(),
             contexts(None)
         );
     }
@@ -492,9 +504,9 @@ fn write_batch(
         .flat_map(|parameters| parameters.required_status_checks)
         .map(|check| check.context)
         .collect();
-    let mut prs: Vec<RawPr> = numbers
+    let mut prs: Vec<RawPr> = targets
         .iter()
-        .map(|n| field(&data, &["repo", &format!("p{n}")]))
+        .map(|(n, _)| field(&data, &["repo", &format!("p{n}")]))
         .collect::<Result<_>>()?;
 
     loop {
@@ -574,14 +586,14 @@ fn github(
             size,
         });
     // When the oldest commit the head lacks landed: its PR's merge, as a merge queue commits
-    // hours before landing, else its commit date. Past 1,000 commits behind GitHub lists only
-    // the newest 1,000, so this is then an upper bound. A queued PR is never behind: the
-    // queue tests it against the latest default branch.
+    // hours before landing, else its commit date. For a base restacked onto the default
+    // branch, that can be earlier than when the commit reached the base. Past 1,000 commits
+    // behind GitHub lists only the newest 1,000, so this is then an upper bound. A queued PR
+    // is never behind: the queue tests it against the latest default branch.
     let behind_since = raw
         .head_ref
         .and_then(|head| head.compare)
-        .filter(|_| raw.state == PrState::Open && raw.base_ref_name == default_branch)
-        .filter(|_| merge_queue.is_none())
+        .filter(|_| raw.state == PrState::Open && merge_queue.is_none())
         .filter(|compare| compare.ahead_by > 0)
         .and_then(|compare| compare.commits.nodes.into_iter().next())
         .map(|commit| {

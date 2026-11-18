@@ -70,9 +70,8 @@ pub struct Github {
     /// The Feedback: unresolved, not-outdated review threads, each by its first comment.
     #[serde(default)]
     pub threads: Vec<Thread>,
-    /// When the oldest default-branch commit the head lacks landed there; `None` unless the
-    /// PR is open, based on the default branch, behind it by at least one commit, and not
-    /// queued.
+    /// When the oldest commit on the PR's base that its head lacks landed there; `None` unless
+    /// the PR is open, behind its base by at least one commit, and not queued.
     #[serde(default)]
     pub behind_since: Option<String>,
     /// The PR's place in its repository's merge queue; `None` unless it is queued.
