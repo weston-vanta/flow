@@ -135,7 +135,7 @@
     }));
     const review = g.reviewDecision === "REVIEW_REQUIRED" ? "required, none requested" : g.reviewDecision === "APPROVED" ? "approved" : "not required";
     return {
-      base: section(baseProblems(g, below, now), below == null ? "no conflict, up to date" : "no conflict"),
+      base: section(baseProblems(g, below, now), below == null ? `no conflict, up to date with ${g.baseRefName}` : "no conflict"),
       ci: section(
         failingChecks(g).map((c) => ({ name: c.name, url: c.url })),
         running ? "running" : "passing"
@@ -175,15 +175,27 @@
     const done2 = (s) => s.status?.state === "done" ? 1 : 0;
     const started = (s) => s.origin ? Date.parse(s.origin.at) : -Infinity;
     const sorted = [...sessions2].sort((a, b) => done2(a) - done2(b) || started(b) - started(a));
+    const named = /* @__PURE__ */ new Set([...heads, ...branches2.map((b) => b.key)]);
+    const head = (g) => `${g.repo}:${g.headRefName}`;
+    const base = (g) => `${g.repo}:${g.baseRefName}`;
     return sorted.map((s) => {
       const raw = stacksOf(s.id, prs2);
-      const stacks = raw.map(
-        (stack) => stack.map((g, i) => {
-          const below = stack.find((o) => o.headRefName === g.baseRefName)?.number ?? null;
-          return prView(g, stack.length > 1 ? i + 1 : null, below, now);
-        })
-      );
+      const view = (stack) => stack.map((g, i) => {
+        const below = stack.find((o) => o.headRefName === g.baseRefName)?.number ?? null;
+        return prView(g, stack.length > 1 ? i + 1 : null, below, now);
+      });
+      const on = (key2) => raw.filter((st) => base(st[0]) === key2).map(view);
       const own = loose.filter((b) => b.owner === s.id);
+      const feature = new Set(raw.filter((st) => st.length === 1 && !named.has(base(st[0])) && on(head(st[0])).length).map((st) => head(st[0])));
+      const fbranches = /* @__PURE__ */ new Set([...feature, ...own.map((b) => b.key)]);
+      const groups = [
+        ...raw.flatMap((st) => {
+          if (fbranches.has(base(st[0]))) return [];
+          if (feature.has(head(st[0]))) return [{ head: view(st)[0], stacks: on(head(st[0])) }];
+          return [{ head: null, stacks: [view(st)] }];
+        }),
+        ...own.map((b) => ({ head: b.branch, stacks: on(b.key) }))
+      ];
       const state = s.status?.state ?? null;
       const cwd = s.origin?.cwd;
       const title = s.context?.title ?? null;
@@ -195,9 +207,8 @@
         repo: raw[0]?.[0].repo ?? own[0]?.repo ?? (cwd ? cwd.split("/").filter(Boolean).pop() ?? null : null),
         cde: s.origin?.cde ?? null,
         activity: activityLine(s),
-        stacks,
-        prs: stacks.flat(),
-        branches: own.map((b) => b.branch)
+        groups,
+        prs: groups.flatMap((g) => [...g.head && typeof g.head !== "string" ? [g.head] : [], ...g.stacks.flat()])
       };
     });
   }
@@ -254,24 +265,32 @@
     const l = p[col];
     return `<button type="button" class="led" data-open="${esc(p.url)}" data-col="${col}" title="${esc(l.tip)}" aria-label="${esc(`${l.tip}. Show ${label} details for #${p.number}`)}">${light(l)}</button>`;
   };
-  function strip(p, j, n, selected) {
-    const word = nodeWord(p);
+  function strip(p, j, n, selected, feature = false) {
+    const word = feature ? `feature branch \xB7 ${nodeWord(p)}` : nodeWord(p);
     return `<div class="strip pr${selected ? " sel" : ""}">
     <span class="needle" aria-hidden="true"></span>
     <button type="button" class="pick" data-open="${esc(p.url)}" title="${esc(`#${p.number} ${p.title} \xB7 ${word}`)}" aria-label="${esc(`Tune in #${p.number}, ${p.title}, ${word}`)}" aria-pressed="${selected}">
-      ${nodeCell(j, n, `<span class="node ${nodeClass(p)}">${p.pos ?? ""}</span>`)}
+      ${nodeCell(j, n, `<span class="node ${nodeClass(p)}">${feature ? "F" : p.pos ?? ""}</span>`)}
       <span class="tline"><span class="title ${p.node}">${esc(p.title)}</span>${p.queue ? `<span class="queue" title="${esc(p.queue.text)}">${gauge(p.queue)}<span class="mono">${p.queue.label}</span></span>` : ""}</span>
     </button>
     ${COLUMNS.map(([col, label]) => led(p, col, label)).join("")}
   </div>`;
   }
-  var branchPlate = (name) => `<div class="plate branch" role="group" aria-label="Branch ${esc(name)}, no pull request yet">
-    <div class="strip" title="${esc(name)} \xB7 no pull request yet">
-      <span class="pick">${nodeCell(0, 1, '<span class="node branch"></span>')}<span class="title mono">${esc(name)}</span></span>
+  var branchPlate = (name, feature = false) => `<div class="plate branch" role="group" aria-label="${feature ? "Feature branch" : "Branch"} ${esc(name)}, no pull request yet">
+    <div class="strip" title="${esc(name)} \xB7 ${feature ? "feature branch, " : ""}no pull request yet">
+      <span class="pick">${nodeCell(0, feature ? 2 : 1, `<span class="node branch">${feature ? "F" : ""}</span>`)}<span class="title mono">${esc(name)}</span></span>
       ${'<span class="led"></span>'.repeat(COLUMNS.length)}
     </div>
   </div>`;
   var plate = (stack, url) => `<div class="plate" role="group" aria-label="${stack.length === 1 ? "Pull request" : `Stack of ${stack.length} pull requests`}">${stack.map((p, j) => strip(p, j, stack.length, p.url === url)).join("")}</div>`;
+  function group(g, url) {
+    if (g.head == null) return plate(g.stacks[0], url);
+    if (!g.stacks.length) return branchPlate(g.head);
+    const n = g.stacks.length;
+    const head = typeof g.head === "string" ? branchPlate(g.head, true) : `<div class="plate" role="group" aria-label="Feature PR">${strip(g.head, 0, 2, g.head.url === url, true)}</div>`;
+    const name = typeof g.head === "string" ? g.head : `#${g.head.number}`;
+    return `<div class="fgroup" role="group" aria-label="${esc(`Feature branch ${name} with ${n} ${n === 1 ? "stack" : "stacks"}`)}">${head}<div class="fstacks">${g.stacks.map((s) => `<div class="fstack">${plate(s, url)}</div>`).join("")}</div></div>`;
+  }
   var ext = (url, cls, title, text) => `<a class="${cls}" href="${esc(url)}" target="_blank" rel="noreferrer" title="${esc(title)}">${esc(text)}</a>`;
   function items(p, col, expanded) {
     const t = p.tray;
@@ -340,7 +359,7 @@
     </section>`;
     }
     const activity = v.activity?.replace(/\s+/g, " ");
-    const body = v.stacks.length || v.branches.length ? `<div class="plates">${v.stacks.map((s) => plate(s, url)).join("")}${v.branches.map(branchPlate).join("")}</div>` : '<div class="noprs">no pull requests yet</div>';
+    const body = v.groups.length ? `<div class="plates">${v.groups.map((g) => group(g, url)).join("")}</div>` : '<div class="noprs">no pull requests yet</div>';
     return `<section class="chan" aria-label="${esc(v.title)}">
       <div class="chead">${key(v, false)}<div class="ctext">
         <div class="cline">${h2}</div>
@@ -364,6 +383,7 @@
       <span class="li"><span class="node key queued"></span>in merge queue</span>
       <span class="li"><span class="node key merged"></span>merged</span>
       <span class="li"><span class="node key branch"></span>draft, or branch with no PR</span>
+      <span class="li"><span class="node key open">F</span>feature branch</span>
     </div>
   </div>`;
   function render(views, toggled2, notices, live, legend2, t) {

@@ -265,6 +265,7 @@ button.hint kbd.down {
 .node.key {
   width: 14px;
   height: 14px;
+  font-size: 8px;
 }
 .node.key.branch {
   border-color: #8C8981;
@@ -439,6 +440,38 @@ button.hint kbd.down {
   padding: 2px 0;
   border-radius: 3px;
   background: var(--plate);
+}
+.fgroup,
+.fstacks {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.fstacks {
+  margin-left: 40px;
+}
+.fstack {
+  position: relative;
+}
+.fstack::before,
+.fstack::after {
+  content: "";
+  position: absolute;
+  left: -15px;
+  background: var(--rail);
+}
+.fstack::before {
+  top: -10px;
+  width: 2px;
+  height: calc(100% + 10px);
+}
+.fstack:last-child::before {
+  height: 32px;
+}
+.fstack::after {
+  top: 20px;
+  width: 15px;
+  height: 2px;
 }
 .plate.branch {
   background: transparent;
