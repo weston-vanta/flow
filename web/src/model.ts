@@ -1,5 +1,5 @@
 // The view model: pure functions from flowd's API JSON (`flow session list`, `flow pr list`,
-// `flow branch list`) to what the dashboard shows. No DOM here, so `node --test` covers it directly.
+// `flow branch list`, `flow task list`) to what the dashboard shows. No DOM here, so `node --test` covers it directly.
 
 /** A facet's fields with the time its fact was observed; `null` if never written. */
 type Facet<T> = (T & { at: string }) | null;
@@ -19,6 +19,23 @@ export interface Session {
   status: Facet<{ state: State }>;
   context: Facet<{ title: string | null; branch: string | null }>;
   activity: Facet<{ prompt: string | null; reply: string | null }>;
+  /** The slug of the Task it joined, if any. */
+  task: string | null;
+}
+
+/** Something outside flow a Task points at. */
+export interface Resource {
+  url: string;
+  title: string | null;
+}
+
+/** A Task as `flow task list` prints it. */
+export interface Task {
+  slug: string;
+  dir: string;
+  /** The ids of its listed Sessions. */
+  sessions: string[];
+  resources: Resource[];
 }
 
 export interface Check {
@@ -177,6 +194,8 @@ export interface SessionView {
   repo: string | null;
   cde: string | null;
   activity: string | null;
+  /** The slug of its Task, if any. */
+  task: string | null;
   /** The Session's Stacks and Branches with no PR, as drawn. */
   groups: Group[];
   /** The PRs of `groups`, flattened in the order they are drawn. */
@@ -524,6 +543,7 @@ export function sessionViews(sessions: Session[], prs: Pr[], branches: Branch[] 
       repo: raw[0]?.[0].repo ?? own[0]?.repo ?? (cwd ? cwd.split("/").filter(Boolean).pop() ?? null : null),
       cde: s.origin?.cde ?? null,
       activity: activityLine(s),
+      task: s.task,
       groups,
       prs: groups.flatMap((g) => [...(g.head && !("name" in g.head) ? [g.head] : []), ...g.stacks.flat()]),
     };
@@ -584,4 +604,67 @@ export function jiraDataAge(prs: Pr[], branches: Branch[], now = Date.now()): nu
   if (!ats.length) return null;
   const ms = now - Math.min(...ats);
   return ms > 15 * 60_000 ? Math.floor(ms / 60_000) : null;
+}
+
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+/** A URL without its scheme, `www.`, query, fragment and a trailing `/` or `/edit`. */
+export const shortUrl = (url: string) =>
+  url.replace(/^[a-z]+:\/\//i, "").replace(/^www\./i, "").replace(/[?#].*$/, "").replace(/\/(edit)?$/, "");
+
+/** How the Session panel shows a Resource: its title, else its short URL in mono. A `file://`
+ * Resource is its path as text, with no host and no link. */
+export interface ResourceView {
+  url: string;
+  label: string;
+  mono: boolean;
+  /** The URL's host without `www.`; empty for `file://`. */
+  host: string;
+  link: boolean;
+}
+
+function resourceView(r: Resource): ResourceView {
+  const file = /^file:\/\//i.test(r.url);
+  const short = file ? r.url.replace(/^file:\/\//i, "") : shortUrl(r.url);
+  return {
+    url: r.url,
+    label: r.title ?? short,
+    mono: r.title == null,
+    host: file ? "" : short.split("/")[0],
+    link: !file,
+  };
+}
+
+/** The Session panel: the Session, "N pull requests · N branches", and its Task. */
+export interface PanelView {
+  session: SessionView;
+  counts: string;
+  /** Null when the Session is not part of a listed Task. */
+  task: {
+    /** "N resources", plus "· N sessions" when more than one. */
+    counts: string;
+    resources: ResourceView[];
+    /** The Task's other listed Sessions, in rack order. */
+    others: SessionView[];
+  } | null;
+}
+
+/** The panel of Session `id`, or null when it isn't in `views`. */
+export function sessionPanel(id: string, views: SessionView[], tasks: Task[]): PanelView | null {
+  const v = views.find((w) => w.id === id);
+  if (!v) return null;
+  const branches = v.groups.filter((g) => g.head && "name" in g.head).length;
+  const parts = [v.prs.length && plural(v.prs.length, "pull request"), branches && plural(branches, "branch", "branches")].filter(Boolean);
+  const t = v.task == null ? null : tasks.find((x) => x.slug === v.task);
+  return {
+    session: v,
+    counts: parts.join(" · ") || "no pull requests",
+    task: t
+      ? {
+          counts: plural(t.resources.length, "resource") + (t.sessions.length > 1 ? ` · ${t.sessions.length} sessions` : ""),
+          resources: t.resources.map(resourceView),
+          others: views.filter((w) => w.id !== v.id && t.sessions.includes(w.id)),
+        }
+      : null,
+  };
 }

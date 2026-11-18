@@ -1,7 +1,8 @@
 // The "flow" receiver face, flat, as HTML strings: a header strip, the Session channels with their
-// Stacks as plates of PR strips, the window showing the selected PR, and the legend behind `h`.
+// Stacks as plates of PR strips, the window showing the selected PR or the open Session's panel,
+// and the legend behind `h`.
 import { age, attentionLight, isFolded } from "./model.ts";
-import type { BranchView, Group, JiraView, Light, PrView, ReviewLight, SessionView } from "./model.ts";
+import type { BranchView, Group, JiraView, Light, PanelView, PrView, ReviewLight, SessionView } from "./model.ts";
 
 export function esc(s: string | number): string {
   return String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -167,7 +168,7 @@ function tray(p: PrView, t: TrayState): string {
 /** The window with no PR selected: what it will show and how to fill it. */
 const EMPTY = `<header class="whead">
     <div class="wline"><span class="node none" aria-hidden="true"></span><span>no pull request tuned in</span></div>
-    <span class="whint">Select a strip, or press ↑ ↓</span>
+    <span class="whint">Select a strip or a session title, or press ↑ ↓</span>
   </header>${COLUMNS.map(([, label]) => `<div class="tsec idle"><span class="tlamp"><span class="lamp unlit" aria-hidden="true"></span></span><span class="thd">${label}</span></div>`).join("")}`;
 
 /** The status label and how long the Session has had it: "waiting for you, 31 min". */
@@ -187,21 +188,61 @@ function meta(v: SessionView): string {
   }${DOT}<span title="${esc(statusTip(v))}"><span class="${v.status.lamp}">${esc(v.status.state ?? "unknown")}</span>${since}</span></span>`;
 }
 
-function channel(v: SessionView, toggled: Set<string>, url: string | null): string {
-  // Untitled and done Sessions show their title muted.
-  const h2 = `<h2${v.untitled || v.status.state === "done" ? ' class="muted"' : ""}>${esc(v.title)}</h2>`;
+/** The status word and how long the Session has had it, with the lamp's colour on "waiting". */
+const statusWord = (v: SessionView) =>
+  `<span class="${v.status.lamp === "act" ? "act" : ""}">${esc(v.status.tip)}</span>${v.status.since ? ` ${esc(age(v.status.since))}` : ""}`;
+
+/** The window for the open Session: its header, then its Task's Resources and other Sessions. */
+function panelHtml({ session: v, counts, task }: PanelView): string {
+  const activity = v.activity?.replace(/\s+/g, " ");
+  const resources = task?.resources.length
+    ? `<div class="pres">${task.resources.map((r) => {
+        const cls = `rlabel${r.mono ? " mono" : ""}`;
+        const label = r.link
+          ? `<a class="${cls}" href="${esc(r.url)}" target="_blank" rel="noreferrer" title="${esc(r.url)}">${esc(r.label)}</a>`
+          : `<span class="${cls}" title="${esc(r.url)}">${esc(r.label)}</span>`;
+        return `<div class="rrow">${label}${r.host ? `<span class="rhost mono">${esc(r.host)}</span>` : ""}</div>`;
+      }).join("")}</div>`
+    : "";
+  const others = task?.others.length
+    ? `<div class="pothers"><span class="plabel">also on this task</span>${task.others.map((o) => `<button type="button" class="psess" data-goto="${esc(o.id)}" title="Show this session">
+          ${lamp(o.status)}<span class="ptitle">${esc(o.title)}</span><span class="pstatus">${statusWord(o)}</span>
+        </button>`).join("")}</div>`
+    : "";
+  return `<header class="whead">
+      <div class="wline">
+        <span class="wkey" title="${esc(statusTip(v))}">${lamp(v.status)}</span>
+        <span>${statusWord(v)}</span>
+        <span class="wsize">${esc(counts)}</span>
+        ${CLOSE.replace("Close details", "Close session")}
+      </div>
+      <h2>${esc(v.title)}</h2>
+      ${activity ? `<span class="wactivity" title="${esc(v.activity!)}">${esc(activity)}</span>` : ""}
+      <span class="wmeta">${esc(v.cde ?? "unknown CDE")}${v.repo ? `${DOT}<span class="mono">${esc(v.repo)}</span>` : ""}</span>
+    </header>
+    <section class="psec" aria-label="task">
+      <div class="thd"><h3>task</h3><span>${task ? esc(task.counts) : "not part of a task"}</span></div>
+      ${resources}${others}
+    </section>`;
+}
+
+function channel(v: SessionView, toggled: Set<string>, url: string | null, open: boolean): string {
+  // Titles sit muted; the open Session's is full ink, with the needle.
+  const h2 = `<h2><button type="button" class="stitle" data-session="${esc(v.id)}" aria-pressed="${open}" aria-label="${esc(`${open ? "Close" : "Show"} session details: ${v.title}`)}" title="${esc(v.title)}">${esc(v.title)}</button></h2>`;
+  const cls = `chan${open ? " open" : ""}`;
+  const needle = '<span class="needle" aria-hidden="true"></span>';
   if (isFolded(v, toggled)) {
     const a = attentionLight(v);
-    return `<section class="chan folded" data-toggle="${esc(v.id)}" aria-label="${esc(v.title)}">
-      <div class="chead">${key(v, true)}<div class="ctext"><div class="cline">${h2}<span class="attn" title="${esc(a.tip)}" aria-label="${esc(a.tip)}">${lamp(a)}</span></div></div></div>
+    return `<section class="${cls} folded" data-chan="${esc(v.id)}" data-toggle="${esc(v.id)}" aria-label="${esc(v.title)}">
+      <div class="chead">${needle}${key(v, true)}<div class="ctext"><div class="cline">${h2}<span class="attn" title="${esc(a.tip)}" aria-label="${esc(a.tip)}">${lamp(a)}</span></div></div></div>
     </section>`;
   }
   const activity = v.activity?.replace(/\s+/g, " ");
   const body = v.groups.length
     ? `<div class="plates">${v.groups.map((g) => group(g, url)).join("")}</div>`
     : '<div class="noprs">no pull requests yet</div>';
-  return `<section class="chan" aria-label="${esc(v.title)}">
-      <div class="chead">${key(v, false)}<div class="ctext">
+  return `<section class="${cls}" data-chan="${esc(v.id)}" aria-label="${esc(v.title)}">
+      <div class="chead">${needle}${key(v, false)}<div class="ctext">
         <div class="cline">${h2}</div>
         ${activity ? `<span class="activity" title="${esc(v.activity!)}">${esc(activity)}</span>` : ""}
         ${meta(v)}
@@ -238,7 +279,8 @@ const LEGEND = `<div class="legend" role="note" aria-label="Legend">
 
 /** `toggled` holds the ids of Sessions the user has folded or unfolded against their default;
  * `notices` are warnings shown in the header; `live` lights the power lamp; `legend` is whether
- * the legend is open; `t` is the selected PR's tray, drawn only while its PR is in `views`. */
+ * the legend is open; `t` is the selected PR's tray, drawn only while its PR is in `views`;
+ * `panel` is the open Session's panel, shown instead of any tray. */
 export function render(
   views: SessionView[],
   toggled: Set<string>,
@@ -246,8 +288,10 @@ export function render(
   live: boolean,
   legend: boolean,
   t: TrayState | null,
+  panel: PanelView | null = null,
 ): string {
-  const p = t && views.flatMap((v) => v.prs).find((x) => x.url === t.url);
+  const p = !panel && t && views.flatMap((v) => v.prs).find((x) => x.url === t.url);
+  const open = panel?.session.id ?? null;
   return `<div class="face">
     <header class="top">
       ${WORDMARK}<span class="tagline">agent sessions and pull requests</span>
@@ -261,9 +305,9 @@ export function render(
     <div class="deck">
       <main class="rack">
         <div class="scale" aria-hidden="true"><span></span><span></span><span></span>${COLUMNS.map(([, label]) => `<span>${label}</span>`).join("")}</div>
-        <div class="chans">${views.length ? views.map((v) => channel(v, toggled, p ? p.url : null)).join("") : '<p class="empty">No Sessions.</p>'}</div>
+        <div class="chans">${views.length ? views.map((v) => channel(v, toggled, p ? p.url : null, v.id === open)).join("") : '<p class="empty">No Sessions.</p>'}</div>
       </main>
-      <aside class="window"><div class="wbody"><div class="tscroll" role="region" aria-label="Pull request details">${p && t ? tray(p, t) : EMPTY}</div></div></aside>
+      <aside class="window"><div class="wbody"><div class="tscroll" role="region" aria-label="${panel ? "Session details" : "Pull request details"}">${panel ? panelHtml(panel) : p && t ? tray(p, t) : EMPTY}</div></div></aside>
     </div>
   </div>
   ${legend ? LEGEND : ""}`;
