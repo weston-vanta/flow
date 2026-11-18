@@ -57,7 +57,7 @@ struct Launch {
 }
 
 impl Launch {
-    /// A repo with a wt base, a brief, the Manager Session titled "Plan the factory" in the
+    /// A repo with a wt base, Task `widgets` with a `brief.md`, the Manager Session titled "Plan the factory" in the
     /// Store, a fake `gitpod` naming this CDE "Flow", and a fake `herdr` answering `ANSWERS`
     /// except where `overrides` says otherwise.
     fn new(overrides: &[(&str, &str)]) -> Self {
@@ -120,9 +120,9 @@ impl Launch {
         (out.status.code().unwrap(), json)
     }
 
-    /// Starts IC `widgets` with this test's brief and repo, plus `extra` arguments.
+    /// Starts an IC on Task `widgets` in this test's repo, plus `extra` arguments.
     fn start_widgets(&self, extra: &[&str]) -> (i32, Value) {
-        let mut args = vec!["--name", "widgets", "--brief", self.brief.to_str().unwrap()];
+        let mut args = vec!["--task", "widgets"];
         args.extend_from_slice(extra);
         args.push(self.repo.to_str().unwrap());
         self.start(&args)
@@ -172,10 +172,7 @@ fn starts_an_ic_in_a_new_tab_of_the_managers_workspace() {
             "agent start widgets --kind claude --pane w2:p4 --timeout 60000 -- --session-id {id} --name widgets"
         )
     );
-    assert_eq!(
-        calls[3],
-        format!("agent prompt w2:p4 /flow:ic {}", path(&l.brief))
-    );
+    assert_eq!(calls[3], "agent prompt w2:p4 /flow:ic widgets");
     assert_eq!(
         out,
         json!({"id": id, "name": "widgets", "cde": "Flow", "pane": "w2:p4"})
@@ -297,21 +294,51 @@ fn stops_when_the_repo_has_no_wt_base() {
 fn stops_when_the_brief_is_missing() {
     let l = Launch::new(&[]);
     fs::remove_file(&l.brief).unwrap();
-    assert_fails(&l, &[], "brief", 0);
+    assert_fails(&l, &[], "brief.md", 0);
+}
+
+#[test]
+fn stops_when_the_task_does_not_exist() {
+    let l = Launch::new(&[]);
+    let (code, out) = l.start(&["--task", "gadgets", path(&l.repo)]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out["error"].as_str().unwrap().contains("brief.md"), "{out}");
+    assert!(l.calls().is_empty());
+}
+
+#[test]
+fn name_and_brief_are_usage_errors_pointing_at_task() {
+    let l = Launch::new(&[]);
+    for args in [
+        vec!["--name", "widgets", path(&l.repo)],
+        vec!["--brief", path(&l.brief), path(&l.repo)],
+        vec![
+            "--name",
+            "widgets",
+            "--brief",
+            path(&l.brief),
+            path(&l.repo),
+        ],
+    ] {
+        let (code, out) = l.start(&args);
+        assert_eq!(code, 2, "{args:?}: {out}");
+        assert!(out["help"].as_str().unwrap().contains("--task"), "{out}");
+    }
+    assert!(l.calls().is_empty());
 }
 
 #[test]
 fn bad_arguments_are_usage_errors() {
     let l = Launch::new(&[]);
     for args in [
-        vec!["--name", "Widgets!"],
-        vec!["--name", "widgets", "--id", "not-a-uuid"],
+        vec!["--task", "Widgets!", path(&l.repo)],
+        vec!["--task", "widgets", "--id", "not-a-uuid", path(&l.repo)],
     ] {
-        let (code, out) = l.start_widgets(&args);
+        let (code, out) = l.start(&args);
         assert_eq!(code, 2, "{args:?}: {out}");
         assert!(out["help"].is_string());
     }
-    let (code, _) = l.start(&["--name", "widgets", path(&l.repo)]);
+    let (code, _) = l.start(&[path(&l.repo)]);
     assert_eq!(code, 2);
     assert!(l.calls().is_empty());
 }
@@ -321,8 +348,7 @@ fn needs_a_workspace_outside_a_session() {
     let l = Launch::new(&[]);
     let out =
         l.ts.flow()
-            .args(["session", "start", "--name", "widgets", "--brief"])
-            .args([path(&l.brief), path(&l.repo)])
+            .args(["session", "start", "--task", "widgets", path(&l.repo)])
             .output()
             .unwrap();
     assert_eq!(out.status.code(), Some(2));
@@ -393,9 +419,8 @@ fn starts_an_ic_on_another_cde_over_ssh() {
             "env-remote.ona.environment".to_owned(),
             format!(
                 "zsh -lc ''\\''/efs-home/flow/bin/flow'\\'' '\\''session'\\'' '\\''start'\\'' \
-                 '\\''--id'\\'' '\\''{REMOTE_ID}'\\'' '\\''--name'\\'' '\\''widgets'\\'' \
-                 '\\''--workspace'\\'' '\\''Plan the factory'\\'' '\\''--brief'\\'' '\\''{}'\\'' '\\''{}'\\'''",
-                path(&l.brief),
+                 '\\''--id'\\'' '\\''{REMOTE_ID}'\\'' '\\''--task'\\'' '\\''widgets'\\'' \
+                 '\\''--workspace'\\'' '\\''Plan the factory'\\'' '\\''{}'\\'''",
                 path(&l.repo)
             ),
         ]

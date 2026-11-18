@@ -7,7 +7,7 @@ use std::panic;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::error::ErrorKind;
+use clap::error::{ContextKind, ContextValue, ErrorKind};
 use clap::{CommandFactory, Parser, Subcommand};
 use jiff::Timestamp;
 use serde::Serialize;
@@ -63,15 +63,13 @@ enum SessionCommand {
         /// The Claude session id; defaults to `$CLAUDE_CODE_SESSION_ID`, the calling Session.
         id: Option<String>,
     },
-    /// Start an IC Session in a new, unfocused herdr tab on this CDE (or `--cde`), running
-    /// `/flow:ic <brief>`. Prints `{id, name, cde, pane}`.
+    /// Start an IC Session on a Task in a new, unfocused herdr tab on this CDE (or `--cde`),
+    /// running `/flow:ic <slug>`. Prints `{id, name, cde, pane}`.
     Start {
-        /// The Task slug: the Session's name and the tab's label (`[a-z][a-z0-9_-]`, at most 32).
+        /// The Task's slug: the Session's name and the tab's label. Its Task directory must
+        /// hold the brief, `brief.md`.
         #[arg(long)]
-        name: String,
-        /// The brief file, on /efs-home.
-        #[arg(long)]
-        brief: PathBuf,
+        task: String,
         /// The herdr workspace the tab goes in, created if missing; defaults to the calling
         /// Session's title, else its id. Set by the remote form, which has no calling Session.
         #[arg(long, hide = true)]
@@ -199,8 +197,7 @@ fn main() -> ExitCode {
         },
         Some(Command::Session(SessionCommand::Get { id })) => session_get(&store, id),
         Some(Command::Session(SessionCommand::Start {
-            name,
-            brief,
+            task,
             workspace,
             cde,
             id,
@@ -208,8 +205,7 @@ fn main() -> ExitCode {
         })) => session_start(
             &store,
             launch::Request {
-                name: &name,
-                brief: &brief,
+                task: &task,
                 workspace,
                 cde,
                 id,
@@ -473,5 +469,16 @@ fn usage_error(err: clap::Error) -> ExitCode {
         .next()
         .unwrap_or_default()
         .trim_start_matches("error: ");
-    error(2, message, "run `flow --help` to list commands")
+    // `flow session start --name/--brief` went with `--task`; a Manager may still pass them.
+    let retired = err.kind() == ErrorKind::UnknownArgument
+        && matches!(
+            err.get(ContextKind::InvalidArg),
+            Some(ContextValue::String(arg)) if arg.starts_with("--name") || arg.starts_with("--brief")
+        );
+    let help = if retired {
+        "`flow session start` takes `--task <slug>` instead of `--name` and `--brief`; run /flow:go again to create the Task and its brief.md"
+    } else {
+        "run `flow --help` to list commands"
+    };
+    error(2, message, help)
 }
