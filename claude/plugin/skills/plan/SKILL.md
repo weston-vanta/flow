@@ -27,9 +27,9 @@ Cut the approved `spec.md` into PRs the Director can review, and give each PR a 
            │                   └─ feature PR
            └─ 8 docs
      ```
-   - one line per PR saying what it achieves (in words, not by requirement number);
+   - one line per PR saying what it achieves (in words, not by requirement number), ending with its Jira key when it has one, for example `2 writer: … (ABC-12)`. A Feature branch's line carries a key only when one is paired with the whole feature, such as an epic;
    - the Review passes, picked with `flow:review`.
 
    It lists no Resources: `flow task get` is their one list.
-2. **Write the builder briefs** once the plan is approved: one `prs/<nn>-<name>.md` per PR, numbered as in the picture. A brief has no fixed format, only a test: could a fresh agent with this brief and the repo finish the PR without asking? Point at `spec.md`, the repo's guidance and the code by path rather than pasting them, and say what the PR leaves to its siblings. A brief for a PR based on a Feature branch gives the one line of feature context its body opens with.
-3. **Revise a brief** only when a reshape or a Revise round changes its PR, and `plan.md` whenever the plan changes.
+2. **Write the builder briefs** once the plan is approved: one `prs/<nn>-<name>.md` per PR, numbered as in the picture. A brief has no fixed format, only a test: could a fresh agent with this brief and the repo finish the PR without asking? Point at `spec.md`, the repo's guidance and the code by path rather than pasting them, and say what the PR leaves to its siblings. A brief carries no Jira keys: the IC records them, and the Builder needs none. A brief for a PR based on a Feature branch gives the one line of feature context its body opens with.
+3. **Revise a brief** only when a reshape or a Revise round changes its PR, and `plan.md` whenever the plan changes, a key the Director names included.
