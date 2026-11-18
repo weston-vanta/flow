@@ -1,7 +1,7 @@
 // The "flow" receiver face, flat, as HTML strings: a header strip, the Session channels with their
 // Stacks as plates of PR strips, the window showing the selected PR, and the legend behind `h`.
 import { age, attentionLight, isFolded } from "./model.ts";
-import type { Light, PrView, ReviewLight, SessionView } from "./model.ts";
+import type { Group, Light, PrView, ReviewLight, SessionView } from "./model.ts";
 
 export function esc(s: string | number): string {
   return String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -50,12 +50,13 @@ const led = (p: PrView, col: Column, label: string) => {
   return `<button type="button" class="led" data-open="${esc(p.url)}" data-col="${col}" title="${esc(l.tip)}" aria-label="${esc(`${l.tip}. Show ${label} details for #${p.number}`)}">${light(l)}</button>`;
 };
 
-function strip(p: PrView, j: number, n: number, selected: boolean): string {
-  const word = nodeWord(p);
+/** A PR's strip; `feature` marks a feature PR, drawn with an "F" node and the branch line below. */
+function strip(p: PrView, j: number, n: number, selected: boolean, feature = false): string {
+  const word = feature ? `feature branch · ${nodeWord(p)}` : nodeWord(p);
   return `<div class="strip pr${selected ? " sel" : ""}">
     <span class="needle" aria-hidden="true"></span>
     <button type="button" class="pick" data-open="${esc(p.url)}" title="${esc(`#${p.number} ${p.title} · ${word}`)}" aria-label="${esc(`Tune in #${p.number}, ${p.title}, ${word}`)}" aria-pressed="${selected}">
-      ${nodeCell(j, n, `<span class="node ${nodeClass(p)}">${p.pos ?? ""}</span>`)}
+      ${nodeCell(j, n, `<span class="node ${nodeClass(p)}">${feature ? "F" : p.pos ?? ""}</span>`)}
       <span class="tline"><span class="title ${p.node}">${esc(p.title)}</span>${
         p.queue ? `<span class="queue" title="${esc(p.queue.text)}">${gauge(p.queue)}<span class="mono">${p.queue.label}</span></span>` : ""
       }</span>
@@ -64,16 +65,31 @@ function strip(p: PrView, j: number, n: number, selected: boolean): string {
   </div>`;
 }
 
-/** A Branch with no PR: its own plate, a dashed node, its name in mono and blank lamps. */
-const branchPlate = (name: string) => `<div class="plate branch" role="group" aria-label="Branch ${esc(name)}, no pull request yet">
-    <div class="strip" title="${esc(name)} · no pull request yet">
-      <span class="pick">${nodeCell(0, 1, '<span class="node branch"></span>')}<span class="title mono">${esc(name)}</span></span>
+/** A Branch with no PR: its own plate, a dashed node, its name in mono and blank lamps. A
+ * Feature branch's node reads "F", with the branch line running down to its Stacks. */
+const branchPlate = (name: string, feature = false) => `<div class="plate branch" role="group" aria-label="${feature ? "Feature branch" : "Branch"} ${esc(name)}, no pull request yet">
+    <div class="strip" title="${esc(name)} · ${feature ? "feature branch, " : ""}no pull request yet">
+      <span class="pick">${nodeCell(0, feature ? 2 : 1, `<span class="node branch">${feature ? "F" : ""}</span>`)}<span class="title mono">${esc(name)}</span></span>
       ${'<span class="led"></span>'.repeat(COLUMNS.length)}
     </div>
   </div>`;
 
 const plate = (stack: PrView[], url: string | null) =>
   `<div class="plate" role="group" aria-label="${stack.length === 1 ? "Pull request" : `Stack of ${stack.length} pull requests`}">${stack.map((p, j) => strip(p, j, stack.length, p.url === url)).join("")}</div>`;
+
+/** A Feature branch: its feature PR (or its Branch before the PR exists) on a plate of its own,
+ * then its Stacks indented beneath, each joined back to the F node by the branch line. */
+function group(g: Group, url: string | null): string {
+  if (g.head == null) return plate(g.stacks[0], url);
+  if (!g.stacks.length) return branchPlate(g.head as string);
+  const n = g.stacks.length;
+  const head =
+    typeof g.head === "string"
+      ? branchPlate(g.head, true)
+      : `<div class="plate" role="group" aria-label="Feature PR">${strip(g.head, 0, 2, g.head.url === url, true)}</div>`;
+  const name = typeof g.head === "string" ? g.head : `#${g.head.number}`;
+  return `<div class="fgroup" role="group" aria-label="${esc(`Feature branch ${name} with ${n} ${n === 1 ? "stack" : "stacks"}`)}">${head}<div class="fstacks">${g.stacks.map((s) => `<div class="fstack">${plate(s, url)}</div>`).join("")}</div></div>`;
+}
 
 const ext = (url: string, cls: string, title: string, text: string) =>
   `<a class="${cls}" href="${esc(url)}" target="_blank" rel="noreferrer" title="${esc(title)}">${esc(text)}</a>`;
@@ -163,8 +179,8 @@ function channel(v: SessionView, toggled: Set<string>, url: string | null): stri
     </section>`;
   }
   const activity = v.activity?.replace(/\s+/g, " ");
-  const body = v.stacks.length || v.branches.length
-    ? `<div class="plates">${v.stacks.map((s) => plate(s, url)).join("")}${v.branches.map(branchPlate).join("")}</div>`
+  const body = v.groups.length
+    ? `<div class="plates">${v.groups.map((g) => group(g, url)).join("")}</div>`
     : '<div class="noprs">no pull requests yet</div>';
   return `<section class="chan" aria-label="${esc(v.title)}">
       <div class="chead">${key(v, false)}<div class="ctext">
@@ -192,6 +208,7 @@ const LEGEND = `<div class="legend" role="note" aria-label="Legend">
       <span class="li"><span class="node key queued"></span>in merge queue</span>
       <span class="li"><span class="node key merged"></span>merged</span>
       <span class="li"><span class="node key branch"></span>draft, or branch with no PR</span>
+      <span class="li"><span class="node key open">F</span>feature branch</span>
     </div>
   </div>`;
 
