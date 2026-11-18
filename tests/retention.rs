@@ -270,6 +270,7 @@ fn flowd_sweeps_old_task_records_no_session_is_on_but_keeps_the_task_directory()
         .args(["task", "create", "zombie"])
         .assert()
         .code(1);
+}
 
 /// The `jira` of each listed Branch, by branch name.
 fn branch_jiras(ts: &TestStore) -> std::collections::HashMap<String, Value> {
