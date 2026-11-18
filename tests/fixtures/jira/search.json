@@ -1,0 +1,62 @@
+[
+  {
+    "changelog": null,
+    "expand": "renderedFields,names,schema,operations,editmeta,changelog,versionedRepresentations",
+    "fields": {
+      "issuetype": {
+        "hierarchyLevel": 0,
+        "id": "10001",
+        "name": "Story",
+        "self": "https://jira-prod-us-61-3.prod.atl-paas.net/rest/api/3/issuetype/10001",
+        "subtask": false
+      },
+      "status": {
+        "description": "",
+        "id": "10101",
+        "name": "In Review",
+        "self": "https://jira-prod-us-61-3.prod.atl-paas.net/rest/api/3/status/10101",
+        "statusCategory": {
+          "colorName": "yellow",
+          "id": 4,
+          "key": "indeterminate",
+          "name": "In Progress",
+          "self": "https://jira-prod-us-61-3.prod.atl-paas.net/rest/api/3/statuscategory/4"
+        }
+      },
+      "summary": "Add widgets"
+    },
+    "id": "41001",
+    "key": "ABC-12",
+    "self": "https://jira-prod-us-61-3.prod.atl-paas.net/rest/api/3/issue/41001"
+  },
+  {
+    "changelog": null,
+    "expand": "renderedFields,names,schema,operations,editmeta,changelog,versionedRepresentations",
+    "fields": {
+      "issuetype": {
+        "hierarchyLevel": 0,
+        "id": "10004",
+        "name": "Bug",
+        "self": "https://jira-prod-us-61-3.prod.atl-paas.net/rest/api/3/issuetype/10004",
+        "subtask": false
+      },
+      "status": {
+        "description": "",
+        "id": "10002",
+        "name": "Done",
+        "self": "https://jira-prod-us-61-3.prod.atl-paas.net/rest/api/3/status/10002",
+        "statusCategory": {
+          "colorName": "green",
+          "id": 3,
+          "key": "done",
+          "name": "Done",
+          "self": "https://jira-prod-us-61-3.prod.atl-paas.net/rest/api/3/statuscategory/3"
+        }
+      },
+      "summary": "Fix gadgets"
+    },
+    "id": "41002",
+    "key": "DEF-7",
+    "self": "https://jira-prod-us-61-3.prod.atl-paas.net/rest/api/3/issue/41002"
+  }
+]
