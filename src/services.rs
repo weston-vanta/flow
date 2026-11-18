@@ -13,7 +13,7 @@ use crate::session::{self, Session};
 use crate::store::Store;
 
 /// The `help` of the `{error, help}` JSON both binaries return when a read of the Store fails.
-pub const STORE_ERROR_HELP: &str = "the Store could not be read or holds a malformed facet; the error names the path (FLOW_STORE, default /efs-home/flow/store)";
+pub const STORE_ERROR_HELP: &str = "the Store could not be read or holds a malformed facet; the error names the path ($FLOW_HOME/store, FLOW_HOME defaulting to /efs-home/flow)";
 
 /// Every listed Session, ordered by id: see [`retention::is_listed`].
 pub fn session_list(store: &Store) -> Result<Vec<Session>> {
