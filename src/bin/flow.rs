@@ -15,7 +15,9 @@ use serde::Serialize;
 use flow::hook;
 use flow::launch;
 use flow::services::{self, Refusal};
+use flow::session::{self, Session};
 use flow::store::Store;
+use flow::task;
 
 /// The agent note, `docs/agent-note.md`, printed by `flow guide`.
 const AGENT_NOTE: &str = include_str!("../../docs/agent-note.md");
@@ -39,6 +41,9 @@ enum Command {
     /// Read Branches: git branches a Session created a worktree for.
     #[command(subcommand)]
     Branch(BranchCommand),
+    /// Tasks: units of delegated work, each with a Task directory; create, join and read them.
+    #[command(subcommand)]
+    Task(TaskCommand),
     /// Create worktrees through `wt`, recording the calling Session as the owner.
     #[command(subcommand)]
     Wt(WtCommand),
@@ -116,6 +121,29 @@ enum BranchCommand {
 }
 
 #[derive(Subcommand)]
+enum TaskCommand {
+    /// Create a Task and its Task directory, `$FLOW_HOME/tasks/<slug>/`. Prints `{slug, dir}`.
+    /// Joins no Session.
+    Create {
+        /// The Task slug: `[a-z][a-z0-9_-]`, at most 32 characters.
+        slug: String,
+    },
+    /// Put the calling Session (`$CLAUDE_CODE_SESSION_ID`) on the Task, replacing any Task it
+    /// was on.
+    Join {
+        /// The slug of a Task made with `flow task create`.
+        slug: String,
+    },
+    /// Print every Task a listed Session is on as a JSON array, ordered by slug.
+    List,
+    /// Print one Task as JSON.
+    Get {
+        /// The Task slug.
+        slug: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum WtCommand {
     /// Run `wt create <branch> [wt args]` and, if it succeeds inside a Claude Code Session,
     /// record that Session as the owner of the branch's PRs. Use it instead of `wt create`.
@@ -190,6 +218,7 @@ fn main() -> ExitCode {
             Ok(branches) => print_json(&branches),
             Err(err) => store_error(&err),
         },
+        Some(Command::Task(command)) => task(&store, command),
         Some(Command::Wt(WtCommand::Create { branch, args })) => wt_create(&store, &branch, &args),
         Some(Command::Guide) => {
             print!("{AGENT_NOTE}");
@@ -197,6 +226,67 @@ fn main() -> ExitCode {
         }
         Some(Command::Hook) => run_hook(&store, started),
     }
+}
+
+fn task(store: &Store, command: TaskCommand) -> ExitCode {
+    let root = task::root_from_env();
+    match command {
+        TaskCommand::Create { slug } if !task::is_slug(&slug) => error(
+            2,
+            &format!("{slug:?} is not a usable Task slug"),
+            "use lowercase letters, digits, `-` and `_`, starting with a letter, at most 32 characters",
+        ),
+        TaskCommand::Create { slug } => match task::create(&root, &slug) {
+            Ok(Some(dir)) => print_json(&serde_json::json!({ "slug": slug, "dir": dir })),
+            Ok(None) => error(
+                1,
+                &format!("Task {slug:?} already exists"),
+                "choose another slug; `flow task get <slug>` reads the existing Task",
+            ),
+            Err(err) => error(
+                1,
+                &format!("{err:#}"),
+                "the Task directory could not be created",
+            ),
+        },
+        TaskCommand::Join { slug } => {
+            let Some(id) = std::env::var("CLAUDE_CODE_SESSION_ID")
+                .ok()
+                .filter(|id| !id.is_empty())
+            else {
+                return error(
+                    1,
+                    "CLAUDE_CODE_SESSION_ID is not set",
+                    "run `flow task join` inside a Claude Code Session",
+                );
+            };
+            if !task::exists(&root, &slug) {
+                return no_task(&slug);
+            }
+            let facet = session::Task { slug: slug.clone() };
+            match Session::put(store, &id, &facet, Timestamp::now()) {
+                Ok(_) => print_json(&serde_json::json!({ "session": id, "task": slug })),
+                Err(err) => store_error(&err),
+            }
+        }
+        TaskCommand::List => match task::list(store, &root) {
+            Ok(tasks) => print_json(&tasks),
+            Err(err) => store_error(&err),
+        },
+        TaskCommand::Get { slug } => match task::get(store, &root, &slug) {
+            Ok(Some(task)) => print_json(&task),
+            Ok(None) => no_task(&slug),
+            Err(err) => store_error(&err),
+        },
+    }
+}
+
+fn no_task(slug: &str) -> ExitCode {
+    error(
+        1,
+        &format!("no Task {slug:?}"),
+        "run `flow task create` first; `flow task list` lists Tasks with Sessions on them",
+    )
 }
 
 /// Runs `flow wt create`: `wt`'s output goes straight through and its exit status is flow's.

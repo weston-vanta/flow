@@ -90,6 +90,11 @@ impl TestStore {
         Store::new(self.store_path())
     }
 
+    /// `$FLOW_HOME`: this temp dir.
+    pub fn home(&self) -> PathBuf {
+        self.dir.path().to_path_buf()
+    }
+
     /// The Store's root directory, `$FLOW_HOME/store`.
     pub fn store_path(&self) -> PathBuf {
         self.dir.path().join("store")
