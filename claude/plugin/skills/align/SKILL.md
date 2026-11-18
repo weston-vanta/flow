@@ -9,7 +9,7 @@ Agree with the Director what the Task delivers before any work is shaped, then a
 
 ## Principles
 
-- **Find facts yourself.** Read the brief, everything it points at, and the repo's `CLAUDE.md`, glossary and ADRs. Anything the code, docs or tickets can answer is yours to look up, not a question.
+- **Find facts yourself.** Read the brief, the Task's Resources (`flow task get`), and the repo's `CLAUDE.md`, glossary and ADRs. Anything the code, docs or Jira issues can answer is yours to look up, not a question.
 - **Ask only what only the Director can decide:** requirements, scope, ambiguity, data model, architecture and accepted tradeoffs.
 - **Grill in rounds.** Each round is a short list of numbered questions, each with your recommended answer and a line of why, so the Director can answer by number and mostly agree. Each round builds on the last answers.
 - **Stop when nothing open would change the spec.**
@@ -26,5 +26,5 @@ Agree with the Director what the Task delivers before any work is shaped, then a
    - the deliverable: PRs, a spec, or an answer.
 
    Its test is not a template: could the Director judge the draft PRs against it without having been in the grilling? For a spec or answer deliverable, Align ends here.
-4. Draft `plan.md` with `flow:plan`. Present it for a reader who wasn't in the grilling, written with `flow:explain`, and ask two things: does the Director approve it, and do they want external records of it (Jira tickets matching the plan through `acli jira`, an Explainer, a doc through `gws`, or others). Revise until they approve. The approval, whose picture shows the Stacks, counts as the Director asking for a Stack.
-5. List the external records in `plan.md`, create them through Subagents, and write the builder briefs with `flow:plan`.
+4. Draft `plan.md` with `flow:plan`. Present it for a reader who wasn't in the grilling, written with `flow:explain`, and ask two things: does the Director approve it, and do they want Resources made from it (Jira issues matching the plan through `acli jira`, an Explainer, a doc through `gws`, or others). Revise until they approve. The approval, whose picture shows the Stacks, counts as the Director asking for a Stack.
+5. Create those Resources through Subagents, record each as `flow:ic` says, and write the builder briefs with `flow:plan`.

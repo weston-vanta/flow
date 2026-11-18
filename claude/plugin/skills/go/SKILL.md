@@ -1,6 +1,6 @@
 ---
 name: go
-description: Delegate a loose ask to a new IC as a Task. Run as `/flow:go <loose ask>`.
+description: Turn a loose ask into a Task and launch an IC on it, in a new Session or here. Run as `/flow:go <loose ask>`.
 disable-model-invocation: true
 argument-hint: <loose ask>
 ---
@@ -12,20 +12,18 @@ You are the Manager. Turn `$ARGUMENTS` (a Jira link, a PRD link, a question or a
 ## Principles
 
 - **Launch, don't design.** The IC grills the Director on design and writes the spec. You make no design decisions and leave open questions open in the brief.
-- **A minute of the Director's time.** Ask only for missing resources (a link they mentioned but didn't give, the doc a question refers to) and at most one short round of scope questions. Skip the round when the ask is clear enough to brief.
+- **A minute of the Director's time.** Ask only for missing Resources (a link they mentioned but didn't give, the doc a question refers to) and at most one short round of scope questions. Skip the round when the ask is clear enough to brief.
 - **Nothing launches without the Director's go.**
 
 ## Steps
 
-1. **Clarify.** Ask your one round, if any, and collect pointers to the tickets, docs, files and PRs the Task needs.
-2. **Propose a slug:** 2–4 words of kebab-case from the goal, starting with a letter, at most 32 characters, whose `/efs-home/flow/tasks/<slug>/` doesn't exist yet.
-3. **Propose a CDE:** of the running CDEs in `gitpod environment list -r` with your repo checked out (its main checkout is the first entry of `git worktree list`), the one with the fewest active Sessions in `flow session list`, else your own.
-4. **Show the draft** `brief.md`, with the slug and CDE, and ask the Director to confirm or edit them:
+1. **Clarify.** Ask your one round, if any, and collect the Resources the Task needs: links to its Jira issues, docs, files and PRs.
+2. **Infer a slug** from the goal, 2–4 words of kebab-case, starting with a letter, at most 32 characters. Never ask the Director for one; they can edit it in the draft.
+3. **Propose a launch:** a new IC on a CDE by default, with **here** (in this Session) as the alternative. For the CDE: of the running CDEs in `gitpod environment list -r` with your repo checked out (its main checkout is the first entry of `git worktree list`), the one with the fewest active Sessions in `flow session list`, else your own.
+4. **Show the draft** `brief.md`, with the slug and launch, and ask the Director to confirm or edit them:
 
    ```markdown
    # <Title>
-
-   **Source:** <the link from the ask, if any>
 
    ## Goal
    <What the Director wants and why, one to three lines, close to their words.>
@@ -33,14 +31,17 @@ You are the Manager. Turn `$ARGUMENTS` (a Jira link, a PRD link, a question or a
    ## Scope
    <What is in and out, as far as the Director said. Rough is fine.>
 
-   ## Resources
-   - <pointer>: <one-line reason>
-
    ## Director's words
    > <Everything the Director said in this exchange, verbatim, including the ask.>
    ```
 
-   Pointers only, nothing pasted. No done-when criteria and no process: those come from the IC's grilling and `flow:ic`. A few lines to half a screen.
-5. **Launch, on the Director's go.** Write `/efs-home/flow/tasks/<slug>/brief.md`, then run `flow session start --name <slug> --brief /efs-home/flow/tasks/<slug>/brief.md [--cde <name>] <main checkout>`, adding `--cde` only for another CDE.
-   - On success, write its printed JSON to `/efs-home/flow/tasks/<slug>/session.json` and reply in one line, `<name> · <cde> · <pane>`, adding that the IC will start by grilling the Director in its tab.
-   - On failure, show its `{error, help}` and stop. Don't retry; the Director decides what's next.
+   Below it, list the Resources you will record, each with its title where the Director labelled it. Nothing pasted: where a Resource's role isn't obvious, name it in the Goal or Scope. No done-when criteria and no process: those come from the IC's grilling and `flow:ic`. A few lines to half a screen.
+5. **Launch, on the Director's go.**
+   1. Run `flow task create <slug>`. If the slug is taken, pick another yourself and run it again.
+   2. Write `brief.md` in the `dir` it printed.
+   3. Record every Resource with `flow task resource add <url> --task <slug>`, adding `--title <title>` where the Director labelled it. A file is `file://<absolute path>`.
+   4. Launch:
+      - **New IC:** run `flow session start --task <slug> [--cde <name>] <main checkout>`, adding `--cde` only for another CDE. On success, reply in one line, `<name> · <cde> · <pane>`, adding that the IC will start by grilling the Director in its tab.
+      - **Here:** reply in one line: run `/clear`, then `/flow:ic <slug>`.
+
+   If any command fails other than on a taken slug, show its `{error, help}` and stop. Don't retry; the Director decides what's next.

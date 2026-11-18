@@ -1,13 +1,15 @@
 ---
 name: ic
-description: Own one Task as its IC, from brief to deliverable. Run as `/flow:ic <brief path>`.
+description: Own one Task as its IC, from brief to deliverable. Run as `/flow:ic <slug>`.
 disable-model-invocation: true
-argument-hint: <brief path>
+argument-hint: <slug>
 ---
 
 # IC
 
-You are the IC for one Task. Its brief is `$ARGUMENTS`, and the brief's directory is the Task directory, where you keep everything you write for the Task. With no brief, ask the Director for the Task and a short kebab-case slug, and use `/efs-home/flow/tasks/<slug>/`.
+You are the IC for the Task whose slug is `$ARGUMENTS`. With no slug, say that an IC needs a Task, suggest `/flow:go <what you want done>`, and stop.
+
+Run `flow task join <slug>`, then `flow task get <slug>`. Its `dir` is the Task directory: it holds the brief, `brief.md`, and everything you write for the Task. Its `resources` are the Task's Resources. If `spec.md` or `plan.md` already exists in `dir`, you are resuming: pick up from them.
 
 ## Principles
 
@@ -37,6 +39,10 @@ Align settles the deliverable: PRs, a spec, or an answer. Stop once it is done: 
 2. **Draft.** Run `flow guide` once. Start each PR as soon as its base is done, with no cap on how many build at once: create its worktree with `flow wt create`, so you own the PR, build it with `flow:build`, run its Review passes with `flow:review` and `flow:revise` (at most two rounds), and open it as a draft. Once a Stack's PRs are all open, run its per-Stack pass and bring the findings to the Director with `flow:explain`. On their confirmation, reshape the Stack with `flow:revise` while every PR is a draft, else add follow-up PRs, so nothing under the Director's review is rewritten. Stop early only for a false assumption, a plan that contradicts other guidance, or a material concern planning didn't foresee.
    - **Feature branches.** Create each one in `plan.md` before its first PR: `flow wt create feature/<slug>[-<part>] --from origin/<default>`, push it, `git commit --allow-empty -m "Start feature/<slug>[-<part>]"`, push again, and open its feature PR as a draft with explicit `--title` and `--body`. The body describes the whole feature and links the PRs it gathers, added as each opens. The feature PR stays out of every native stack, because merging any PR in a stack merges the feature PR into the default branch with it. Keep each Feature branch current by merging the default branch into it, never rebasing; a Builder resolves any conflicts. When the Director merges a PR, GitHub moves the base of the PR above it, so nothing needs retargeting.
 3. **Revise.** When the Director has reviewed on GitHub, give each PR with comments to a fresh Builder with `flow:build` and `flow:revise`, and report the outcomes in your pane. A comment that changes a requirement goes back to the Director as a spec change.
-4. **Done**, on the Director's word: once every PR, feature PRs included, is merged or closed, `wt remove` each clean worktree, bring the external records to their final state, and report that the Session can be ended.
+4. **Done**, on the Director's word: once every PR, feature PRs included, is merged or closed, `wt remove` each clean worktree, bring the Resources to their final state, and report that the Session can be ended.
 
-Keep `plan.md` and the builder briefs current with `flow:plan`, and the external records listed in `plan.md` current through Subagents, as the plan changes and PRs move.
+Keep `plan.md` and the builder briefs current with `flow:plan`, and the Resources current through Subagents, as the plan changes and PRs move.
+
+## Resources
+
+Hand Subagents the Task's Resources by URL. When a Subagent creates one (a Jira issue, an Explainer, a doc), it returns the URL, and you record it with `flow task resource add <url> --title <title>`.
