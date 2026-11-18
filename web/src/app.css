@@ -59,7 +59,7 @@ button.hint kbd.down{background:#D6D1C8}
 .deck{display:flex;align-items:stretch;gap:20px;padding:20px}
 .rack{flex:1 1 0;min-width:0}
 .empty{margin:0;padding:20px;color:var(--ink2)}
-.scale,.strip{display:grid;grid-template-columns:52px minmax(0,1fr) repeat(4,56px)}
+.scale,.strip{display:grid;grid-template-columns:52px minmax(0,1fr) auto repeat(4,56px)}
 .scale{padding:0 16px 8px;font-size:10px;line-height:14px;color:var(--ink2);text-align:center}
 .chans{display:flex;flex-direction:column;gap:10px}
 
@@ -121,6 +121,17 @@ button.pick:hover .node{box-shadow:0 0 0 4px rgba(42,41,39,.08)}
 button.led{cursor:pointer}
 button.led:hover{background:rgba(42,41,39,.06)}
 
+/* A Branch's Jira issue: a 9px square (to do empty, in progress half, in review cross-hatched,
+ * done full) plus its key, its own link cell against the lamps. Not found is the bare key. */
+.jsq{flex:none;display:inline-block;width:9px;height:9px;border:1.5px solid currentColor}
+.jsq.progress{background:linear-gradient(90deg,currentColor 50%,transparent 50%)}
+.jsq.review{background:repeating-linear-gradient(45deg,currentColor 0 1px,transparent 1px 3px),repeating-linear-gradient(-45deg,currentColor 0 1px,transparent 1px 3px)}
+.jsq.done{background:currentColor}
+.jcell{display:flex;align-items:center;justify-content:flex-end;min-width:0}
+.jira{display:flex;align-items:center;gap:6px;height:100%;padding:0 2px;font-size:11px;line-height:14px;color:var(--ink2);text-decoration:none;white-space:nowrap}
+a.jira:hover{color:var(--ink)}
+.jira.missing{cursor:default}
+
 /* The window: dark, always present, its contents pinned to the viewport as the rack scrolls. */
 .window{position:relative;flex:0 0 30rem;min-width:0;min-height:min(100vh,40rem);overflow:clip}
 .wbody{position:absolute;top:0;right:0;bottom:0;width:30rem;background:var(--ink);border-radius:4px;color:var(--ro)}
@@ -145,6 +156,9 @@ button.led:hover{background:rgba(42,41,39,.06)}
 .tclose{flex:none;width:28px;height:28px;margin:-6px -10px -6px 4px;display:flex;align-items:center;justify-content:center;padding:0;border:0;border-radius:3px;background:transparent;color:var(--ro2);cursor:pointer}
 .tclose:hover{color:#FFFFFF;background:rgba(255,255,255,.06)}
 .whead h2{margin:0;font-size:17px;line-height:23px;font-weight:500;color:#F4F1EA;overflow-wrap:anywhere}
+.wjira{align-self:flex-start;display:flex;align-items:center;gap:6px;font-size:11px;line-height:15px;color:var(--ro2)}
+.wjira .jsq{color:#D9D2C6}
+.wjira.missing{cursor:default}
 .whint{font-size:12px;line-height:17px;color:var(--ro3)}
 .tsec{padding:16px 24px 18px;border-bottom:1px solid var(--ro-rule);display:grid;grid-template-columns:18px minmax(0,1fr);column-gap:10px;row-gap:10px;transition:background-color .4s ease}
 .tsec.idle{align-items:center}
@@ -187,4 +201,5 @@ button.led:hover{background:rgba(42,41,39,.06)}
 .li{display:flex;align-items:center;gap:10px}
 .li.act{color:var(--ink)}
 .li .lamp,.li .node.key{flex:none}
+.li .jsq{color:var(--ink2)}
 .li .count{margin:-3px;margin-right:0}
