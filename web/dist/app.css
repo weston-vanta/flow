@@ -265,6 +265,7 @@ button.hint kbd.down {
 .node.key {
   width: 14px;
   height: 14px;
+  font-size: 8px;
 }
 .node.key.branch {
   border-color: #8C8981;
@@ -291,7 +292,7 @@ button.hint kbd.down {
 .scale,
 .strip {
   display: grid;
-  grid-template-columns: 52px minmax(0, 1fr) repeat(4, 56px);
+  grid-template-columns: 52px minmax(0, 1fr) auto repeat(4, 56px);
 }
 .scale {
   padding: 0 16px 8px;
@@ -440,6 +441,38 @@ button.hint kbd.down {
   border-radius: 3px;
   background: var(--plate);
 }
+.fgroup,
+.fstacks {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.fstacks {
+  margin-left: 40px;
+}
+.fstack {
+  position: relative;
+}
+.fstack::before,
+.fstack::after {
+  content: "";
+  position: absolute;
+  left: -15px;
+  background: var(--rail);
+}
+.fstack::before {
+  top: -10px;
+  width: 2px;
+  height: calc(100% + 10px);
+}
+.fstack:last-child::before {
+  height: 32px;
+}
+.fstack::after {
+  top: 20px;
+  width: 15px;
+  height: 2px;
+}
 .plate.branch {
   background: transparent;
   box-shadow: inset 0 0 0 1px var(--housing);
@@ -553,6 +586,58 @@ button.led {
 }
 button.led:hover {
   background: rgba(42, 41, 39, .06);
+}
+.jsq {
+  flex: none;
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid currentColor;
+}
+.jsq.progress {
+  background:
+    linear-gradient(
+      90deg,
+      currentColor 50%,
+      transparent 50%);
+}
+.jsq.review {
+  background:
+    repeating-linear-gradient(
+      45deg,
+      currentColor 0 1px,
+      transparent 1px 3px),
+    repeating-linear-gradient(
+      -45deg,
+      currentColor 0 1px,
+      transparent 1px 3px);
+}
+.jsq.done {
+  background: currentColor;
+}
+.jcell {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
+}
+.jira {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 100%;
+  padding: 0 2px;
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--ink2);
+  text-decoration: none;
+  white-space: nowrap;
+}
+a.jira:hover {
+  color: var(--ink);
+}
+.jira.missing {
+  cursor: default;
 }
 .window {
   position: relative;
@@ -691,6 +776,21 @@ button.led:hover {
   font-weight: 500;
   color: #F4F1EA;
   overflow-wrap: anywhere;
+}
+.wjira {
+  align-self: flex-start;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--ro2);
+}
+.wjira .jsq {
+  color: #D9D2C6;
+}
+.wjira.missing {
+  cursor: default;
 }
 .whint {
   font-size: 12px;
@@ -915,6 +1015,9 @@ button.led:hover {
 .li .lamp,
 .li .node.key {
   flex: none;
+}
+.li .jsq {
+  color: var(--ink2);
 }
 .li .count {
   margin: -3px;

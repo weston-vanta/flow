@@ -83,6 +83,7 @@ fn every_event_in_the_table_writes_its_facets() {
             "status": { "at": started_at, "state": "idle" },
             "context": { "at": started_at, "title": null, "branch": "feat/hooks" },
             "activity": null,
+            "task": null,
         })
     );
 
@@ -176,7 +177,7 @@ fn facets_never_written_are_null() {
     assert_eq!(session["status"]["state"], "waiting");
     assert_eq!(
         session.as_object().unwrap().keys().collect::<Vec<_>>(),
-        ["activity", "context", "id", "origin", "status"]
+        ["activity", "context", "id", "origin", "status", "task"]
     );
 }
 
@@ -246,6 +247,15 @@ fn clear_ends_one_session_and_starts_another_in_the_same_pane() {
     hook(&ts, event("session-start", ID, &repo), &env);
     hook(&ts, event("user-prompt-submit", ID, &repo), &env);
     hook(&ts, event("stop", ID, &repo), &env);
+    ts.flow()
+        .args(["task", "create", "widgets"])
+        .assert()
+        .success();
+    ts.flow()
+        .args(["task", "join", "widgets"])
+        .env("CLAUDE_CODE_SESSION_ID", ID)
+        .assert()
+        .success();
     let mut end: Value = serde_json::from_str(&event("session-end", ID, &repo)).unwrap();
     end["reason"] = json!("clear");
     hook(&ts, end.to_string(), &env);
@@ -260,6 +270,9 @@ fn clear_ends_one_session_and_starts_another_in_the_same_pane() {
     assert_eq!(by_id(cleared)["status"]["state"], "idle");
     assert_eq!(by_id(ID)["origin"]["pane"], "w1:p2");
     assert_eq!(by_id(cleared)["origin"]["pane"], "w1:p2");
+    // The new Session is on no Task until it joins one.
+    assert_eq!(by_id(ID)["task"], "widgets");
+    assert_eq!(by_id(cleared)["task"], Value::Null);
 }
 
 #[test]

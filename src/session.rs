@@ -1,5 +1,5 @@
 //! The Session: one Claude Code conversation, keyed by its Claude session id, and its facets.
-//! Every Session facet has one Writer, `flow hook`.
+//! Every Session facet has one Writer: `flow hook`, except `task`, written by `flow task join`.
 
 use std::collections::BTreeSet;
 
@@ -22,6 +22,8 @@ pub struct Session {
     pub status: Option<Stamped<Status>>,
     pub context: Option<Stamped<Context>>,
     pub activity: Option<Stamped<Activity>>,
+    /// The slug of the Task this Session is on.
+    pub task: Option<String>,
 }
 
 /// A facet's fields with the time its fact was observed, serialised as `{at, ...fields}`.
@@ -110,6 +112,12 @@ impl Activity {
     }
 }
 
+/// The Task a Session is on. Writer: `flow task join`, which replaces any earlier one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Task {
+    pub slug: String,
+}
+
 /// A Session facet: its name in the Store and its type.
 pub trait SessionFacet: Serialize + DeserializeOwned {
     const NAME: &'static str;
@@ -135,6 +143,10 @@ impl SessionFacet for Activity {
     const NAME: &'static str = "activity";
 }
 
+impl SessionFacet for Task {
+    const NAME: &'static str = "task";
+}
+
 impl Session {
     pub fn from_entity(entity: &Entity) -> Result<Self> {
         Ok(Self {
@@ -143,6 +155,7 @@ impl Session {
             status: facet(entity)?,
             context: facet(entity)?,
             activity: facet(entity)?,
+            task: facet::<Task>(entity)?.map(|task| task.value.slug),
         })
     }
 

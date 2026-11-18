@@ -57,10 +57,9 @@ impl Store {
         Self { root: root.into() }
     }
 
-    /// The Store at `$FLOW_HOME/store`, with `FLOW_HOME` defaulting to [`DEFAULT_HOME`].
+    /// The Store at `$FLOW_HOME/store`: see [`home_from_env`].
     pub fn from_env() -> Self {
-        let home = std::env::var_os("FLOW_HOME").unwrap_or_else(|| DEFAULT_HOME.into());
-        Self::new(PathBuf::from(home).join("store"))
+        Self::new(home_from_env().join("store"))
     }
 
     pub fn root(&self) -> &Path {
@@ -145,6 +144,13 @@ impl Store {
     fn entity_dir(&self, kind: &str, id: &str) -> PathBuf {
         self.root.join(kind).join(encode_id(id))
     }
+}
+
+/// flow's home directory, `$FLOW_HOME`, defaulting to [`DEFAULT_HOME`].
+pub fn home_from_env() -> PathBuf {
+    std::env::var_os("FLOW_HOME")
+        .unwrap_or_else(|| DEFAULT_HOME.into())
+        .into()
 }
 
 /// Formats `at` the way the Store and the CLI's JSON carry it: RFC 3339 UTC with microseconds.
