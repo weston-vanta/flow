@@ -203,10 +203,10 @@
       const groups = [
         ...raw.flatMap((st) => {
           if (fbranches.has(base(st[0]))) return [];
-          if (feature.has(head(st[0]))) return [{ head: view(st)[0], stacks: on(head(st[0])) }];
-          return [{ head: null, stacks: [view(st)] }];
+          if (feature.has(head(st[0]))) return [{ kind: "feature", head: view(st)[0], stacks: on(head(st[0])) }];
+          return [{ kind: "stack", head: null, stacks: [view(st)] }];
         }),
-        ...own.map((b) => ({ head: { name: b.branch, jira: jiraView(b.jira) }, stacks: on(b.key) }))
+        ...own.map((b) => ({ kind: "branch", head: { name: b.branch, jira: jiraView(b.jira) }, stacks: on(b.key) }))
       ];
       const state = s.status?.state ?? null;
       const cwd = s.origin?.cwd;
@@ -221,7 +221,7 @@
         activity: activityLine(s),
         task: s.task,
         groups,
-        prs: groups.flatMap((g) => [...g.head && !("name" in g.head) ? [g.head] : [], ...g.stacks.flat()])
+        prs: groups.flatMap((g) => [...g.kind === "feature" ? [g.head] : [], ...g.stacks.flat()])
       };
     });
   }
@@ -278,7 +278,7 @@
   function sessionPanel(id, views, tasks2) {
     const v = views.find((w) => w.id === id);
     if (!v) return null;
-    const branches2 = v.groups.filter((g) => g.head && "name" in g.head).length;
+    const branches2 = v.groups.filter((g) => g.kind === "branch").length;
     const parts = [v.prs.length && plural(v.prs.length, "pull request"), branches2 && plural(branches2, "branch", "branches")].filter(Boolean);
     const t = v.task == null ? null : tasks2.find((x) => x.slug === v.task);
     return {
@@ -340,11 +340,11 @@
   </div>`;
   var plate = (stack, url) => `<div class="plate" role="group" aria-label="${stack.length === 1 ? "Pull request" : `Stack of ${stack.length} pull requests`}">${stack.map((p, j) => strip(p, j, stack.length, p.url === url)).join("")}</div>`;
   function group(g, url) {
-    if (g.head == null) return plate(g.stacks[0], url);
-    if (!g.stacks.length) return branchPlate(g.head);
+    if (g.kind === "stack") return plate(g.stacks[0], url);
+    if (g.kind === "branch" && !g.stacks.length) return branchPlate(g.head);
     const n = g.stacks.length;
-    const head = "name" in g.head ? branchPlate(g.head, true) : `<div class="plate" role="group" aria-label="Feature PR">${strip(g.head, 0, 2, g.head.url === url, true)}</div>`;
-    const name = "name" in g.head ? g.head.name : `#${g.head.number}`;
+    const head = g.kind === "branch" ? branchPlate(g.head, true) : `<div class="plate" role="group" aria-label="Feature PR">${strip(g.head, 0, 2, g.head.url === url, true)}</div>`;
+    const name = g.kind === "branch" ? g.head.name : `#${g.head.number}`;
     return `<div class="fgroup" role="group" aria-label="${esc(`Feature branch ${name} with ${n} ${n === 1 ? "stack" : "stacks"}`)}">${head}<div class="fstacks">${g.stacks.map((s) => `<div class="fstack">${plate(s, url)}</div>`).join("")}</div></div>`;
   }
   var ext = (url, cls, title, text) => `<a class="${cls}" href="${esc(url)}" target="_blank" rel="noreferrer" title="${esc(title)}">${esc(text)}</a>`;

@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::TestStore;
+use common::{TestStore, error_body};
 use jiff::Timestamp;
 use serde_json::{Value, json};
 
@@ -16,13 +16,6 @@ fn put_status(ts: &TestStore, id: &str, state: &str) {
             Timestamp::now(),
         )
         .unwrap();
-}
-
-fn error_body(out: &assert_cmd::assert::Assert) -> Value {
-    let body: Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
-    assert!(body["error"].is_string(), "{body}");
-    assert!(body["help"].is_string(), "{body}");
-    body
 }
 
 #[test]

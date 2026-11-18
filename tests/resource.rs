@@ -2,20 +2,8 @@
 
 mod common;
 
-use common::TestStore;
+use common::{TestStore, error_body, json_out};
 use serde_json::{Value, json};
-
-fn json_out(out: &assert_cmd::assert::Assert) -> Value {
-    serde_json::from_slice(&out.get_output().stdout).expect("flow prints JSON")
-}
-
-/// Asserts `out` is an `{error, help}` body and returns it.
-fn error_body(out: &assert_cmd::assert::Assert) -> Value {
-    let body = json_out(out);
-    assert!(body["error"].is_string(), "{body}");
-    assert!(body["help"].is_string(), "{body}");
-    body
-}
 
 fn create(ts: &TestStore, slug: &str) {
     ts.flow().args(["task", "create", slug]).assert().success();

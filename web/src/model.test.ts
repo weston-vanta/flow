@@ -449,7 +449,7 @@ test("session views join Sessions to their Stacks and tolerate null facets", () 
 /** Each group as [head, Stacks by PR number]: the head is "#n" for a feature PR, a Branch's
  * name, or null for an ordinary Stack. */
 const shape = (v: SessionView) =>
-  v.groups.map((g) => [g.head && "name" in g.head ? g.head.name : g.head && `#${g.head.number}`, g.stacks.map((s) => s.map((p) => p.number))]);
+  v.groups.map((g) => [g.kind === "branch" ? g.head.name : g.kind === "feature" ? `#${g.head.number}` : null, g.stacks.map((s) => s.map((p) => p.number))]);
 
 const branch = (owner: string, name: string, at: string, repo = "acme/widgets"): Branch => ({
   key: `${repo}:${name}`,
@@ -754,7 +754,7 @@ test("Session views carry each PR's and each Branch's Jira issue", () => {
   const branches = [{ ...branch("s", "feat/z", AT), jira: missing }, branch("s", "feat/w", hoursAgo(1))];
   const [v] = sessionViews([session("s")], prs, branches, NOW);
   assert.deepEqual(v.prs.map((p) => p.jira?.key ?? null), ["ABC-1", null]);
-  const heads = v.groups.flatMap((g) => (g.head && "name" in g.head ? [[g.head.name, g.head.jira?.state ?? null]] : []));
+  const heads = v.groups.flatMap((g) => (g.kind === "branch" ? [[g.head.name, g.head.jira?.state ?? null]] : []));
   assert.deepEqual(heads, [["feat/w", null], ["feat/z", "not found"]]);
 });
 

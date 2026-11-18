@@ -220,3 +220,16 @@ pub fn git_repo(dir: &Path, branch: &str) {
         .expect("run git init");
     assert!(status.success(), "git init failed");
 }
+
+/// `flow`'s stdout parsed as JSON.
+pub fn json_out(out: &assert_cmd::assert::Assert) -> Value {
+    serde_json::from_slice(&out.get_output().stdout).expect("flow prints JSON")
+}
+
+/// Asserts `out` is an `{error, help}` body and returns it.
+pub fn error_body(out: &assert_cmd::assert::Assert) -> Value {
+    let body = json_out(out);
+    assert!(body["error"].is_string(), "{body}");
+    assert!(body["help"].is_string(), "{body}");
+    body
+}
