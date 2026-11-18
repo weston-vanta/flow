@@ -14,7 +14,7 @@ use serde::Serialize;
 use tiny_http::{Header, Method, Request, Response, Server};
 
 use flow::store::Store;
-use flow::{github, retention, services, task};
+use flow::{github, jira, retention, services, task};
 
 /// Serve flow's read API and web app on 127.0.0.1.
 #[derive(Parser)]
@@ -29,6 +29,12 @@ struct Args {
     /// Seconds between the starts of PR poll cycles.
     #[arg(long, env = "FLOWD_POLL_INTERVAL", default_value_t = github::INTERVAL.as_secs(), hide = true)]
     poll_interval: u64,
+    /// The hard timeout on each `acli` call, in seconds.
+    #[arg(long, env = "FLOWD_JIRA_TIMEOUT", default_value_t = jira::TIMEOUT.as_secs(), hide = true)]
+    jira_timeout: u64,
+    /// Seconds between the starts of Jira poll cycles.
+    #[arg(long, env = "FLOWD_JIRA_INTERVAL", default_value_t = jira::INTERVAL.as_secs(), hide = true)]
+    jira_interval: u64,
 }
 
 /// How often the retention sweep runs after the one at start.
@@ -73,7 +79,7 @@ fn main() -> ExitCode {
         .to_ip()
         .expect("bound to an IP address");
     println!("flowd listening on http://{addr}");
-    // The PR Writer's poll loop and the retention sweep start here, each as a `std::thread`
+    // The PR Writer's poll loop, the Jira poller's loop and the retention sweep start here, each as a `std::thread`
     // over a clone of `store`, before serving takes over this thread.
     let sweep_store = store.clone();
     thread::spawn(move || sweep_loop(&sweep_store));
@@ -82,6 +88,12 @@ fn main() -> ExitCode {
         let timeout = Duration::from_secs(args.gh_timeout);
         let interval = Duration::from_secs(args.poll_interval);
         move || poll_loop(&store, timeout, interval)
+    });
+    thread::spawn({
+        let store = store.clone();
+        let timeout = Duration::from_secs(args.jira_timeout);
+        let interval = Duration::from_secs(args.jira_interval);
+        move || jira_loop(&store, timeout, interval)
     });
     for request in server.incoming_requests() {
         let response = respond(&store, &request);
@@ -118,6 +130,28 @@ fn poll_loop(store: &Store, timeout: Duration, interval: Duration) -> ! {
             started.elapsed().as_secs_f64(),
             cycle.cost,
             cycle.errors.len()
+        );
+        thread::sleep(interval.saturating_sub(started.elapsed()));
+    }
+}
+
+/// The Jira poller: polls at once, then every `interval`. Errors go to stderr; one summary
+/// line per cycle goes to stdout.
+fn jira_loop(store: &Store, timeout: Duration, interval: Duration) -> ! {
+    loop {
+        let started = Instant::now();
+        let (cycle, errors) = match jira::poll(store, timeout) {
+            Ok(cycle) => (cycle, 0),
+            Err(err) => {
+                eprintln!("flowd: jira poll: {err:#}");
+                (jira::Cycle::default(), 1)
+            }
+        };
+        println!(
+            "flowd: jira poll searched {} keys, found {} in {:.1}s, {errors} errors",
+            cycle.searched,
+            cycle.found,
+            started.elapsed().as_secs_f64(),
         );
         thread::sleep(interval.saturating_sub(started.elapsed()));
     }

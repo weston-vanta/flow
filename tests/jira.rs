@@ -260,3 +260,187 @@ fn the_link_stays_after_the_pr_merges() {
     assert_eq!(listed[0]["jira"], unfetched("ABC-12"));
     assert_eq!(pr_get(&ts, "acme/widgets#7")["jira"], unfetched("ABC-12"));
 }
+
+// The Jira poller in `flowd`, against a fake `acli`.
+
+const CYCLE: &str = "flowd: jira poll";
+
+/// A fake `acli` that logs each call's arguments, one per line and followed by `--`, to
+/// `acli.log` in the scratch dir, then runs `script`. Returns the log's path.
+fn fake_acli(ts: &TestStore, script: &str) -> PathBuf {
+    let log = ts.scratch("acli").join("acli.log");
+    ts.fake_bin(
+        "acli",
+        &format!("printf '%s\\n' \"$@\" -- >> '{}'\n{script}", log.display()),
+    );
+    log
+}
+
+fn search_ok() -> String {
+    format!(
+        "cat '{}/tests/fixtures/jira/search.json'",
+        env!("CARGO_MANIFEST_DIR")
+    )
+}
+
+/// The argument lists of every call logged to `log`.
+fn calls(log: &Path) -> Vec<Vec<String>> {
+    std::fs::read_to_string(log)
+        .unwrap_or_default()
+        .split_terminator("--\n")
+        .map(|call| call.lines().map(str::to_owned).collect())
+        .collect()
+}
+
+/// Session `s1` owns `feat/x` (`ABC-12`), `feat/y` (`DEF-7`, its PR merged), `feat/z`
+/// (`ABC-12` again), `feat/w` (`GONE-1`, which Jira does not return) and `feat/v` (none).
+fn branches_with_keys(ts: &TestStore) {
+    let dir = repo(ts, "repo", "main");
+    for (branch, key) in [
+        ("feat/x", Some("ABC-12")),
+        ("feat/y", Some("DEF-7")),
+        ("feat/z", Some("ABC-12")),
+        ("feat/w", Some("GONE-1")),
+        ("feat/v", None),
+    ] {
+        own(ts, &dir, branch);
+        if let Some(key) = key {
+            jira(ts, &dir, &["set", key, "--branch", branch]);
+        }
+    }
+    put_pr(ts, 8, "feat/y", "MERGED");
+}
+
+/// `jira` without its `at`, which it returns parsed.
+fn without_at(mut jira: Value) -> (Value, Timestamp) {
+    let at = jira.as_object_mut().unwrap().remove("at").unwrap();
+    (jira, at.as_str().unwrap().parse().unwrap())
+}
+
+#[test]
+fn a_poll_searches_every_listed_branchs_key_once_and_writes_each() {
+    let ts = TestStore::new();
+    branches_with_keys(&ts);
+    let log = fake_acli(&ts, &search_ok());
+    let before = Timestamp::now();
+    let mut flowd = ts.flowd();
+    let line = flowd.wait_for_line(CYCLE);
+    assert!(line.contains("searched 3 keys, found 2"), "{line}");
+    assert!(line.contains("0 errors"), "{line}");
+
+    assert_eq!(
+        calls(&log),
+        [[
+            "jira",
+            "workitem",
+            "search",
+            "--jql",
+            "key in (ABC-12, DEF-7, GONE-1)",
+            "--fields",
+            "key,summary,status,issuetype",
+            "--paginate",
+            "--json",
+        ]]
+    );
+    let (abc, at) = without_at(branch_jira(&ts, "feat/x"));
+    assert!(at >= before, "{at} is before the poll began");
+    assert_eq!(
+        abc,
+        json!({
+            "key": "ABC-12", "url": "https://vanta.atlassian.net/browse/ABC-12",
+            "found": true, "summary": "Add widgets", "status": "In Review",
+            "category": "indeterminate", "type": "Story",
+        })
+    );
+    assert_eq!(without_at(branch_jira(&ts, "feat/z")).0, abc);
+    // The merged PR's issue is fetched too.
+    assert_eq!(
+        without_at(pr_get(&ts, "acme/widgets#8")["jira"].clone()).0,
+        json!({
+            "key": "DEF-7", "url": "https://vanta.atlassian.net/browse/DEF-7",
+            "found": true, "summary": "Fix gadgets", "status": "Done",
+            "category": "done", "type": "Bug",
+        })
+    );
+    let mut gone = unfetched("GONE-1");
+    gone.as_object_mut().unwrap().remove("at");
+    gone["found"] = json!(false);
+    assert_eq!(without_at(branch_jira(&ts, "feat/w")).0, gone);
+    assert_eq!(branch_jira(&ts, "feat/v"), Value::Null);
+}
+
+#[test]
+fn a_poll_with_no_key_calls_nothing() {
+    let ts = TestStore::new();
+    let dir = repo(&ts, "repo", "feat/x");
+    own(&ts, &dir, "feat/x");
+    let log = fake_acli(&ts, &search_ok());
+    let mut flowd = ts.flowd();
+    let line = flowd.wait_for_line(CYCLE);
+    assert!(line.contains("searched 0 keys"), "{line}");
+    assert!(calls(&log).is_empty());
+}
+
+#[test]
+fn polls_repeat_every_interval() {
+    let ts = TestStore::new();
+    branches_with_keys(&ts);
+    let log = fake_acli(&ts, &search_ok());
+    let mut flowd = ts.flowd_with_env(&[("FLOWD_JIRA_INTERVAL", "0")]);
+    flowd.wait_for_line(CYCLE);
+    flowd.wait_for_line(CYCLE);
+    assert!(calls(&log).len() >= 2);
+}
+
+/// Runs one poll whose search runs `script`, over a fetched `ABC-12`, and asserts it wrote
+/// nothing and reported one error.
+fn failed_search_keeps_the_last_facts(script: &str, env: &[(&str, &str)]) {
+    let ts = TestStore::new();
+    branches_with_keys(&ts);
+    let at: Timestamp = "2026-11-18T09:00:00Z".parse().unwrap();
+    let issue = json!({
+        "found": true, "summary": "Old summary", "status": "To Do", "category": "new",
+        "type": "Story",
+    });
+    put_issue(&ts, "ABC-12", issue, at);
+    let before = branch_jira(&ts, "feat/x");
+    fake_acli(&ts, script);
+    let mut flowd = ts.flowd_with_env(env);
+    let line = flowd.wait_for_line(CYCLE);
+    assert!(line.contains("1 errors"), "{line}");
+    assert_eq!(branch_jira(&ts, "feat/x"), before);
+    assert_eq!(branch_jira(&ts, "feat/w"), unfetched("GONE-1"));
+}
+
+#[test]
+fn a_failing_search_writes_nothing() {
+    failed_search_keeps_the_last_facts("echo '✗ Error: unauthorized' >&2; exit 1", &[]);
+}
+
+#[test]
+fn an_unparseable_search_writes_nothing() {
+    failed_search_keeps_the_last_facts("echo 'not json'", &[]);
+}
+
+#[test]
+fn a_timed_out_search_writes_nothing() {
+    failed_search_keeps_the_last_facts("exec sleep 5", &[("FLOWD_JIRA_TIMEOUT", "1")]);
+}
+
+#[test]
+fn a_search_that_finds_no_key_writes_each_not_found() {
+    // acli fails a search none of whose keys it can read, rather than returning `[]`.
+    let ts = TestStore::new();
+    let dir = repo(&ts, "repo", "feat/x");
+    own(&ts, &dir, "feat/x");
+    jira(&ts, &dir, &["set", "GONE-1"]);
+    fake_acli(
+        &ts,
+        "echo '✗ Error: failed to parse JQL query: issue does not exist or you do not have permission to see it.' >&2; exit 1",
+    );
+    let mut flowd = ts.flowd();
+    let line = flowd.wait_for_line(CYCLE);
+    assert!(line.contains("searched 1 keys, found 0"), "{line}");
+    assert!(line.contains("0 errors"), "{line}");
+    assert_eq!(branch_jira(&ts, "feat/x")["found"], json!(false));
+}
