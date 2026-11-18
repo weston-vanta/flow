@@ -291,7 +291,7 @@ button.hint kbd.down {
 .scale,
 .strip {
   display: grid;
-  grid-template-columns: 52px minmax(0, 1fr) repeat(4, 56px);
+  grid-template-columns: 52px minmax(0, 1fr) auto repeat(4, 56px);
 }
 .scale {
   padding: 0 16px 8px;
@@ -551,6 +551,58 @@ button.pick:hover .node {
 button.led {
   cursor: pointer;
 }
+.jsq {
+  flex: none;
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid currentColor;
+}
+.jsq.progress {
+  background:
+    linear-gradient(
+      90deg,
+      currentColor 50%,
+      transparent 50%);
+}
+.jsq.review {
+  background:
+    repeating-linear-gradient(
+      45deg,
+      currentColor 0 1px,
+      transparent 1px 3px),
+    repeating-linear-gradient(
+      -45deg,
+      currentColor 0 1px,
+      transparent 1px 3px);
+}
+.jsq.done {
+  background: currentColor;
+}
+.jcell {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
+}
+.jira {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 100%;
+  padding: 0 2px;
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--ink2);
+  text-decoration: none;
+  white-space: nowrap;
+}
+a.jira:hover {
+  color: var(--ink);
+}
+.jira.missing {
+  cursor: default;
+}
 button.led:hover {
   background: rgba(42, 41, 39, .06);
 }
@@ -691,6 +743,21 @@ button.led:hover {
   font-weight: 500;
   color: #F4F1EA;
   overflow-wrap: anywhere;
+}
+.wjira {
+  align-self: flex-start;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--ro2);
+}
+.wjira .jsq {
+  color: #D9D2C6;
+}
+.wjira.missing {
+  cursor: default;
 }
 .whint {
   font-size: 12px;
@@ -915,6 +982,9 @@ button.led:hover {
 .li .lamp,
 .li .node.key {
   flex: none;
+}
+.li .jsq {
+  color: var(--ink2);
 }
 .li .count {
   margin: -3px;

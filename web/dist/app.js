@@ -62,7 +62,17 @@
     if (g.reviewDecision === "REVIEW_REQUIRED") return light2("act", "review: no reviewers requested");
     return light2("fine", g.reviewDecision === "APPROVED" ? "review: approved" : "review: none required");
   }
-  function prView(g, pos, below = null, now = Date.now()) {
+  var SQUARE = { "to do": "todo", "in progress": "progress", "in review": "review", done: "done" };
+  function jiraView(j) {
+    if (!j) return null;
+    const { key: key2, url } = j;
+    if (j.found == null) return { key: key2, url, state: "not fetched", square: "todo", status: null, tip: "not fetched yet" };
+    if (!j.found) return { key: key2, url: null, state: "not found", square: null, status: null, tip: "not found in Jira" };
+    const state = j.category === "done" ? "done" : j.category === "indeterminate" ? /review/i.test(j.status ?? "") ? "in review" : "in progress" : "to do";
+    const status = j.status ?? state;
+    return { key: key2, url, state, square: SQUARE[state], status, tip: `${key2} \xB7 ${status} \xB7 open in Jira` };
+  }
+  function prView(g, pos, below = null, now = Date.now(), jira2 = null) {
     const base = baseLight(g, below, now);
     const ci = ciLight(g);
     const feedback = feedbackLight(g);
@@ -89,7 +99,8 @@
       feedback,
       review,
       attention: open && (ready || lamps.some((l) => l.lamp === "act")),
-      tray: trayView(g, below, now)
+      tray: trayView(g, below, now),
+      jira: jiraView(jira2)
     };
   }
   function section(items2, fine) {
@@ -171,6 +182,7 @@
   }
   function sessionViews(sessions2, prs2, branches2 = [], now = Date.now()) {
     const heads = new Set(prs2.flatMap((p) => p.github ? [`${p.github.repo}:${p.github.headRefName}`] : []));
+    const jiras = new Map(prs2.flatMap((p) => p.github ? [[p.github.url, p.jira]] : []));
     const loose = branches2.filter((b) => !heads.has(b.key)).sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
     const done2 = (s) => s.status?.state === "done" ? 1 : 0;
     const started = (s) => s.origin ? Date.parse(s.origin.at) : -Infinity;
@@ -180,7 +192,7 @@
       const stacks = raw.map(
         (stack) => stack.map((g, i) => {
           const below = stack.find((o) => o.headRefName === g.baseRefName)?.number ?? null;
-          return prView(g, stack.length > 1 ? i + 1 : null, below, now);
+          return prView(g, stack.length > 1 ? i + 1 : null, below, now, jiras.get(g.url) ?? null);
         })
       );
       const own = loose.filter((b) => b.owner === s.id);
@@ -197,7 +209,7 @@
         activity: activityLine(s),
         stacks,
         prs: stacks.flat(),
-        branches: own.map((b) => b.branch)
+        branches: own.map((b) => ({ name: b.branch, jira: jiraView(b.jira) }))
       };
     });
   }
@@ -232,6 +244,12 @@
     const ms = now - Math.min(...ats);
     return ms > 3 * 6e4 ? Math.floor(ms / 6e4) : null;
   }
+  function jiraDataAge(prs2, branches2, now = Date.now()) {
+    const ats = [...prs2, ...branches2].flatMap((x) => x.jira?.at ? [Date.parse(x.jira.at)] : []);
+    if (!ats.length) return null;
+    const ms = now - Math.min(...ats);
+    return ms > 15 * 6e4 ? Math.floor(ms / 6e4) : null;
+  }
 
   // src/render.ts
   function esc(s) {
@@ -254,6 +272,12 @@
     const l = p[col];
     return `<button type="button" class="led" data-open="${esc(p.url)}" data-col="${col}" title="${esc(l.tip)}" aria-label="${esc(`${l.tip}. Show ${label} details for #${p.number}`)}">${light(l)}</button>`;
   };
+  var square = (j) => j.square ? `<span class="jsq ${j.square}" aria-hidden="true"></span>` : "";
+  function jira(j, cls, status = false) {
+    const inner = `${square(j)}<span class="mono">${esc(j.key)}</span>${status && j.status ? `<span>${esc(j.status)}</span>` : ""}`;
+    return j.url ? `<a class="${cls}" href="${esc(j.url)}" target="_blank" rel="noreferrer" title="${esc(j.tip)}" aria-label="${esc(`${j.key}: ${j.tip}`)}">${inner}</a>` : `<span class="${cls} missing" title="${esc(j.tip)}">${inner}</span>`;
+  }
+  var jiraCell = (j) => `<span class="jcell">${j ? jira(j, "jira") : ""}</span>`;
   function strip(p, j, n, selected) {
     const word = nodeWord(p);
     return `<div class="strip pr${selected ? " sel" : ""}">
@@ -262,12 +286,14 @@
       ${nodeCell(j, n, `<span class="node ${nodeClass(p)}">${p.pos ?? ""}</span>`)}
       <span class="tline"><span class="title ${p.node}">${esc(p.title)}</span>${p.queue ? `<span class="queue" title="${esc(p.queue.text)}">${gauge(p.queue)}<span class="mono">${p.queue.label}</span></span>` : ""}</span>
     </button>
+    ${jiraCell(p.jira)}
     ${COLUMNS.map(([col, label]) => led(p, col, label)).join("")}
   </div>`;
   }
-  var branchPlate = (name) => `<div class="plate branch" role="group" aria-label="Branch ${esc(name)}, no pull request yet">
+  var branchPlate = ({ name, jira: jira2 }) => `<div class="plate branch" role="group" aria-label="Branch ${esc(name)}, no pull request yet">
     <div class="strip" title="${esc(name)} \xB7 no pull request yet">
       <span class="pick">${nodeCell(0, 1, '<span class="node branch"></span>')}<span class="title mono">${esc(name)}</span></span>
+      ${jiraCell(jira2)}
       ${'<span class="led"></span>'.repeat(COLUMNS.length)}
     </div>
   </div>`;
@@ -317,6 +343,7 @@
         ${CLOSE}
       </div>
       <h2>${esc(p.title)}</h2>
+      ${p.jira ? jira(p.jira, "wjira", true) : ""}
       ${p.queue ? `<div class="wqueue">${gauge(p.queue)}<span>${esc(p.queue.text)}</span></div>` : ""}
     </header>${sections}`;
   }
@@ -365,6 +392,12 @@
       <span class="li"><span class="node key merged"></span>merged</span>
       <span class="li"><span class="node key branch"></span>draft, or branch with no PR</span>
     </div>
+    <div><span class="lh">jira status</span>
+      <span class="li"><span class="jsq todo"></span>to do</span>
+      <span class="li"><span class="jsq progress"></span>in progress</span>
+      <span class="li"><span class="jsq review"></span>in review</span>
+      <span class="li"><span class="jsq done"></span>done</span>
+    </div>
   </div>`;
   function render(views, toggled2, notices, live, legend2, t) {
     const p = t && views.flatMap((v) => v.prs).find((x) => x.url === t.url);
@@ -380,7 +413,7 @@
     </header>
     <div class="deck">
       <main class="rack">
-        <div class="scale" aria-hidden="true"><span></span><span></span>${COLUMNS.map(([, label]) => `<span>${label}</span>`).join("")}</div>
+        <div class="scale" aria-hidden="true"><span></span><span></span><span></span>${COLUMNS.map(([, label]) => `<span>${label}</span>`).join("")}</div>
         <div class="chans">${views.length ? views.map((v) => channel(v, toggled2, p ? p.url : null)).join("") : '<p class="empty">No Sessions.</p>'}</div>
       </main>
       <aside class="window"><div class="wbody"><div class="tscroll" role="region" aria-label="Pull request details">${p && t ? tray(p, t) : EMPTY}</div></div></aside>
@@ -415,6 +448,8 @@
     }
     const stale = prDataAge(prs);
     if (stale != null) notices.push(`PR data ${stale} min old`);
+    const jiraStale = jiraDataAge(prs, branches);
+    if (jiraStale != null) notices.push(`Jira data ${jiraStale} min old`);
     const views = sessionViews(sessions, prs, branches);
     if (tray2 && !views.some((v) => v.prs.some((p) => p.url === tray2.url))) tray2 = null;
     return render(views, toggled, notices, !failing, legend, tray2);

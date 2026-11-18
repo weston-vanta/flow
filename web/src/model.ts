@@ -76,10 +76,26 @@ export interface Github {
   mergeQueue: { position: number; size: number } | null;
 }
 
+/** A Branch's Jira issue as `flow` prints it. All but `key` and `url` are null until the Jira
+ * poller first fetches it; when `found` is false, only `at` joins them. */
+export interface Jira {
+  key: string;
+  url: string;
+  found: boolean | null;
+  at: string | null;
+  summary: string | null;
+  status: string | null;
+  /** The status category's key: `new`, `indeterminate` or `done`. */
+  category: string | null;
+  type: string | null;
+}
+
 export interface Pr {
   key: string;
   owner: string | null;
   github: Facet<Github>;
+  /** The Jira issue of its head Branch. */
+  jira: Jira | null;
 }
 
 /** A Branch a Session created a worktree for; `at` is when. */
@@ -89,6 +105,7 @@ export interface Branch {
   branch: string;
   owner: string;
   at: string;
+  jira: Jira | null;
 }
 
 /** act: the user must do something; run: in progress; fine; off: does not apply. */
@@ -125,6 +142,29 @@ export interface PrView {
   /** True if the user should act on this PR: it is mergeable or a lamp is lit. */
   attention: boolean;
   tray: Tray;
+  jira: JiraView | null;
+}
+
+export type JiraState = "to do" | "in progress" | "in review" | "done" | "not fetched" | "not found";
+
+/** A Branch's Jira issue: a square plus its key, linked to Jira, or the bare key when Jira
+ * didn't return it. */
+export interface JiraView {
+  key: string;
+  /** Null when not found: the key is plain text. */
+  url: string | null;
+  state: JiraState;
+  /** Empty, half-filled, cross-hatched or full; null when not found. Not fetched draws as to do. */
+  square: "todo" | "progress" | "review" | "done" | null;
+  /** The status's name in Jira, for the window header; null until fetched. */
+  status: string | null;
+  tip: string;
+}
+
+/** A Session's Branch that heads no PR. */
+export interface BranchView {
+  name: string;
+  jira: JiraView | null;
 }
 
 export interface SessionView {
@@ -141,8 +181,8 @@ export interface SessionView {
   stacks: PrView[][];
   /** The PRs of `stacks`, flattened in the same order. */
   prs: PrView[];
-  /** Names of the Session's Branches that head no PR, oldest worktree first. */
-  branches: string[];
+  /** The Session's Branches that head no PR, oldest worktree first. */
+  branches: BranchView[];
 }
 
 const FAILING = new Set([
@@ -229,8 +269,34 @@ export function reviewLight(g: Github): ReviewLight {
   return light("fine", g.reviewDecision === "APPROVED" ? "review: approved" : "review: none required");
 }
 
+const SQUARE = { "to do": "todo", "in progress": "progress", "in review": "review", done: "done" } as const;
+
+/** Judged from the status category, with "in review" told apart by the status name. */
+export function jiraView(j: Jira | null): JiraView | null {
+  if (!j) return null;
+  const { key, url } = j;
+  if (j.found == null) return { key, url, state: "not fetched", square: "todo", status: null, tip: "not fetched yet" };
+  if (!j.found) return { key, url: null, state: "not found", square: null, status: null, tip: "not found in Jira" };
+  const state =
+    j.category === "done"
+      ? "done"
+      : j.category === "indeterminate"
+        ? /review/i.test(j.status ?? "")
+          ? "in review"
+          : "in progress"
+        : "to do";
+  const status = j.status ?? state;
+  return { key, url, state, square: SQUARE[state], status, tip: `${key} · ${status} · open in Jira` };
+}
+
 /** `below` is the number of the PR below this one in its Stack, if any. */
-export function prView(g: Github, pos: number | null, below: number | null = null, now = Date.now()): PrView {
+export function prView(
+  g: Github,
+  pos: number | null,
+  below: number | null = null,
+  now = Date.now(),
+  jira: Jira | null = null,
+): PrView {
   const base = baseLight(g, below, now);
   const ci = ciLight(g);
   const feedback = feedbackLight(g);
@@ -258,6 +324,7 @@ export function prView(g: Github, pos: number | null, below: number | null = nul
     review,
     attention: open && (ready || lamps.some((l) => l.lamp === "act")),
     tray: trayView(g, below, now),
+    jira: jiraView(jira),
   };
 }
 
@@ -409,6 +476,7 @@ export function activityLine(s: Session): string | null {
  * start time. */
 export function sessionViews(sessions: Session[], prs: Pr[], branches: Branch[] = [], now = Date.now()): SessionView[] {
   const heads = new Set(prs.flatMap((p) => (p.github ? [`${p.github.repo}:${p.github.headRefName}`] : [])));
+  const jiras = new Map(prs.flatMap((p) => (p.github ? [[p.github.url, p.jira]] : [])));
   const loose = branches.filter((b) => !heads.has(b.key)).sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
   const done = (s: Session) => (s.status?.state === "done" ? 1 : 0);
   const started = (s: Session) => (s.origin ? Date.parse(s.origin.at) : -Infinity);
@@ -418,7 +486,7 @@ export function sessionViews(sessions: Session[], prs: Pr[], branches: Branch[] 
     const stacks = raw.map((stack) =>
       stack.map((g, i) => {
         const below = stack.find((o) => o.headRefName === g.baseRefName)?.number ?? null;
-        return prView(g, stack.length > 1 ? i + 1 : null, below, now);
+        return prView(g, stack.length > 1 ? i + 1 : null, below, now, jiras.get(g.url) ?? null);
       }),
     );
     const own = loose.filter((b) => b.owner === s.id);
@@ -435,7 +503,7 @@ export function sessionViews(sessions: Session[], prs: Pr[], branches: Branch[] 
       activity: activityLine(s),
       stacks,
       prs: stacks.flat(),
-      branches: own.map((b) => b.branch),
+      branches: own.map((b) => ({ name: b.branch, jira: jiraView(b.jira) })),
     };
   });
 }
@@ -485,4 +553,13 @@ export function prDataAge(prs: Pr[], now = Date.now()): number | null {
   if (!ats.length) return null;
   const ms = now - Math.min(...ats);
   return ms > 3 * 60_000 ? Math.floor(ms / 60_000) : null;
+}
+
+/** Minutes since the oldest Jira fetch among the listed PRs' and Branches' Jira issues when that
+ * is over 15 minutes, else null. Keys never fetched don't count. */
+export function jiraDataAge(prs: Pr[], branches: Branch[], now = Date.now()): number | null {
+  const ats = [...prs, ...branches].flatMap((x) => (x.jira?.at ? [Date.parse(x.jira.at)] : []));
+  if (!ats.length) return null;
+  const ms = now - Math.min(...ats);
+  return ms > 15 * 60_000 ? Math.floor(ms / 60_000) : null;
 }

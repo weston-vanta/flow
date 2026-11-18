@@ -1,7 +1,7 @@
 // The "flow" receiver face, flat, as HTML strings: a header strip, the Session channels with their
 // Stacks as plates of PR strips, the window showing the selected PR, and the legend behind `h`.
 import { age, attentionLight, isFolded } from "./model.ts";
-import type { Light, PrView, ReviewLight, SessionView } from "./model.ts";
+import type { BranchView, JiraView, Light, PrView, ReviewLight, SessionView } from "./model.ts";
 
 export function esc(s: string | number): string {
   return String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -50,6 +50,21 @@ const led = (p: PrView, col: Column, label: string) => {
   return `<button type="button" class="led" data-open="${esc(p.url)}" data-col="${col}" title="${esc(l.tip)}" aria-label="${esc(`${l.tip}. Show ${label} details for #${p.number}`)}">${light(l)}</button>`;
 };
 
+/** The Jira square: empty, half-filled, cross-hatched or full. */
+const square = (j: JiraView) => (j.square ? `<span class="jsq ${j.square}" aria-hidden="true"></span>` : "");
+
+/** A Branch's Jira issue: square plus key linking to Jira, or the bare key when Jira didn't
+ * return it. `status` adds the status name, as in the window header. */
+function jira(j: JiraView, cls: string, status = false): string {
+  const inner = `${square(j)}<span class="mono">${esc(j.key)}</span>${status && j.status ? `<span>${esc(j.status)}</span>` : ""}`;
+  return j.url
+    ? `<a class="${cls}" href="${esc(j.url)}" target="_blank" rel="noreferrer" title="${esc(j.tip)}" aria-label="${esc(`${j.key}: ${j.tip}`)}">${inner}</a>`
+    : `<span class="${cls} missing" title="${esc(j.tip)}">${inner}</span>`;
+}
+
+/** The strip's Jira cell, right-aligned against the lamps; empty when the Branch has no issue. */
+const jiraCell = (j: JiraView | null) => `<span class="jcell">${j ? jira(j, "jira") : ""}</span>`;
+
 function strip(p: PrView, j: number, n: number, selected: boolean): string {
   const word = nodeWord(p);
   return `<div class="strip pr${selected ? " sel" : ""}">
@@ -60,14 +75,16 @@ function strip(p: PrView, j: number, n: number, selected: boolean): string {
         p.queue ? `<span class="queue" title="${esc(p.queue.text)}">${gauge(p.queue)}<span class="mono">${p.queue.label}</span></span>` : ""
       }</span>
     </button>
+    ${jiraCell(p.jira)}
     ${COLUMNS.map(([col, label]) => led(p, col, label)).join("")}
   </div>`;
 }
 
 /** A Branch with no PR: its own plate, a dashed node, its name in mono and blank lamps. */
-const branchPlate = (name: string) => `<div class="plate branch" role="group" aria-label="Branch ${esc(name)}, no pull request yet">
+const branchPlate = ({ name, jira }: BranchView) => `<div class="plate branch" role="group" aria-label="Branch ${esc(name)}, no pull request yet">
     <div class="strip" title="${esc(name)} · no pull request yet">
       <span class="pick">${nodeCell(0, 1, '<span class="node branch"></span>')}<span class="title mono">${esc(name)}</span></span>
+      ${jiraCell(jira)}
       ${'<span class="led"></span>'.repeat(COLUMNS.length)}
     </div>
   </div>`;
@@ -126,6 +143,7 @@ function tray(p: PrView, t: TrayState): string {
         ${CLOSE}
       </div>
       <h2>${esc(p.title)}</h2>
+      ${p.jira ? jira(p.jira, "wjira", true) : ""}
       ${p.queue ? `<div class="wqueue">${gauge(p.queue)}<span>${esc(p.queue.text)}</span></div>` : ""}
     </header>${sections}`;
 }
@@ -193,6 +211,12 @@ const LEGEND = `<div class="legend" role="note" aria-label="Legend">
       <span class="li"><span class="node key merged"></span>merged</span>
       <span class="li"><span class="node key branch"></span>draft, or branch with no PR</span>
     </div>
+    <div><span class="lh">jira status</span>
+      <span class="li"><span class="jsq todo"></span>to do</span>
+      <span class="li"><span class="jsq progress"></span>in progress</span>
+      <span class="li"><span class="jsq review"></span>in review</span>
+      <span class="li"><span class="jsq done"></span>done</span>
+    </div>
   </div>`;
 
 /** `toggled` holds the ids of Sessions the user has folded or unfolded against their default;
@@ -219,7 +243,7 @@ export function render(
     </header>
     <div class="deck">
       <main class="rack">
-        <div class="scale" aria-hidden="true"><span></span><span></span>${COLUMNS.map(([, label]) => `<span>${label}</span>`).join("")}</div>
+        <div class="scale" aria-hidden="true"><span></span><span></span><span></span>${COLUMNS.map(([, label]) => `<span>${label}</span>`).join("")}</div>
         <div class="chans">${views.length ? views.map((v) => channel(v, toggled, p ? p.url : null)).join("") : '<p class="empty">No Sessions.</p>'}</div>
       </main>
       <aside class="window"><div class="wbody"><div class="tscroll" role="region" aria-label="Pull request details">${p && t ? tray(p, t) : EMPTY}</div></div></aside>
