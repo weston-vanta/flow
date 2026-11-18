@@ -202,14 +202,14 @@ export interface SessionView {
   prs: PrView[];
 }
 
-/** What the rack draws as one unit. An ordinary Stack has a null `head` and is the one entry
- * of `stacks`. A Branch with no PR is its BranchView with no `stacks`. A Feature branch is its feature
- * PR, or its name before that PR exists, with the Stacks its owner based on it, oldest bottom
- * PR first. */
-export interface Group {
-  head: PrView | BranchView | null;
-  stacks: PrView[][];
-}
+/** What the rack draws as one unit. A "stack" is an ordinary Stack, the one entry of `stacks`.
+ * A "branch" is a Branch with no PR: its BranchView, with no `stacks`, or, as a Feature branch
+ * before its feature PR exists, with the Stacks its owner based on it. A "feature" is a Feature
+ * branch's feature PR with those Stacks. `stacks` are oldest bottom PR first. */
+export type Group =
+  | { kind: "stack"; head: null; stacks: PrView[][] }
+  | { kind: "branch"; head: BranchView; stacks: PrView[][] }
+  | { kind: "feature"; head: PrView; stacks: PrView[][] };
 
 const FAILING = new Set([
   "FAILURE",
@@ -527,10 +527,10 @@ export function sessionViews(sessions: Session[], prs: Pr[], branches: Branch[] 
     const groups: Group[] = [
       ...raw.flatMap((st): Group[] => {
         if (fbranches.has(base(st[0]))) return [];
-        if (feature.has(head(st[0]))) return [{ head: view(st)[0], stacks: on(head(st[0])) }];
-        return [{ head: null, stacks: [view(st)] }];
+        if (feature.has(head(st[0]))) return [{ kind: "feature", head: view(st)[0], stacks: on(head(st[0])) }];
+        return [{ kind: "stack", head: null, stacks: [view(st)] }];
       }),
-      ...own.map((b) => ({ head: { name: b.branch, jira: jiraView(b.jira) }, stacks: on(b.key) })),
+      ...own.map((b): Group => ({ kind: "branch", head: { name: b.branch, jira: jiraView(b.jira) }, stacks: on(b.key) })),
     ];
     const state = s.status?.state ?? null;
     const cwd = s.origin?.cwd;
@@ -545,7 +545,7 @@ export function sessionViews(sessions: Session[], prs: Pr[], branches: Branch[] 
       activity: activityLine(s),
       task: s.task,
       groups,
-      prs: groups.flatMap((g) => [...(g.head && !("name" in g.head) ? [g.head] : []), ...g.stacks.flat()]),
+      prs: groups.flatMap((g) => [...(g.kind === "feature" ? [g.head] : []), ...g.stacks.flat()]),
     };
   });
 }
@@ -653,7 +653,7 @@ export interface PanelView {
 export function sessionPanel(id: string, views: SessionView[], tasks: Task[]): PanelView | null {
   const v = views.find((w) => w.id === id);
   if (!v) return null;
-  const branches = v.groups.filter((g) => g.head && "name" in g.head).length;
+  const branches = v.groups.filter((g) => g.kind === "branch").length;
   const parts = [v.prs.length && plural(v.prs.length, "pull request"), branches && plural(branches, "branch", "branches")].filter(Boolean);
   const t = v.task == null ? null : tasks.find((x) => x.slug === v.task);
   return {

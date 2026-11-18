@@ -17,7 +17,7 @@ You are the Manager. Turn `$ARGUMENTS` (a Jira link, a PRD link, a question or a
 
 ## Steps
 
-1. **Clarify.** Ask your one round, if any, and collect the Resources the Task needs: links to its Jira issues, docs, files and PRs.
+1. **Clarify.** Ask your one round, if any, and collect the Resources the Task needs: the URLs of its Jira issues, docs, files and PRs.
 2. **Infer a slug** from the goal, 2–4 words of kebab-case, starting with a letter, at most 32 characters. Never ask the Director for one; they can edit it in the draft.
 3. **Propose a launch:** a new IC on a CDE by default, with **here** (in this Session) as the alternative. For the CDE: of the running CDEs in `gitpod environment list -r` with your repo checked out (its main checkout is the first entry of `git worktree list`), the one with the fewest active Sessions in `flow session list`, else your own.
 4. **Show the draft** `brief.md`, with the slug and launch, and ask the Director to confirm or edit them:

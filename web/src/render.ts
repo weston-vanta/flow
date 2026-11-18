@@ -98,14 +98,14 @@ const plate = (stack: PrView[], url: string | null) =>
 /** A Feature branch: its feature PR (or its Branch before the PR exists) on a plate of its own,
  * then its Stacks indented beneath, each joined back to the F node by the branch line. */
 function group(g: Group, url: string | null): string {
-  if (g.head == null) return plate(g.stacks[0], url);
-  if (!g.stacks.length) return branchPlate(g.head as BranchView);
+  if (g.kind === "stack") return plate(g.stacks[0], url);
+  if (g.kind === "branch" && !g.stacks.length) return branchPlate(g.head);
   const n = g.stacks.length;
   const head =
-    "name" in g.head
+    g.kind === "branch"
       ? branchPlate(g.head, true)
       : `<div class="plate" role="group" aria-label="Feature PR">${strip(g.head, 0, 2, g.head.url === url, true)}</div>`;
-  const name = "name" in g.head ? g.head.name : `#${g.head.number}`;
+  const name = g.kind === "branch" ? g.head.name : `#${g.head.number}`;
   return `<div class="fgroup" role="group" aria-label="${esc(`Feature branch ${name} with ${n} ${n === 1 ? "stack" : "stacks"}`)}">${head}<div class="fstacks">${g.stacks.map((s) => `<div class="fstack">${plate(s, url)}</div>`).join("")}</div></div>`;
 }
 

@@ -161,7 +161,7 @@ enum TaskCommand {
         /// The Task slug.
         slug: String,
     },
-    /// Record the Resources a Task points at: links to its Jira issues, docs and files.
+    /// Record the Resources a Task points at: its Jira issues, docs and files, each by URL.
     #[command(subcommand)]
     Resource(ResourceCommand),
 }
@@ -302,10 +302,7 @@ fn task(store: &Store, command: TaskCommand) -> ExitCode {
             ),
         },
         TaskCommand::Join { slug } => {
-            let Some(id) = std::env::var("CLAUDE_CODE_SESSION_ID")
-                .ok()
-                .filter(|id| !id.is_empty())
-            else {
+            let Some(id) = calling_session() else {
                 return error(
                     1,
                     "CLAUDE_CODE_SESSION_ID is not set",
@@ -377,12 +374,16 @@ fn task_resource(store: &Store, root: &std::path::Path, command: ResourceCommand
     }
 }
 
-/// The slug of the Task the calling Session (`$CLAUDE_CODE_SESSION_ID`) is on, if any.
-fn calling_task(store: &Store) -> anyhow::Result<Option<String>> {
-    let Some(id) = std::env::var("CLAUDE_CODE_SESSION_ID")
+/// The calling Session's id: `$CLAUDE_CODE_SESSION_ID`, if set and non-empty.
+fn calling_session() -> Option<String> {
+    std::env::var("CLAUDE_CODE_SESSION_ID")
         .ok()
         .filter(|id| !id.is_empty())
-    else {
+}
+
+/// The slug of the Task the calling Session (`$CLAUDE_CODE_SESSION_ID`) is on, if any.
+fn calling_task(store: &Store) -> anyhow::Result<Option<String>> {
+    let Some(id) = calling_session() else {
         return Ok(None);
     };
     Ok(services::session_get(store, &id)?.and_then(|session| session.task))
@@ -400,9 +401,7 @@ fn no_task(slug: &str) -> ExitCode {
 /// If the worktree was created but ownership was not recorded, the `{error, help}` JSON goes
 /// to stderr, since stdout and the exit status belong to `wt`.
 fn wt_create(store: &Store, branch: &str, args: &[String]) -> ExitCode {
-    let session = std::env::var("CLAUDE_CODE_SESSION_ID")
-        .ok()
-        .filter(|id| !id.is_empty());
+    let session = calling_session();
     match services::wt_create(store, branch, args, session.as_deref()) {
         Ok((status, report)) => {
             if let Some(err) = report {
@@ -450,11 +449,7 @@ fn branch_jira(store: &Store, branch: Option<&str>, jira: Option<&str>) -> ExitC
 }
 
 fn session_get(store: &Store, id: Option<String>) -> ExitCode {
-    let id = id.or_else(|| {
-        std::env::var("CLAUDE_CODE_SESSION_ID")
-            .ok()
-            .filter(|id| !id.is_empty())
-    });
+    let id = id.or_else(calling_session);
     let Some(id) = id else {
         return error(
             2,

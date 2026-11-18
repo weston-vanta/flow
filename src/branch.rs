@@ -21,7 +21,7 @@ const JIRA: &str = "jira";
 /// The Jira issue a Branch implements; the facet holds `null` once cleared. Writer:
 /// `flow branch jira set/clear`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct JiraLink {
+pub struct JiraFacet {
     pub key: String,
 }
 
@@ -49,7 +49,7 @@ pub fn put_reporter(store: &Store, key: &str, session: &str, at: Timestamp) -> R
 /// Records `jira` (a Jira key, or `None` to clear) as the Jira issue of the Branch keyed
 /// `key`, replacing any earlier one.
 pub fn put_jira(store: &Store, key: &str, jira: Option<&str>, at: Timestamp) -> Result<Put> {
-    let value = serde_json::to_value(jira.map(|key| JiraLink {
+    let value = serde_json::to_value(jira.map(|key| JiraFacet {
         key: key.to_owned(),
     }))?;
     store.put_facet(KIND, key, JIRA, &value, at)
@@ -141,9 +141,9 @@ fn jira_key(entity: &Entity) -> Result<Option<String>> {
     let Some(facet) = entity.facets.get(JIRA) else {
         return Ok(None);
     };
-    let link: Option<JiraLink> = serde_json::from_value(facet.value.clone())
+    let jira: Option<JiraFacet> = serde_json::from_value(facet.value.clone())
         .with_context(|| format!("branch {} has a malformed {JIRA} facet", entity.id))?;
-    Ok(link.map(|link| link.key))
+    Ok(jira.map(|jira| jira.key))
 }
 
 /// The `owner/name` a git remote URL points at, for the scp-like ssh form
