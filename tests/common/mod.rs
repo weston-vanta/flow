@@ -22,9 +22,9 @@ const INHERITED_ENV: &[&str] = &[
     "HERDR_SOCKET_PATH",
 ];
 
-/// A temp directory holding the binaries' Store (through `FLOW_STORE`), the hook log beside
+/// A temp directory the binaries get as `FLOW_HOME`, holding their Store, the hook log beside
 /// it, and a `bin` directory put first on PATH for fake executables (holding a `gh` that
-/// always fails until a test replaces it); removed on drop.
+/// always fails until a test replaces it, and an `acli` likewise); removed on drop.
 pub struct TestStore {
     dir: TempDir,
 }
@@ -36,10 +36,12 @@ impl TestStore {
         let ts = Self { dir };
         // `flowd` polls GitHub through `gh`; no test reaches the real one.
         ts.fake_bin("gh", "echo 'no fake gh in this test' >&2; exit 1");
+        // Nor does any reach the real `acli`, which the Jira poller calls.
+        ts.fake_bin("acli", "echo 'no fake acli in this test' >&2; exit 1");
         ts
     }
 
-    /// The `flow` CLI with `FLOW_STORE` set to this Store.
+    /// The `flow` CLI with `FLOW_HOME` set to this temp dir.
     pub fn flow(&self) -> Command {
         self.command("flow")
     }
@@ -90,7 +92,12 @@ impl TestStore {
         Store::new(self.store_path())
     }
 
-    /// The Store's root directory, which the binaries get as `FLOW_STORE`.
+    /// `$FLOW_HOME`: this temp dir.
+    pub fn home(&self) -> PathBuf {
+        self.dir.path().to_path_buf()
+    }
+
+    /// The Store's root directory, `$FLOW_HOME/store`.
     pub fn store_path(&self) -> PathBuf {
         self.dir.path().join("store")
     }
@@ -136,7 +143,7 @@ impl TestStore {
 
     fn std_command(&self, program: &Path) -> std::process::Command {
         let mut cmd = std::process::Command::new(program);
-        cmd.env("FLOW_STORE", self.store_path());
+        cmd.env("FLOW_HOME", self.dir.path());
         for name in INHERITED_ENV {
             cmd.env_remove(name);
         }
@@ -212,4 +219,17 @@ pub fn git_repo(dir: &Path, branch: &str) {
         .status()
         .expect("run git init");
     assert!(status.success(), "git init failed");
+}
+
+/// `flow`'s stdout parsed as JSON.
+pub fn json_out(out: &assert_cmd::assert::Assert) -> Value {
+    serde_json::from_slice(&out.get_output().stdout).expect("flow prints JSON")
+}
+
+/// Asserts `out` is an `{error, help}` body and returns it.
+pub fn error_body(out: &assert_cmd::assert::Assert) -> Value {
+    let body = json_out(out);
+    assert!(body["error"].is_string(), "{body}");
+    assert!(body["help"].is_string(), "{body}");
+    body
 }

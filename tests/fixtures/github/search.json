@@ -1,12 +1,12 @@
 {"data": {
   "open": {"pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": [
-    {"number": 7, "state": "OPEN", "updatedAt": "2026-11-10T11:00:00Z", "repository": {"nameWithOwner": "acme/widgets"}},
-    {"number": 8, "state": "OPEN", "updatedAt": "2026-11-10T11:30:00Z", "repository": {"nameWithOwner": "acme/widgets"}},
-    {"number": 3, "state": "OPEN", "updatedAt": "2026-11-10T10:00:00Z", "repository": {"nameWithOwner": "acme/gadgets"}},
-    {"number": 4, "state": "OPEN", "updatedAt": "2026-11-10T10:30:00Z", "repository": {"nameWithOwner": "acme/gadgets"}}
+    {"number": 7, "baseRefName": "main", "state": "OPEN", "updatedAt": "2026-11-10T11:00:00Z", "repository": {"nameWithOwner": "acme/widgets"}},
+    {"number": 8, "baseRefName": "feat/x", "state": "OPEN", "updatedAt": "2026-11-10T11:30:00Z", "repository": {"nameWithOwner": "acme/widgets"}},
+    {"number": 3, "baseRefName": "main", "state": "OPEN", "updatedAt": "2026-11-10T10:00:00Z", "repository": {"nameWithOwner": "acme/gadgets"}},
+    {"number": 4, "baseRefName": "main", "state": "OPEN", "updatedAt": "2026-11-10T10:30:00Z", "repository": {"nameWithOwner": "acme/gadgets"}}
   ]},
   "closed": {"pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": [
-    {"number": 5, "state": "MERGED", "updatedAt": "2026-11-01T09:00:00Z", "repository": {"nameWithOwner": "acme/widgets"}}
+    {"number": 5, "baseRefName": "main", "state": "MERGED", "updatedAt": "2026-11-01T09:00:00Z", "repository": {"nameWithOwner": "acme/widgets"}}
   ]},
   "rateLimit": {"cost": 1}
 }}

@@ -7,7 +7,7 @@ use std::panic;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::error::ErrorKind;
+use clap::error::{ContextKind, ContextValue, ErrorKind};
 use clap::{CommandFactory, Parser, Subcommand};
 use jiff::Timestamp;
 use serde::Serialize;
@@ -15,7 +15,9 @@ use serde::Serialize;
 use flow::hook;
 use flow::launch;
 use flow::services::{self, Refusal};
+use flow::session::{self, Session};
 use flow::store::Store;
+use flow::task;
 
 /// The agent note, `docs/agent-note.md`, printed by `flow guide`.
 const AGENT_NOTE: &str = include_str!("../../docs/agent-note.md");
@@ -36,9 +38,12 @@ enum Command {
     /// Read PRs: GitHub pull requests, each with its owner Session.
     #[command(subcommand)]
     Pr(PrCommand),
-    /// Read Branches: git branches a Session created a worktree for.
+    /// Read Branches: git branches a Session created a worktree for; record their Jira issues.
     #[command(subcommand)]
     Branch(BranchCommand),
+    /// Tasks: units of delegated work, each with a Task directory; create, join and read them.
+    #[command(subcommand)]
+    Task(TaskCommand),
     /// Create worktrees through `wt`, recording the calling Session as the owner.
     #[command(subcommand)]
     Wt(WtCommand),
@@ -58,15 +63,13 @@ enum SessionCommand {
         /// The Claude session id; defaults to `$CLAUDE_CODE_SESSION_ID`, the calling Session.
         id: Option<String>,
     },
-    /// Start an IC Session in a new, unfocused herdr tab on this CDE (or `--cde`), running
-    /// `/flow:ic <brief>`. Prints `{id, name, cde, pane}`.
+    /// Start an IC Session on a Task in a new, unfocused herdr tab on this CDE (or `--cde`),
+    /// running `/flow:ic <slug>`. Prints `{id, name, cde, pane}`.
     Start {
-        /// The Task slug: the Session's name and the tab's label (`[a-z][a-z0-9_-]`, at most 32).
+        /// The Task's slug: the Session's name and the tab's label. Its Task directory must
+        /// hold the brief, `brief.md`.
         #[arg(long)]
-        name: String,
-        /// The brief file, on /efs-home.
-        #[arg(long)]
-        brief: PathBuf,
+        task: String,
         /// The herdr workspace the tab goes in, created if missing; defaults to the calling
         /// Session's title, else its id. Set by the remote form, which has no calling Session.
         #[arg(long, hide = true)]
@@ -111,8 +114,81 @@ enum PrCommand {
 #[derive(Subcommand)]
 enum BranchCommand {
     /// Print every Branch whose owner is a listed Session as a JSON array; `at` is when its
-    /// worktree was created.
+    /// worktree was created and `jira` its Jira issue.
     List,
+    /// Record the Jira issue a Branch implements.
+    #[command(subcommand)]
+    Jira(JiraCommand),
+}
+
+#[derive(Subcommand)]
+enum JiraCommand {
+    /// Record `<key>` as the Jira issue of the Branch checked out here (or `--branch`),
+    /// replacing any earlier one. Checks neither ownership nor Jira.
+    Set {
+        /// The Jira key, such as `ABC-123`.
+        key: String,
+        /// A branch of the current directory's repository, instead of the one checked out.
+        #[arg(long)]
+        branch: Option<String>,
+    },
+    /// Unlink the Branch checked out here (or `--branch`) from its Jira issue.
+    Clear {
+        /// A branch of the current directory's repository, instead of the one checked out.
+        #[arg(long)]
+        branch: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum TaskCommand {
+    /// Create a Task and its Task directory, `$FLOW_HOME/tasks/<slug>/`. Prints `{slug, dir}`.
+    /// Joins no Session.
+    Create {
+        /// The Task slug: `[a-z][a-z0-9_-]`, at most 32 characters.
+        slug: String,
+    },
+    /// Put the calling Session (`$CLAUDE_CODE_SESSION_ID`) on the Task, replacing any Task it
+    /// was on.
+    Join {
+        /// The slug of a Task made with `flow task create`.
+        slug: String,
+    },
+    /// Print every Task a listed Session is on as a JSON array, ordered by slug.
+    List,
+    /// Print one Task as JSON.
+    Get {
+        /// The Task slug.
+        slug: String,
+    },
+    /// Record the Resources a Task points at: its Jira issues, docs and files, each by URL.
+    #[command(subcommand)]
+    Resource(ResourceCommand),
+}
+
+#[derive(Subcommand)]
+enum ResourceCommand {
+    /// Add a Resource to the calling Session's Task (or `--task`), replacing the title of one
+    /// with the same URL. Prints `{task, resources}`.
+    Add {
+        /// An absolute `https`, `http` or `file` URL.
+        url: String,
+        /// What to show instead of the URL.
+        #[arg(long)]
+        title: Option<String>,
+        /// The Task's slug, instead of the calling Session's Task.
+        #[arg(long)]
+        task: Option<String>,
+    },
+    /// Remove the Resource with this URL from the calling Session's Task (or `--task`).
+    /// Prints `{task, resources}`.
+    Remove {
+        /// The Resource's URL.
+        url: String,
+        /// The Task's slug, instead of the calling Session's Task.
+        #[arg(long)]
+        task: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -149,8 +225,7 @@ fn main() -> ExitCode {
         },
         Some(Command::Session(SessionCommand::Get { id })) => session_get(&store, id),
         Some(Command::Session(SessionCommand::Start {
-            name,
-            brief,
+            task,
             workspace,
             cde,
             id,
@@ -158,8 +233,7 @@ fn main() -> ExitCode {
         })) => session_start(
             &store,
             launch::Request {
-                name: &name,
-                brief: &brief,
+                task: &task,
                 workspace,
                 cde,
                 id,
@@ -190,6 +264,13 @@ fn main() -> ExitCode {
             Ok(branches) => print_json(&branches),
             Err(err) => store_error(&err),
         },
+        Some(Command::Branch(BranchCommand::Jira(JiraCommand::Set { key, branch }))) => {
+            branch_jira(&store, branch.as_deref(), Some(&key))
+        }
+        Some(Command::Branch(BranchCommand::Jira(JiraCommand::Clear { branch }))) => {
+            branch_jira(&store, branch.as_deref(), None)
+        }
+        Some(Command::Task(command)) => task(&store, command),
         Some(Command::Wt(WtCommand::Create { branch, args })) => wt_create(&store, &branch, &args),
         Some(Command::Guide) => {
             print!("{AGENT_NOTE}");
@@ -199,13 +280,128 @@ fn main() -> ExitCode {
     }
 }
 
+fn task(store: &Store, command: TaskCommand) -> ExitCode {
+    let root = task::root_from_env();
+    match command {
+        TaskCommand::Create { slug } if !task::is_slug(&slug) => error(
+            2,
+            &format!("{slug:?} is not a usable Task slug"),
+            "use lowercase letters, digits, `-` and `_`, starting with a letter, at most 32 characters",
+        ),
+        TaskCommand::Create { slug } => match task::create(&root, &slug) {
+            Ok(Some(dir)) => print_json(&serde_json::json!({ "slug": slug, "dir": dir })),
+            Ok(None) => error(
+                1,
+                &format!("Task {slug:?} already exists"),
+                "choose another slug; `flow task get <slug>` reads the existing Task",
+            ),
+            Err(err) => error(
+                1,
+                &format!("{err:#}"),
+                "the Task directory could not be created",
+            ),
+        },
+        TaskCommand::Join { slug } => {
+            let Some(id) = calling_session() else {
+                return error(
+                    1,
+                    "CLAUDE_CODE_SESSION_ID is not set",
+                    "run `flow task join` inside a Claude Code Session",
+                );
+            };
+            if !task::exists(&root, &slug) {
+                return no_task(&slug);
+            }
+            let facet = session::Task { slug: slug.clone() };
+            match Session::put(store, &id, &facet, Timestamp::now()) {
+                Ok(_) => print_json(&serde_json::json!({ "session": id, "task": slug })),
+                Err(err) => store_error(&err),
+            }
+        }
+        TaskCommand::List => match task::list(store, &root) {
+            Ok(tasks) => print_json(&tasks),
+            Err(err) => store_error(&err),
+        },
+        TaskCommand::Get { slug } => match task::get(store, &root, &slug) {
+            Ok(Some(task)) => print_json(&task),
+            Ok(None) => no_task(&slug),
+            Err(err) => store_error(&err),
+        },
+        TaskCommand::Resource(command) => task_resource(store, &root, command),
+    }
+}
+
+/// Runs `flow task resource add/remove`, printing `{task, resources}`.
+fn task_resource(store: &Store, root: &std::path::Path, command: ResourceCommand) -> ExitCode {
+    let (url, slug) = match &command {
+        ResourceCommand::Add { url, task, .. } | ResourceCommand::Remove { url, task } => {
+            (url, task.clone())
+        }
+    };
+    if !task::is_resource_url(url) {
+        return error(
+            2,
+            &format!("{url:?} is not an absolute https, http or file URL"),
+            "pass the full URL, such as `https://example.com/doc` or `file:///efs-home/notes.md`",
+        );
+    }
+    let slug = match slug {
+        Some(slug) => slug,
+        None => match calling_task(store) {
+            Ok(Some(slug)) => slug,
+            Ok(None) => {
+                return error(
+                    1,
+                    "the calling Session is on no Task",
+                    "pass --task <slug>, or run `flow task join <slug>` first",
+                );
+            }
+            Err(err) => return store_error(&err),
+        },
+    };
+    if !task::exists(root, &slug) {
+        return no_task(&slug);
+    }
+    let resources = match command {
+        ResourceCommand::Add { url, title, .. } => {
+            task::add_resource(store, &slug, task::Resource { url, title })
+        }
+        ResourceCommand::Remove { url, .. } => task::remove_resource(store, &slug, &url),
+    };
+    match resources {
+        Ok(resources) => print_json(&serde_json::json!({ "task": slug, "resources": resources })),
+        Err(err) => store_error(&err),
+    }
+}
+
+/// The calling Session's id: `$CLAUDE_CODE_SESSION_ID`, if set and non-empty.
+fn calling_session() -> Option<String> {
+    std::env::var("CLAUDE_CODE_SESSION_ID")
+        .ok()
+        .filter(|id| !id.is_empty())
+}
+
+/// The slug of the Task the calling Session (`$CLAUDE_CODE_SESSION_ID`) is on, if any.
+fn calling_task(store: &Store) -> anyhow::Result<Option<String>> {
+    let Some(id) = calling_session() else {
+        return Ok(None);
+    };
+    Ok(services::session_get(store, &id)?.and_then(|session| session.task))
+}
+
+fn no_task(slug: &str) -> ExitCode {
+    error(
+        1,
+        &format!("no Task {slug:?}"),
+        "run `flow task create` first; `flow task list` lists Tasks with Sessions on them",
+    )
+}
+
 /// Runs `flow wt create`: `wt`'s output goes straight through and its exit status is flow's.
 /// If the worktree was created but ownership was not recorded, the `{error, help}` JSON goes
 /// to stderr, since stdout and the exit status belong to `wt`.
 fn wt_create(store: &Store, branch: &str, args: &[String]) -> ExitCode {
-    let session = std::env::var("CLAUDE_CODE_SESSION_ID")
-        .ok()
-        .filter(|id| !id.is_empty());
+    let session = calling_session();
     match services::wt_create(store, branch, args, session.as_deref()) {
         Ok((status, report)) => {
             if let Some(err) = report {
@@ -227,12 +423,33 @@ fn wt_create(store: &Store, branch: &str, args: &[String]) -> ExitCode {
     }
 }
 
+/// Runs `flow branch jira set/clear`, printing `{branch, jira}`: the Branch's key and the
+/// recorded `{key}` or null.
+fn branch_jira(store: &Store, branch: Option<&str>, jira: Option<&str>) -> ExitCode {
+    if let Some(key) = jira
+        && !flow::jira::is_key(key)
+    {
+        return error(
+            2,
+            &format!("{key:?} is not a Jira key"),
+            "a Jira key is the project key, a dash and the issue number, such as `ABC-123`",
+        );
+    }
+    match services::branch_jira(store, branch, jira) {
+        Ok(branch) => print_json(&serde_json::json!({
+            "branch": branch,
+            "jira": jira.map(|key| serde_json::json!({ "key": key })),
+        })),
+        Err(err) => error(
+            1,
+            &format!("{err:#}"),
+            "run it inside the repository, whose origin remote must be a GitHub URL, with the branch checked out or named with --branch",
+        ),
+    }
+}
+
 fn session_get(store: &Store, id: Option<String>) -> ExitCode {
-    let id = id.or_else(|| {
-        std::env::var("CLAUDE_CODE_SESSION_ID")
-            .ok()
-            .filter(|id| !id.is_empty())
-    });
+    let id = id.or_else(calling_session);
     let Some(id) = id else {
         return error(
             2,
@@ -330,5 +547,16 @@ fn usage_error(err: clap::Error) -> ExitCode {
         .next()
         .unwrap_or_default()
         .trim_start_matches("error: ");
-    error(2, message, "run `flow --help` to list commands")
+    // `flow session start --name/--brief` went with `--task`; a Manager may still pass them.
+    let retired = err.kind() == ErrorKind::UnknownArgument
+        && matches!(
+            err.get(ContextKind::InvalidArg),
+            Some(ContextValue::String(arg)) if arg.starts_with("--name") || arg.starts_with("--brief")
+        );
+    let help = if retired {
+        "`flow session start` takes `--task <slug>` instead of `--name` and `--brief`; run /flow:go again to create the Task and its brief.md"
+    } else {
+        "run `flow --help` to list commands"
+    };
+    error(2, message, help)
 }

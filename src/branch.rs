@@ -1,5 +1,6 @@
-//! The Branch: a git branch in a GitHub repository, keyed `owner/repo:branch`, and its one
-//! facet, `reporter`: the Session that most recently created a worktree for it.
+//! The Branch: a git branch in a GitHub repository, keyed `owner/repo:branch`, and its two
+//! facets: `reporter`, the Session that most recently created a worktree for it, and `jira`,
+//! the Jira issue it implements.
 
 use std::collections::HashMap;
 
@@ -7,12 +8,22 @@ use anyhow::{Context as _, Result};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+use crate::jira::{self, Jira};
 use crate::store::{self, Entity, Put, Store};
 
 /// The Store kind Branches are kept under.
 pub const KIND: &str = "branch";
 
 const REPORTER: &str = "reporter";
+
+const JIRA: &str = "jira";
+
+/// The Jira issue a Branch implements; the facet holds `null` once cleared. Writer:
+/// `flow branch jira set/clear`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JiraFacet {
+    pub key: String,
+}
 
 /// The Session that most recently created a worktree for a Branch; it owns the PRs whose
 /// head is that Branch. Writer: `flow wt create`, as a blind write, so the most recent
@@ -35,6 +46,31 @@ pub fn put_reporter(store: &Store, key: &str, session: &str, at: Timestamp) -> R
     store.put_facet(KIND, key, REPORTER, &value, at)
 }
 
+/// Records `jira` (a Jira key, or `None` to clear) as the Jira issue of the Branch keyed
+/// `key`, replacing any earlier one.
+pub fn put_jira(store: &Store, key: &str, jira: Option<&str>, at: Timestamp) -> Result<Put> {
+    let value = serde_json::to_value(jira.map(|key| JiraFacet {
+        key: key.to_owned(),
+    }))?;
+    store.put_facet(KIND, key, JIRA, &value, at)
+}
+
+/// Every Branch's key mapped to its Jira issue, for Branches that have one.
+pub fn jiras(store: &Store) -> Result<HashMap<String, Jira>> {
+    let issues: HashMap<String, Entity> = store
+        .list(jira::KIND)?
+        .into_iter()
+        .map(|e| (e.id.clone(), e))
+        .collect();
+    let mut jiras = HashMap::new();
+    for entity in store.list(KIND)? {
+        if let Some(key) = jira_key(&entity)? {
+            jiras.insert(entity.id, Jira::new(&key, issues.get(&key))?);
+        }
+    }
+    Ok(jiras)
+}
+
 /// The Session reported for the Branch keyed `key`, if any.
 pub fn owner(store: &Store, key: &str) -> Result<Option<String>> {
     match store.get(KIND, key)? {
@@ -55,7 +91,8 @@ pub fn owners(store: &Store) -> Result<HashMap<String, String>> {
 }
 
 /// A Branch as `flow branch list` prints it: its key split into `repo` and `branch`, its
-/// reporter Session as `owner`, and `at`, when that Session created its worktree.
+/// reporter Session as `owner`, `at`, when that Session created its worktree, and its Jira
+/// issue.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Branch {
     pub key: String,
@@ -64,10 +101,12 @@ pub struct Branch {
     pub owner: String,
     /// RFC 3339, as the Store carries it.
     pub at: String,
+    pub jira: Option<Jira>,
 }
 
 /// Every reported Branch, ordered by key.
 pub fn list(store: &Store) -> Result<Vec<Branch>> {
+    let mut jiras = jiras(store)?;
     let mut branches = Vec::new();
     for entity in store.list(KIND)? {
         let (Some(owner), Some(facet)) = (reporter(&entity)?, entity.facets.get(REPORTER)) else {
@@ -83,6 +122,7 @@ pub fn list(store: &Store) -> Result<Vec<Branch>> {
             branch: branch.to_owned(),
             owner,
             at: store::format_at(facet.at),
+            jira: jiras.remove(&entity.id),
         });
     }
     Ok(branches)
@@ -95,6 +135,15 @@ fn reporter(entity: &Entity) -> Result<Option<String>> {
     let reporter: Reporter = serde_json::from_value(facet.value.clone())
         .with_context(|| format!("branch {} has a malformed {REPORTER} facet", entity.id))?;
     Ok(Some(reporter.session))
+}
+
+fn jira_key(entity: &Entity) -> Result<Option<String>> {
+    let Some(facet) = entity.facets.get(JIRA) else {
+        return Ok(None);
+    };
+    let jira: Option<JiraFacet> = serde_json::from_value(facet.value.clone())
+        .with_context(|| format!("branch {} has a malformed {JIRA} facet", entity.id))?;
+    Ok(jira.map(|jira| jira.key))
 }
 
 /// The `owner/name` a git remote URL points at, for the scp-like ssh form

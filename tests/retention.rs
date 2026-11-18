@@ -209,3 +209,117 @@ fn flowd_sweeps_old_records_at_start_but_keeps_those_tied_to_open_prs() {
     let session: Value = serde_json::from_str(&cli(&ts, &["session", "get", "old"])).unwrap();
     assert_eq!(session["status"]["state"], "idle");
 }
+
+/// Records Task `slug`'s Resources as written at `at`.
+fn put_resources(ts: &TestStore, slug: &str, at: Timestamp) {
+    let resources = json!([{ "url": format!("https://docs.example/{slug}"), "title": null }]);
+    ts.store()
+        .put_facet("task", slug, "resources", &resources, at)
+        .unwrap();
+}
+
+fn resources(ts: &TestStore, slug: &str) -> Value {
+    let task: Value = serde_json::from_str(&cli(ts, &["task", "get", slug])).unwrap();
+    task["resources"].clone()
+}
+
+#[test]
+fn flowd_sweeps_old_task_records_no_session_is_on_but_keeps_the_task_directory() {
+    let ts = TestStore::new();
+    let old = ago(31 * DAY);
+    for slug in ["kept", "orphan", "young", "zombie"] {
+        cli(&ts, &["task", "create", slug]);
+    }
+    // Kept: an old record a Session in the Store is on, though not listed.
+    put_resources(&ts, "kept", old);
+    put_status(&ts, "s1", "done", ago(29 * DAY));
+    ts.store()
+        .put_facet(
+            "session",
+            "s1",
+            "task",
+            &json!({ "slug": "kept" }),
+            ago(29 * DAY),
+        )
+        .unwrap();
+    // Removed: an old record whose only Session is itself swept.
+    put_resources(&ts, "orphan", old);
+    put_status(&ts, "s2", "done", old);
+    ts.store()
+        .put_facet("session", "s2", "task", &json!({ "slug": "orphan" }), old)
+        .unwrap();
+    // Kept: a record under 30 days old that no Session is on.
+    put_resources(&ts, "young", ago(29 * DAY));
+    // Removed: an old record no Session was ever on. Swept last, so it marks the pass's end.
+    put_resources(&ts, "zombie", old);
+
+    let _flowd = ts.flowd();
+    for _ in 0..200 {
+        if resources(&ts, "zombie") == json!([]) {
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(resources(&ts, "zombie"), json!([]));
+    assert_eq!(resources(&ts, "orphan"), json!([]));
+    assert_eq!(resources(&ts, "kept").as_array().unwrap().len(), 1);
+    assert_eq!(resources(&ts, "young").as_array().unwrap().len(), 1);
+    // The Task directory stays, so its slug stays taken.
+    assert!(ts.home().join("tasks").join("zombie").is_dir());
+    ts.flow()
+        .args(["task", "create", "zombie"])
+        .assert()
+        .code(1);
+}
+
+/// The `jira` of each listed Branch, by branch name.
+fn branch_jiras(ts: &TestStore) -> std::collections::HashMap<String, Value> {
+    let branches: Vec<Value> = serde_json::from_str(&cli(ts, &["branch", "list"])).unwrap();
+    branches
+        .into_iter()
+        .map(|b| (b["branch"].as_str().unwrap().to_owned(), b["jira"].clone()))
+        .collect()
+}
+
+#[test]
+fn flowd_sweeps_jira_issues_fetched_over_30_days_ago() {
+    let ts = TestStore::new();
+    put_status(&ts, "s1", "running", ago(0));
+    for (head, key, fetched) in [
+        ("feat/old", "OLD-1", 31 * DAY),
+        ("feat/new", "NEW-1", 29 * DAY),
+    ] {
+        put_branch(&ts, head, "s1", ago(0));
+        ts.store()
+            .put_facet(
+                "branch",
+                &format!("acme/widgets:{head}"),
+                "jira",
+                &json!({ "key": key }),
+                ago(0),
+            )
+            .unwrap();
+        ts.store()
+            .put_facet(
+                "jira",
+                key,
+                "issue",
+                &json!({ "found": true, "summary": "Widgets" }),
+                ago(fetched),
+            )
+            .unwrap();
+    }
+    assert_eq!(branch_jiras(&ts)["feat/old"]["found"], true);
+
+    // The default fake `acli` fails, so the Jira poller rewrites nothing.
+    let _flowd = ts.flowd();
+    for _ in 0..200 {
+        if branch_jiras(&ts)["feat/old"]["found"].is_null() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    let jiras = branch_jiras(&ts);
+    assert_eq!(jiras["feat/old"]["found"], Value::Null);
+    assert_eq!(jiras["feat/new"]["found"], true);
+}

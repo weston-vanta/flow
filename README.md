@@ -29,12 +29,13 @@ each Session in its own herdr pane. You need a running herdr server on every CDE
 
 1. **Delegate.** In any Session in the repo's main checkout, run `/flow:go <ask>`. The ask can
    be a Jira link, a PRD link, a question or a sentence. The Session becomes your Manager. It
-   asks at most one round of questions, then shows a short brief, a Task name and a CDE to run
-   on. Once you confirm, it starts the IC with `flow session start` in a new herdr tab, without
-   switching you to it.
+   asks at most one round of questions, then shows a short brief, a Task slug and where to run
+   the IC: a CDE, or here. Once you confirm, it creates the Task and starts the IC with
+   `flow session start` in a new herdr tab, without switching you to it, or tells you to run
+   `/clear`, then `/flow:ic <slug>`.
 2. **Align.** Go to the IC's tab. It questions you until you approve a `spec.md`, then shows
    a plan of the PRs, which you approve separately. The Task's files live in
-   `/efs-home/flow/tasks/<name>/`.
+   `/efs-home/flow/tasks/<slug>/`.
 3. **Let it build.** The IC never writes code. Its Subagents (helpers inside the same Session)
    build each PR test-first in its own worktree, and others review it. It opens each PR as a
    draft once it passes review, and comes back to you only when it needs a decision. The first

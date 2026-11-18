@@ -1,6 +1,6 @@
 // Polls flowd's read API, keeps the last good data in memory and redraws with innerHTML.
-import { prDataAge, sessionViews, stepPr } from "./model.ts";
-import type { Branch, Pr, Session } from "./model.ts";
+import { isFolded, jiraDataAge, prDataAge, sessionPanel, sessionViews, stepPr } from "./model.ts";
+import type { Branch, Pr, Session, Task } from "./model.ts";
 import { render } from "./render.ts";
 import type { Column, TrayState } from "./render.ts";
 
@@ -9,6 +9,7 @@ const POLL_MS = 3000;
 let sessions: Session[] = [];
 let prs: Pr[] = [];
 let branches: Branch[] = [];
+let tasks: Task[] = [];
 let drawn = "";
 /** When the last poll succeeded, and whether the latest one failed. */
 let lastGood: Date | null = null;
@@ -19,6 +20,8 @@ const toggled = new Set<string>();
 let legend = false;
 /** The selected PR's tray, or null while the window shows its empty state. */
 let tray: TrayState | null = null;
+/** The id of the Session whose panel the window shows; never set together with `tray`. */
+let panel: string | null = null;
 const root = document.getElementById("root")!;
 
 async function get<T>(path: string): Promise<T> {
@@ -27,7 +30,8 @@ async function get<T>(path: string): Promise<T> {
   return r.json();
 }
 
-/** The page for the current state. Drops the tray once its PR leaves the list. */
+/** The page for the current state. Drops the tray once its PR leaves the list, and the panel
+ * once its Session does. */
 function page(): string {
   const notices: string[] = [];
   if (failing) {
@@ -39,9 +43,13 @@ function page(): string {
   }
   const stale = prDataAge(prs);
   if (stale != null) notices.push(`PR data ${stale} min old`);
+  const jiraStale = jiraDataAge(prs, branches);
+  if (jiraStale != null) notices.push(`Jira data ${jiraStale} min old`);
   const views = sessionViews(sessions, prs, branches);
   if (tray && !views.some((v) => v.prs.some((p) => p.url === tray!.url))) tray = null;
-  return render(views, toggled, notices, !failing, legend, tray);
+  const pv = panel ? sessionPanel(panel, views, tasks) : null;
+  if (!pv) panel = null;
+  return render(views, toggled, notices, !failing, legend, tray, pv);
 }
 
 const $ = <T extends HTMLElement>(sel: string) => root.querySelector<T>(sel);
@@ -57,6 +65,7 @@ function draw() {
 
 /** Selects the PR at `url`, with the window scrolled to `col`'s section (tinted briefly) or the top. */
 function openTray(url: string, col: Column | null) {
+  panel = null;
   tray = { url, focus: col, expanded: tray?.expanded ?? new Set() };
   draw();
   $(".tscroll")!.scrollTop = col ? $(`[data-sec="${col}"]`)!.offsetTop : 0;
@@ -73,17 +82,29 @@ function openTray(url: string, col: Column | null) {
   }
 }
 
+/** Empties the window: deselects the PR and closes the Session panel. */
 function closeTray() {
   tray = null;
+  panel = null;
   draw();
+}
+
+/** Opens Session `id`'s panel in the window, closing any selected PR. */
+function openPanel(id: string) {
+  tray = null;
+  panel = id;
+  draw();
+  $(".tscroll")!.scrollTop = 0;
+  $(".tclose")!.focus({ preventScroll: true });
 }
 
 async function poll() {
   try {
-    [sessions, prs, branches] = await Promise.all([
+    [sessions, prs, branches, tasks] = await Promise.all([
       get<Session[]>("/api/sessions"),
       get<Pr[]>("/api/prs"),
       get<Branch[]>("/api/branches"),
+      get<Task[]>("/api/tasks"),
     ]);
     lastGood = new Date();
     failing = false;
@@ -103,6 +124,22 @@ root.addEventListener("click", (e) => {
     if (!tray.expanded.delete(url)) tray.expanded.add(url);
     return draw();
   }
+  // A Session's title toggles its panel; a folded channel stays folded.
+  const title = target.closest<HTMLElement>("[data-session]");
+  if (title) {
+    const id = title.dataset.session!;
+    return panel === id ? closeTray() : openPanel(id);
+  }
+  // Another Session on the Task: open its panel, unfolded and scrolled to.
+  const goto = target.closest<HTMLElement>("[data-goto]");
+  if (goto) {
+    const id = goto.dataset.goto!;
+    const v = sessionViews(sessions, prs, branches).find((x) => x.id === id);
+    if (v && isFolded(v, toggled) && !toggled.delete(id)) toggled.add(id);
+    openPanel(id);
+    $(`[data-chan="${id}"]`)?.scrollIntoView({ block: "nearest" });
+    return;
+  }
   const pr = target.closest<HTMLElement>("[data-open]");
   if (pr) {
     const col = (pr.dataset.col as Column | undefined) ?? null;
@@ -121,8 +158,8 @@ root.addEventListener("click", (e) => {
   draw();
 });
 
-// ↑ ↓ step through the visible PRs; `h` toggles the legend; Esc deselects the PR, else closes
-// the legend. Listening on the document means the page needs no focus first.
+// ↑ ↓ step through the visible PRs; `h` toggles the legend; Esc deselects the PR or closes the
+// Session panel, else closes the legend. Listening on the document means the page needs no focus first.
 document.addEventListener("keydown", (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === "ArrowDown" || e.key === "ArrowUp") {
@@ -134,7 +171,7 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if (e.repeat) return;
-  if (e.key === "Escape" && tray) return closeTray();
+  if (e.key === "Escape" && (tray || panel)) return closeTray();
   if (e.key === "h" || e.key === "H") legend = !legend;
   else if (e.key === "Escape" && legend) legend = false;
   else return;

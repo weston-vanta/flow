@@ -10,7 +10,6 @@ a{color:inherit}
 button{font:inherit;color:inherit}
 :focus-visible{outline:2px solid var(--amber);outline-offset:2px}
 .mono{font-family:var(--mono)}
-.muted{color:var(--ink2)}
 
 /* The face: a flat panel holding the header strip and the deck. */
 .face{max-width:1280px;margin:0 auto;border-radius:4px;background:#E9E6E0;box-shadow:0 0 0 1px #C9C4BA}
@@ -51,7 +50,7 @@ button.hint kbd.down{background:#D6D1C8}
 .gauge .mark{position:absolute;top:0;left:calc(var(--at)*(100% - 2px));width:2px;height:10px;border-radius:1px;background:var(--amber)}
 .node.merged,.node.closed{background:var(--fine);border-color:var(--fine)}
 .node.branch,.node.draft{border-style:dashed;border-color:#8A8195;color:var(--ink2)}
-.node.key{width:14px;height:14px}
+.node.key{width:14px;height:14px;font-size:8px}
 .node.key.branch{border-color:#8C8981;background:transparent}
 .node.key.open{background:transparent}
 
@@ -59,14 +58,16 @@ button.hint kbd.down{background:#D6D1C8}
 .deck{display:flex;align-items:stretch;gap:20px;padding:20px}
 .rack{flex:1 1 0;min-width:0}
 .empty{margin:0;padding:20px;color:var(--ink2)}
-.scale,.strip{display:grid;grid-template-columns:52px minmax(0,1fr) repeat(4,56px)}
+.scale,.strip{display:grid;grid-template-columns:52px minmax(0,1fr) auto repeat(4,56px)}
 .scale{padding:0 16px 8px;font-size:10px;line-height:14px;color:var(--ink2);text-align:center}
 .chans{display:flex;flex-direction:column;gap:10px}
 
 /* A Session channel: the square push key, its title, Activity and meta, then its plates. */
 .chan{border-radius:4px;background:var(--chan);box-shadow:0 0 0 1px #D6D1C7}
 .chan.folded{cursor:pointer}
-.chead{display:flex;align-items:flex-start;gap:12px;padding:17px 16px 12px}
+.chead{position:relative;display:flex;align-items:flex-start;gap:12px;padding:17px 16px 12px}
+.chead .needle{top:27px}
+.chan.open .chead .needle{background:var(--needle)}
 .folded .chead{padding-bottom:16px}
 /* Latched (open) the key is filled in the plate tone; released (folded) it is an outline on the card. */
 .skey{flex:none;display:flex;align-items:center;justify-content:center;width:24px;height:24px;margin:-1px 0 0;padding:0;border:1px solid var(--plate);border-radius:3px;background:var(--plate);transition:background-color .12s ease,border-color .12s ease;cursor:pointer}
@@ -78,6 +79,10 @@ button.hint kbd.down{background:#D6D1C8}
 .cline{display:flex;align-items:baseline;gap:16px;min-width:0}
 .cline h2{flex:1 1 auto;min-width:0;margin:0;font-size:15px;line-height:22px;font-weight:600;overflow-wrap:anywhere}
 .folded .cline h2{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* The title is a button opening the Session panel: muted, full ink while its panel is open. */
+.stitle{max-width:100%;margin:0;padding:0;border:0;background:transparent;font-weight:inherit;text-align:left;color:#57544F;cursor:pointer;transition:color .15s ease;overflow-wrap:anywhere}
+.folded .stitle{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stitle:hover,.chan.open .stitle{color:var(--ink)}
 .attn{flex:none;width:56px;height:22px;display:flex;align-items:center;justify-content:center;align-self:flex-start}
 .activity{font-size:12px;line-height:17px;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .smeta{display:flex;align-items:baseline;min-width:0;font-size:11px;line-height:15px;color:var(--ink2);white-space:nowrap}
@@ -90,6 +95,15 @@ button.hint kbd.down{background:#D6D1C8}
 /* Stacks as recessed plates of strips: node, title and four lamps under the printed scale. */
 .plates{display:flex;flex-direction:column;gap:8px;padding:2px 16px 14px}
 .plate{display:flex;flex-direction:column;padding:2px 0;border-radius:3px;background:var(--plate)}
+/* A Feature branch group: its Stacks indented beneath its F row, each joined back to the F node
+ * (centred 26px in) by the branch line, which stops at the last Stack's first strip. */
+.fgroup,.fstacks{display:flex;flex-direction:column;gap:8px}
+.fstacks{margin-left:40px}
+.fstack{position:relative}
+.fstack::before,.fstack::after{content:"";position:absolute;left:-15px;background:var(--rail)}
+.fstack::before{top:-10px;width:2px;height:calc(100% + 10px)}
+.fstack:last-child::before{height:32px}
+.fstack::after{top:20px;width:15px;height:2px}
 .plate.branch{background:transparent;box-shadow:inset 0 0 0 1px var(--housing)}
 .strip{position:relative;min-height:36px;transition:background-color .12s ease}
 .strip+.strip{border-top:1px solid rgba(42,41,39,.07)}
@@ -111,6 +125,17 @@ button.pick:hover .node{box-shadow:0 0 0 4px rgba(42,41,39,.08)}
 .led{display:flex;align-items:center;justify-content:center;margin:0;padding:0;border:0;border-radius:4px;background:transparent}
 button.led{cursor:pointer}
 button.led:hover{background:rgba(42,41,39,.06)}
+
+/* A Branch's Jira issue: a 9px square (to do empty, in progress half, in review cross-hatched,
+ * done full) plus its key, its own link cell against the lamps. Not found is the bare key. */
+.jsq{flex:none;display:inline-block;width:9px;height:9px;border:1.5px solid currentColor}
+.jsq.progress{background:linear-gradient(90deg,currentColor 50%,transparent 50%)}
+.jsq.review{background:repeating-linear-gradient(45deg,currentColor 0 1px,transparent 1px 3px),repeating-linear-gradient(-45deg,currentColor 0 1px,transparent 1px 3px)}
+.jsq.done{background:currentColor}
+.jcell{display:flex;align-items:center;justify-content:flex-end;min-width:0}
+.jira{display:flex;align-items:center;gap:6px;height:100%;padding:0 2px;font-size:11px;line-height:14px;color:var(--ink2);text-decoration:none;white-space:nowrap}
+a.jira:hover{color:var(--ink)}
+.jira.missing{cursor:default}
 
 /* The window: dark, always present, its contents pinned to the viewport as the rack scrolls. */
 .window{position:relative;flex:0 0 30rem;min-width:0;min-height:min(100vh,40rem);overflow:clip}
@@ -136,7 +161,33 @@ button.led:hover{background:rgba(42,41,39,.06)}
 .tclose{flex:none;width:28px;height:28px;margin:-6px -10px -6px 4px;display:flex;align-items:center;justify-content:center;padding:0;border:0;border-radius:3px;background:transparent;color:var(--ro2);cursor:pointer}
 .tclose:hover{color:#FFFFFF;background:rgba(255,255,255,.06)}
 .whead h2{margin:0;font-size:17px;line-height:23px;font-weight:500;color:#F4F1EA;overflow-wrap:anywhere}
+.wjira{align-self:flex-start;display:flex;align-items:center;gap:6px;font-size:11px;line-height:15px;color:var(--ro2)}
+.wjira .jsq{color:#D9D2C6}
+.wjira.missing{cursor:default}
 .whint{font-size:12px;line-height:17px;color:var(--ro3)}
+
+/* The Session panel: the status lamp in a square key, the Session's lines, then its Task. */
+.wkey{flex:none;width:20px;height:20px;border:1px solid #6A6862;border-radius:3px;display:flex;align-items:center;justify-content:center}
+.whead .lamp.fine,.psess .lamp.fine{background:var(--ro-fine);border-color:var(--ro-fine)}
+.whead .lamp.run,.psess .lamp.run{background:transparent}
+.wline .act,.pstatus .act{color:var(--act)}
+.wactivity{font-size:12px;line-height:17px;color:var(--ro);overflow-wrap:anywhere;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden}
+.wmeta{font-size:11px;line-height:15px;color:var(--ro2)}
+.wmeta .dot{padding:0 5px}
+.psec{padding:16px 24px 18px;border-bottom:1px solid var(--ro-rule);display:flex;flex-direction:column;gap:10px}
+.psec .thd span{font-size:11px}
+.pres{display:flex;flex-direction:column;gap:8px}
+.rrow{display:flex;align-items:baseline;gap:12px;min-width:0}
+.rlabel{flex:0 1 auto;min-width:0;font-size:12px;line-height:17px;color:var(--ro);overflow-wrap:anywhere}
+.rlabel.mono{font-size:11px}
+.rhost{flex:none;margin-left:auto;font-size:10px;color:var(--ro2)}
+.pothers{display:flex;flex-direction:column;gap:2px;margin-top:6px}
+.plabel{font-size:11px;line-height:16px;color:var(--ro2)}
+.psess{display:grid;grid-template-columns:18px minmax(0,1fr) auto;column-gap:10px;align-items:center;margin:0 -8px;padding:6px 8px;border:0;border-radius:3px;background:transparent;color:var(--ro);text-align:left;cursor:pointer}
+.psess:hover{background:rgba(255,255,255,.06)}
+.psess .lamp{justify-self:center}
+.ptitle{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;line-height:17px}
+.pstatus{font-size:11px;color:var(--ro2)}
 .tsec{padding:16px 24px 18px;border-bottom:1px solid var(--ro-rule);display:grid;grid-template-columns:18px minmax(0,1fr);column-gap:10px;row-gap:10px;transition:background-color .4s ease}
 .tsec.idle{align-items:center}
 .tsec.focus{background:#33322F}
@@ -178,4 +229,5 @@ button.led:hover{background:rgba(42,41,39,.06)}
 .li{display:flex;align-items:center;gap:10px}
 .li.act{color:var(--ink)}
 .li .lamp,.li .node.key{flex:none}
+.li .jsq{color:var(--ink2)}
 .li .count{margin:-3px;margin-right:0}

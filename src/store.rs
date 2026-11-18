@@ -18,8 +18,8 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Where the Store lives when `FLOW_STORE` is not set.
-pub const DEFAULT_ROOT: &str = "/efs-home/flow/store";
+/// flow's home directory when `FLOW_HOME` is not set. The Store lives at `<home>/store`.
+pub const DEFAULT_HOME: &str = "/efs-home/flow";
 
 /// How many facet-reading threads a list uses at most.
 const LIST_PARALLELISM: usize = 16;
@@ -57,9 +57,9 @@ impl Store {
         Self { root: root.into() }
     }
 
-    /// The Store at `FLOW_STORE`, or at [`DEFAULT_ROOT`].
+    /// The Store at `$FLOW_HOME/store`: see [`home_from_env`].
     pub fn from_env() -> Self {
-        Self::new(std::env::var_os("FLOW_STORE").unwrap_or_else(|| DEFAULT_ROOT.into()))
+        Self::new(home_from_env().join("store"))
     }
 
     pub fn root(&self) -> &Path {
@@ -144,6 +144,13 @@ impl Store {
     fn entity_dir(&self, kind: &str, id: &str) -> PathBuf {
         self.root.join(kind).join(encode_id(id))
     }
+}
+
+/// flow's home directory, `$FLOW_HOME`, defaulting to [`DEFAULT_HOME`].
+pub fn home_from_env() -> PathBuf {
+    std::env::var_os("FLOW_HOME")
+        .unwrap_or_else(|| DEFAULT_HOME.into())
+        .into()
 }
 
 /// Formats `at` the way the Store and the CLI's JSON carry it: RFC 3339 UTC with microseconds.

@@ -1,5 +1,5 @@
 // The view model: pure functions from flowd's API JSON (`flow session list`, `flow pr list`,
-// `flow branch list`) to what the dashboard shows. No DOM here, so `node --test` covers it directly.
+// `flow branch list`, `flow task list`) to what the dashboard shows. No DOM here, so `node --test` covers it directly.
 
 /** A facet's fields with the time its fact was observed; `null` if never written. */
 type Facet<T> = (T & { at: string }) | null;
@@ -19,6 +19,23 @@ export interface Session {
   status: Facet<{ state: State }>;
   context: Facet<{ title: string | null; branch: string | null }>;
   activity: Facet<{ prompt: string | null; reply: string | null }>;
+  /** The slug of the Task it joined, if any. */
+  task: string | null;
+}
+
+/** Something outside flow a Task points at. */
+export interface Resource {
+  url: string;
+  title: string | null;
+}
+
+/** A Task as `flow task list` prints it. */
+export interface Task {
+  slug: string;
+  dir: string;
+  /** The ids of its listed Sessions. */
+  sessions: string[];
+  resources: Resource[];
 }
 
 export interface Check {
@@ -70,16 +87,32 @@ export interface Github {
   changedFiles: number;
   reviews: Review[];
   threads: Thread[];
-  /** When the oldest default-branch commit the head lacks landed; null unless open and behind. */
+  /** When the oldest commit on its base that the head lacks landed; null unless open and behind. */
   behindSince: string | null;
   /** Its place in its repository's merge queue (1 merges next); null unless queued. */
   mergeQueue: { position: number; size: number } | null;
+}
+
+/** A Branch's Jira issue as `flow` prints it. All but `key` and `url` are null until the Jira
+ * poller first fetches it; when `found` is false, only `at` joins them. */
+export interface Jira {
+  key: string;
+  url: string;
+  found: boolean | null;
+  at: string | null;
+  summary: string | null;
+  status: string | null;
+  /** The status category's key: `new`, `indeterminate` or `done`. */
+  category: string | null;
+  type: string | null;
 }
 
 export interface Pr {
   key: string;
   owner: string | null;
   github: Facet<Github>;
+  /** The Jira issue of its head Branch. */
+  jira: Jira | null;
 }
 
 /** A Branch a Session created a worktree for; `at` is when. */
@@ -89,6 +122,7 @@ export interface Branch {
   branch: string;
   owner: string;
   at: string;
+  jira: Jira | null;
 }
 
 /** act: the user must do something; run: in progress; fine; off: does not apply. */
@@ -125,6 +159,29 @@ export interface PrView {
   /** True if the user should act on this PR: it is mergeable or a lamp is lit. */
   attention: boolean;
   tray: Tray;
+  jira: JiraView | null;
+}
+
+export type JiraState = "to do" | "in progress" | "in review" | "done" | "not fetched" | "not found";
+
+/** A Branch's Jira issue: a square plus its key, linked to Jira, or the bare key when Jira
+ * didn't return it. */
+export interface JiraView {
+  key: string;
+  /** Null when not found: the key is plain text. */
+  url: string | null;
+  state: JiraState;
+  /** Empty, half-filled, cross-hatched or full; null when not found. Not fetched draws as to do. */
+  square: "todo" | "progress" | "review" | "done" | null;
+  /** The status's name in Jira, for the window header; null until fetched. */
+  status: string | null;
+  tip: string;
+}
+
+/** A Session's Branch that heads no PR. */
+export interface BranchView {
+  name: string;
+  jira: JiraView | null;
 }
 
 export interface SessionView {
@@ -137,13 +194,22 @@ export interface SessionView {
   repo: string | null;
   cde: string | null;
   activity: string | null;
-  /** The Session's Stacks, oldest first, each bottom first. */
-  stacks: PrView[][];
-  /** The PRs of `stacks`, flattened in the same order. */
+  /** The slug of its Task, if any. */
+  task: string | null;
+  /** The Session's Stacks and Branches with no PR, as drawn. */
+  groups: Group[];
+  /** The PRs of `groups`, flattened in the order they are drawn. */
   prs: PrView[];
-  /** Names of the Session's Branches that head no PR, oldest worktree first. */
-  branches: string[];
 }
+
+/** What the rack draws as one unit. A "stack" is an ordinary Stack, the one entry of `stacks`.
+ * A "branch" is a Branch with no PR: its BranchView, with no `stacks`, or, as a Feature branch
+ * before its feature PR exists, with the Stacks its owner based on it. A "feature" is a Feature
+ * branch's feature PR with those Stacks. `stacks` are oldest bottom PR first. */
+export type Group =
+  | { kind: "stack"; head: null; stacks: PrView[][] }
+  | { kind: "branch"; head: BranchView; stacks: PrView[][] }
+  | { kind: "feature"; head: PrView; stacks: PrView[][] };
 
 const FAILING = new Set([
   "FAILURE",
@@ -175,7 +241,7 @@ function baseProblems(g: Github, below: number | null, now: number): string[] {
 const done = (g: Github, column: string): Light | null =>
   g.state === "OPEN" ? null : { lamp: "fine", tip: `${column}: ${g.state === "MERGED" ? "merged" : "closed"}` };
 
-/** Act on a conflict, or on being behind the default branch for more than a day.
+/** Act on a conflict, or on being behind its base for more than a day.
  * `below` is the number of the PR below this one in its Stack, if any. */
 export function baseLight(g: Github, below: number | null = null, now = Date.now()): Light {
   const problems = baseProblems(g, below, now);
@@ -229,8 +295,34 @@ export function reviewLight(g: Github): ReviewLight {
   return light("fine", g.reviewDecision === "APPROVED" ? "review: approved" : "review: none required");
 }
 
+const SQUARE = { "to do": "todo", "in progress": "progress", "in review": "review", done: "done" } as const;
+
+/** Judged from the status category, with "in review" told apart by the status name. */
+export function jiraView(j: Jira | null): JiraView | null {
+  if (!j) return null;
+  const { key, url } = j;
+  if (j.found == null) return { key, url, state: "not fetched", square: "todo", status: null, tip: "not fetched yet" };
+  if (!j.found) return { key, url: null, state: "not found", square: null, status: null, tip: "not found in Jira" };
+  const state =
+    j.category === "done"
+      ? "done"
+      : j.category === "indeterminate"
+        ? /review/i.test(j.status ?? "")
+          ? "in review"
+          : "in progress"
+        : "to do";
+  const status = j.status ?? state;
+  return { key, url, state, square: SQUARE[state], status, tip: `${key} · ${status} · open in Jira` };
+}
+
 /** `below` is the number of the PR below this one in its Stack, if any. */
-export function prView(g: Github, pos: number | null, below: number | null = null, now = Date.now()): PrView {
+export function prView(
+  g: Github,
+  pos: number | null,
+  below: number | null = null,
+  now = Date.now(),
+  jira: Jira | null = null,
+): PrView {
   const base = baseLight(g, below, now);
   const ci = ciLight(g);
   const feedback = feedbackLight(g);
@@ -258,6 +350,7 @@ export function prView(g: Github, pos: number | null, below: number | null = nul
     review,
     attention: open && (ready || lamps.some((l) => l.lamp === "act")),
     tray: trayView(g, below, now),
+    jira: jiraView(jira),
   };
 }
 
@@ -360,7 +453,7 @@ export function trayView(g: Github, below: number | null = null, now = Date.now(
         ? "approved"
         : "not required";
   return {
-    base: section(baseProblems(g, below, now), below == null ? "no conflict, up to date" : "no conflict"),
+    base: section(baseProblems(g, below, now), below == null ? `no conflict, up to date with ${g.baseRefName}` : "no conflict"),
     ci: section(
       failingChecks(g).map((c) => ({ name: c.name, url: c.url })),
       running ? "running" : "passing",
@@ -409,19 +502,36 @@ export function activityLine(s: Session): string | null {
  * start time. */
 export function sessionViews(sessions: Session[], prs: Pr[], branches: Branch[] = [], now = Date.now()): SessionView[] {
   const heads = new Set(prs.flatMap((p) => (p.github ? [`${p.github.repo}:${p.github.headRefName}`] : [])));
+  const jiras = new Map(prs.flatMap((p) => (p.github ? [[p.github.url, p.jira]] : [])));
   const loose = branches.filter((b) => !heads.has(b.key)).sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
   const done = (s: Session) => (s.status?.state === "done" ? 1 : 0);
   const started = (s: Session) => (s.origin ? Date.parse(s.origin.at) : -Infinity);
   const sorted = [...sessions].sort((a, b) => done(a) - done(b) || started(b) - started(a));
+  // Branches that are not the default branch: every PR's head and every listed Branch.
+  const named = new Set([...heads, ...branches.map((b) => b.key)]);
+  const head = (g: Github) => `${g.repo}:${g.headRefName}`;
+  const base = (g: Github) => `${g.repo}:${g.baseRefName}`;
   return sorted.map((s) => {
     const raw = stacksOf(s.id, prs);
-    const stacks = raw.map((stack) =>
+    const view = (stack: Github[]) =>
       stack.map((g, i) => {
         const below = stack.find((o) => o.headRefName === g.baseRefName)?.number ?? null;
-        return prView(g, stack.length > 1 ? i + 1 : null, below, now);
-      }),
-    );
+        return prView(g, stack.length > 1 ? i + 1 : null, below, now, jiras.get(g.url) ?? null);
+      });
+    /** The Session's Stacks based on the Branch `key`, as Feature-branch Stacks are. */
+    const on = (key: string) => raw.filter((st) => base(st[0]) === key).map(view);
     const own = loose.filter((b) => b.owner === s.id);
+    // A feature PR: a Stack of one based on the default branch, with Stacks based on its head.
+    const feature = new Set(raw.filter((st) => st.length === 1 && !named.has(base(st[0])) && on(head(st[0])).length).map((st) => head(st[0])));
+    const fbranches = new Set([...feature, ...own.map((b) => b.key)]);
+    const groups: Group[] = [
+      ...raw.flatMap((st): Group[] => {
+        if (fbranches.has(base(st[0]))) return [];
+        if (feature.has(head(st[0]))) return [{ kind: "feature", head: view(st)[0], stacks: on(head(st[0])) }];
+        return [{ kind: "stack", head: null, stacks: [view(st)] }];
+      }),
+      ...own.map((b): Group => ({ kind: "branch", head: { name: b.branch, jira: jiraView(b.jira) }, stacks: on(b.key) })),
+    ];
     const state = s.status?.state ?? null;
     const cwd = s.origin?.cwd;
     const title = s.context?.title ?? null;
@@ -433,9 +543,9 @@ export function sessionViews(sessions: Session[], prs: Pr[], branches: Branch[] 
       repo: raw[0]?.[0].repo ?? own[0]?.repo ?? (cwd ? cwd.split("/").filter(Boolean).pop() ?? null : null),
       cde: s.origin?.cde ?? null,
       activity: activityLine(s),
-      stacks,
-      prs: stacks.flat(),
-      branches: own.map((b) => b.branch),
+      task: s.task,
+      groups,
+      prs: groups.flatMap((g) => [...(g.kind === "feature" ? [g.head] : []), ...g.stacks.flat()]),
     };
   });
 }
@@ -485,4 +595,76 @@ export function prDataAge(prs: Pr[], now = Date.now()): number | null {
   if (!ats.length) return null;
   const ms = now - Math.min(...ats);
   return ms > 3 * 60_000 ? Math.floor(ms / 60_000) : null;
+}
+
+/** Minutes since the oldest Jira fetch among the listed PRs' and Branches' Jira issues when that
+ * is over 15 minutes, else null. Keys never fetched don't count. */
+export function jiraDataAge(prs: Pr[], branches: Branch[], now = Date.now()): number | null {
+  const ats = [...prs, ...branches].flatMap((x) => (x.jira?.at ? [Date.parse(x.jira.at)] : []));
+  if (!ats.length) return null;
+  const ms = now - Math.min(...ats);
+  return ms > 15 * 60_000 ? Math.floor(ms / 60_000) : null;
+}
+
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+/** A URL without its scheme, `www.`, query, fragment and a trailing `/` or `/edit`. */
+export const shortUrl = (url: string) =>
+  url.replace(/^[a-z]+:\/\//i, "").replace(/^www\./i, "").replace(/[?#].*$/, "").replace(/\/(edit)?$/, "");
+
+/** How the Session panel shows a Resource: its title, else its short URL in mono. A `file://`
+ * Resource is its path as text, with no host and no link. */
+export interface ResourceView {
+  url: string;
+  label: string;
+  mono: boolean;
+  /** The URL's host without `www.`; empty for `file://`. */
+  host: string;
+  link: boolean;
+}
+
+function resourceView(r: Resource): ResourceView {
+  const file = /^file:\/\//i.test(r.url);
+  const short = file ? r.url.replace(/^file:\/\//i, "") : shortUrl(r.url);
+  return {
+    url: r.url,
+    label: r.title ?? short,
+    mono: r.title == null,
+    host: file ? "" : short.split("/")[0],
+    link: !file,
+  };
+}
+
+/** The Session panel: the Session, "N pull requests · N branches", and its Task. */
+export interface PanelView {
+  session: SessionView;
+  counts: string;
+  /** Null when the Session is not part of a listed Task. */
+  task: {
+    /** "N resources", plus "· N sessions" when more than one. */
+    counts: string;
+    resources: ResourceView[];
+    /** The Task's other listed Sessions, in rack order. */
+    others: SessionView[];
+  } | null;
+}
+
+/** The panel of Session `id`, or null when it isn't in `views`. */
+export function sessionPanel(id: string, views: SessionView[], tasks: Task[]): PanelView | null {
+  const v = views.find((w) => w.id === id);
+  if (!v) return null;
+  const branches = v.groups.filter((g) => g.kind === "branch").length;
+  const parts = [v.prs.length && plural(v.prs.length, "pull request"), branches && plural(branches, "branch", "branches")].filter(Boolean);
+  const t = v.task == null ? null : tasks.find((x) => x.slug === v.task);
+  return {
+    session: v,
+    counts: parts.join(" · ") || "no pull requests",
+    task: t
+      ? {
+          counts: plural(t.resources.length, "resource") + (t.sessions.length > 1 ? ` · ${t.sessions.length} sessions` : ""),
+          resources: t.resources.map(resourceView),
+          others: views.filter((w) => w.id !== v.id && t.sessions.includes(w.id)),
+        }
+      : null,
+  };
 }

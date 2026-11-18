@@ -13,7 +13,7 @@ use crate::session::{self, Session};
 use crate::store::Store;
 
 /// The `help` of the `{error, help}` JSON both binaries return when a read of the Store fails.
-pub const STORE_ERROR_HELP: &str = "the Store could not be read or holds a malformed facet; the error names the path (FLOW_STORE, default /efs-home/flow/store)";
+pub const STORE_ERROR_HELP: &str = "the Store could not be read or holds a malformed facet; the error names the path ($FLOW_HOME/store, FLOW_HOME defaulting to /efs-home/flow)";
 
 /// Every listed Session, ordered by id: see [`retention::is_listed`].
 pub fn session_list(store: &Store) -> Result<Vec<Session>> {
@@ -58,9 +58,12 @@ pub fn session_remove(store: &Store, ids: &[String], force: bool) -> Result<Resu
     Ok(Ok(()))
 }
 
-/// Every PR whose owner is a listed Session, ordered by key, each with its derived `owner`.
+/// Every PR whose owner is a listed Session, ordered by key, each with its derived `owner`
+/// and `jira`.
 pub fn pr_list(store: &Store) -> Result<Vec<Pr>> {
-    Ok(listing(store)?.1)
+    let mut prs = listing(store)?.1;
+    join_jira(store, &mut prs)?;
+    Ok(prs)
 }
 
 /// `flow pr list --all`: every stored PR, ordered by key; `owner` is null unless a listed
@@ -71,7 +74,7 @@ pub fn pr_list_all(store: &Store) -> Result<Vec<Pr>> {
         .into_iter()
         .map(|pr| (pr.key, pr.owner))
         .collect();
-    store
+    let mut prs = store
         .list(pr::KIND)?
         .iter()
         .map(|entity| {
@@ -79,7 +82,18 @@ pub fn pr_list_all(store: &Store) -> Result<Vec<Pr>> {
             pr.owner = owned.get(&pr.key).cloned().flatten();
             Ok(pr)
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    join_jira(store, &mut prs)?;
+    Ok(prs)
+}
+
+/// Sets each PR's `jira` to its head Branch's Jira issue.
+fn join_jira(store: &Store, prs: &mut [Pr]) -> Result<()> {
+    let jiras = branch::jiras(store)?;
+    for pr in prs {
+        pr.jira = pr.branch_key().and_then(|key| jiras.get(&key).cloned());
+    }
+    Ok(())
 }
 
 /// `flow branch list`: every Branch whose owner is a listed Session, ordered by key.
@@ -116,7 +130,8 @@ fn listing(store: &Store) -> Result<(Vec<Session>, Vec<Pr>)> {
     Ok((sessions, prs))
 }
 
-/// The PR keyed `key` (`owner/repo#number`), owned or not, with its derived `owner`.
+/// The PR keyed `key` (`owner/repo#number`), owned or not, with its derived `owner` and
+/// `jira`.
 pub fn pr_get(store: &Store, key: &str) -> Result<Option<Pr>> {
     let Some(entity) = store.get(pr::KIND, key)? else {
         return Ok(None);
@@ -124,6 +139,7 @@ pub fn pr_get(store: &Store, key: &str) -> Result<Option<Pr>> {
     let mut pr = Pr::from_entity(&entity)?;
     if let Some(key) = pr.branch_key() {
         pr.owner = branch::owner(store, &key)?;
+        pr.jira = branch::jiras(store)?.remove(&key);
     }
     Ok(Some(pr))
 }
@@ -154,28 +170,46 @@ pub fn wt_create(
 }
 
 fn report_branch(store: &Store, branch: &str, session: &str) -> Result<()> {
+    let key = branch::key(&origin_repo()?, branch);
+    branch::put_reporter(store, &key, session, Timestamp::now())?;
+    Ok(())
+}
+
+/// `flow branch jira set/clear`: records `jira` (a Jira key, or `None` to clear) on `branch`
+/// in the current directory's repository, or on the branch checked out there. Returns the
+/// Branch's key.
+pub fn branch_jira(store: &Store, branch: Option<&str>, jira: Option<&str>) -> Result<String> {
+    let branch = match branch {
+        Some(branch) => branch.to_owned(),
+        None => git(&["branch", "--show-current"])?,
+    };
+    if branch.is_empty() {
+        bail!("no branch is checked out here (detached HEAD)");
+    }
+    let key = branch::key(&origin_repo()?, &branch);
+    branch::put_jira(store, &key, jira, Timestamp::now())?;
+    Ok(key)
+}
+
+/// The `owner/name` of the current directory's origin remote, as `flow wt create` records it.
+fn origin_repo() -> Result<String> {
+    let url = git(&["remote", "get-url", "origin"])?;
+    branch::repo_from_remote(&url)
+        .with_context(|| format!("cannot tell owner/name from the origin remote {url:?}"))
+}
+
+/// Runs `git <args>` in the current directory and returns its trimmed stdout.
+fn git(args: &[&str]) -> Result<String> {
     let out = Command::new("git")
-        .args(["remote", "get-url", "origin"])
+        .args(args)
         .output()
-        .context("run git remote get-url origin")?;
+        .with_context(|| format!("run git {}", args.join(" ")))?;
     if !out.status.success() {
         bail!(
-            "git remote get-url origin failed: {}",
+            "git {} failed: {}",
+            args.join(" "),
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
-    let url = String::from_utf8_lossy(&out.stdout);
-    let repo = branch::repo_from_remote(&url).with_context(|| {
-        format!(
-            "cannot tell owner/name from the origin remote {:?}",
-            url.trim()
-        )
-    })?;
-    branch::put_reporter(
-        store,
-        &branch::key(&repo, branch),
-        session,
-        Timestamp::now(),
-    )?;
-    Ok(())
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }

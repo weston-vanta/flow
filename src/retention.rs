@@ -1,5 +1,6 @@
 //! Retention: the read-time listing rule that hides done Sessions, and the sweep that removes
-//! old Sessions, PRs and Branches from the Store. Neither ever changes a status.
+//! old Sessions, PRs, Branches, Jira issues and Task records from the Store. Neither ever changes
+//! a status.
 
 use std::collections::HashSet;
 
@@ -7,9 +8,11 @@ use anyhow::Result;
 use jiff::{SignedDuration, Timestamp};
 
 use crate::branch;
+use crate::jira;
 use crate::pr::{self, Pr, PrState};
 use crate::session::{self, Session, State};
 use crate::store::{Entity, Store};
+use crate::task;
 
 /// How long a done Session that owns no open PR stays listed after its last news.
 pub const LISTED_FOR: SignedDuration = SignedDuration::from_hours(24);
@@ -50,9 +53,10 @@ pub fn is_listed(session: &Session, prs: &[Pr], reports_branch: bool, now: Times
     now.duration_since(last) < LISTED_FOR
 }
 
-/// Removes every Session, PR and Branch whose newest facet is older than [`KEPT_FOR`] at
-/// `now`, except a Branch at the head of an open PR and a Session that owns an open PR.
-/// Returns how many were removed.
+/// Removes every Session, PR, Branch, Jira issue and `task` record whose newest facet is older
+/// than [`KEPT_FOR`] at `now`, except a Branch at the head of an open PR, a Session that owns an
+/// open PR, and a `task` record a Session still in the Store (after this sweep) is on. Task
+/// directories are never deleted. Returns how many were removed.
 pub fn sweep(store: &Store, now: Timestamp) -> Result<usize> {
     let owners = branch::owners(store)?;
     let prs = store.list(pr::KIND)?;
@@ -80,6 +84,7 @@ pub fn sweep(store: &Store, now: Timestamp) -> Result<usize> {
     for (kind, entities, kept) in [
         (session::KIND, store.list(session::KIND)?, kept_sessions),
         (pr::KIND, prs, HashSet::new()),
+        (jira::KIND, store.list(jira::KIND)?, HashSet::new()),
         (branch::KIND, store.list(branch::KIND)?, kept_branches),
     ] {
         for entity in entities {
@@ -87,6 +92,18 @@ pub fn sweep(store: &Store, now: Timestamp) -> Result<usize> {
                 store.remove(kind, &entity.id)?;
                 removed += 1;
             }
+        }
+    }
+
+    // After the Sessions, so a Task whose last Session was just removed goes too.
+    let mut on_task = HashSet::new();
+    for entity in store.list(session::KIND)? {
+        on_task.extend(Session::from_entity(&entity)?.task);
+    }
+    for entity in store.list(task::KIND)? {
+        if old(&entity) && !on_task.contains(&entity.id) {
+            store.remove(task::KIND, &entity.id)?;
+            removed += 1;
         }
     }
     Ok(removed)
