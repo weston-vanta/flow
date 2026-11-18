@@ -161,6 +161,34 @@ enum TaskCommand {
         /// The Task slug.
         slug: String,
     },
+    /// Record the Resources a Task points at: links to its Jira issues, docs and files.
+    #[command(subcommand)]
+    Resource(ResourceCommand),
+}
+
+#[derive(Subcommand)]
+enum ResourceCommand {
+    /// Add a Resource to the calling Session's Task (or `--task`), replacing the title of one
+    /// with the same URL. Prints `{task, resources}`.
+    Add {
+        /// An absolute `https`, `http` or `file` URL.
+        url: String,
+        /// What to show instead of the URL.
+        #[arg(long)]
+        title: Option<String>,
+        /// The Task's slug, instead of the calling Session's Task.
+        #[arg(long)]
+        task: Option<String>,
+    },
+    /// Remove the Resource with this URL from the calling Session's Task (or `--task`).
+    /// Prints `{task, resources}`.
+    Remove {
+        /// The Resource's URL.
+        url: String,
+        /// The Task's slug, instead of the calling Session's Task.
+        #[arg(long)]
+        task: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -302,7 +330,62 @@ fn task(store: &Store, command: TaskCommand) -> ExitCode {
             Ok(None) => no_task(&slug),
             Err(err) => store_error(&err),
         },
+        TaskCommand::Resource(command) => task_resource(store, &root, command),
     }
+}
+
+/// Runs `flow task resource add/remove`, printing `{task, resources}`.
+fn task_resource(store: &Store, root: &std::path::Path, command: ResourceCommand) -> ExitCode {
+    let (url, slug) = match &command {
+        ResourceCommand::Add { url, task, .. } | ResourceCommand::Remove { url, task } => {
+            (url, task.clone())
+        }
+    };
+    if !task::is_resource_url(url) {
+        return error(
+            2,
+            &format!("{url:?} is not an absolute https, http or file URL"),
+            "pass the full URL, such as `https://example.com/doc` or `file:///efs-home/notes.md`",
+        );
+    }
+    let slug = match slug {
+        Some(slug) => slug,
+        None => match calling_task(store) {
+            Ok(Some(slug)) => slug,
+            Ok(None) => {
+                return error(
+                    1,
+                    "the calling Session is on no Task",
+                    "pass --task <slug>, or run `flow task join <slug>` first",
+                );
+            }
+            Err(err) => return store_error(&err),
+        },
+    };
+    if !task::exists(root, &slug) {
+        return no_task(&slug);
+    }
+    let resources = match command {
+        ResourceCommand::Add { url, title, .. } => {
+            task::add_resource(store, &slug, task::Resource { url, title })
+        }
+        ResourceCommand::Remove { url, .. } => task::remove_resource(store, &slug, &url),
+    };
+    match resources {
+        Ok(resources) => print_json(&serde_json::json!({ "task": slug, "resources": resources })),
+        Err(err) => store_error(&err),
+    }
+}
+
+/// The slug of the Task the calling Session (`$CLAUDE_CODE_SESSION_ID`) is on, if any.
+fn calling_task(store: &Store) -> anyhow::Result<Option<String>> {
+    let Some(id) = std::env::var("CLAUDE_CODE_SESSION_ID")
+        .ok()
+        .filter(|id| !id.is_empty())
+    else {
+        return Ok(None);
+    };
+    Ok(services::session_get(store, &id)?.and_then(|session| session.task))
 }
 
 fn no_task(slug: &str) -> ExitCode {
