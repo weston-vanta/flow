@@ -70,7 +70,7 @@ export interface Github {
   changedFiles: number;
   reviews: Review[];
   threads: Thread[];
-  /** When the oldest default-branch commit the head lacks landed; null unless open and behind. */
+  /** When the oldest commit on its base that the head lacks landed; null unless open and behind. */
   behindSince: string | null;
   /** Its place in its repository's merge queue (1 merges next); null unless queued. */
   mergeQueue: { position: number; size: number } | null;
@@ -175,7 +175,7 @@ function baseProblems(g: Github, below: number | null, now: number): string[] {
 const done = (g: Github, column: string): Light | null =>
   g.state === "OPEN" ? null : { lamp: "fine", tip: `${column}: ${g.state === "MERGED" ? "merged" : "closed"}` };
 
-/** Act on a conflict, or on being behind the default branch for more than a day.
+/** Act on a conflict, or on being behind its base for more than a day.
  * `below` is the number of the PR below this one in its Stack, if any. */
 export function baseLight(g: Github, below: number | null = null, now = Date.now()): Light {
   const problems = baseProblems(g, below, now);
