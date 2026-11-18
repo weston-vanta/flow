@@ -29,8 +29,12 @@ A Session on a Task that owns it through to its deliverable: it aligns with the 
 _Avoid_: worker, agent, implementer
 
 **Task**:
-One piece of work the Director delegates through a Manager, from its brief to its deliverable: PRs, a spec, or an answer. Identified by its slug. A Task is the Sessions that joined it, usually one IC at a time; its Branches and PRs are the ones those Sessions own. A Session is on at most one Task, and only by joining it explicitly: `/clear` leaves the new Session on none. A Task is listed while any of its Sessions is. It can point at any number of Resources.
+One piece of work the Director delegates through a Manager, from its brief to its deliverable: PRs, a spec, or an answer. Identified by its slug. A Task begins when it is created and is the Sessions that joined it, usually one IC at a time; its Branches and PRs are the ones those Sessions own. Every IC is on a Task. A Session is on at most one Task, and only by joining it explicitly: `/clear` leaves the new Session on none. A Task is listed while any of its Sessions is. It can point at any number of Resources.
 _Avoid_: job, ticket, work item, assignment
+
+**Task directory**:
+The directory flow creates for a Task when it is created, where its brief and everything its IC writes are kept.
+_Avoid_: task folder, workspace
 
 **Builder**:
 A Subagent that implements one PR test-first in its worktree, and addresses the findings on it.
@@ -49,7 +53,7 @@ A scope (one PR, or one Stack) plus the Review dimensions checked over it, run b
 _Avoid_: round, review
 
 **Explainer**:
-An interactive page that explains a change, an existing system or a plan through one diagram, for reviewers who need the design before the diffs. An IC builds one only when the Director asks.
+An interactive page that explains a change, an existing system or a plan through one or a few diagrams for reviewers who need the design before the diffs. An IC builds one only when the Director asks.
 _Avoid_: walkthrough, review guide, architecture doc
 
 ### Work
@@ -71,19 +75,19 @@ One GitHub pull request, identified by its repository and number. Only PRs a Ses
 _Avoid_: pull, change, diff
 
 **Jira issue**:
-One issue in Jira, identified by its key (such as `ABC-123`). An epic is a Jira issue like any other. flow knows a Jira issue only as the one a Branch implements: each Branch has at most one. A Jira issue a Task points at (its Source, an epic) is just a Resource. flow never changes Jira issues in Jira.
+One issue in Jira, identified by its key (such as `ABC-123`). An epic is a Jira issue like any other. flow knows a Jira issue only as the one a Branch implements: each Branch has at most one. A Jira issue a Task points at (the one the ask came from, an epic) is just a Resource. flow never changes Jira issues in Jira.
 _Avoid_: ticket, card, story
 
 **Resource**:
-Something outside flow that a Task points at, such as a Jira issue, a doc or an Explainer, identified by its URL.
-_Avoid_: link, attachment, external record, reference
+Something outside flow that a Task points at, such as a Jira issue, a doc, an Explainer or a file, identified by its URL.
+_Avoid_: link, attachment, external record, reference, pointer, Source
 
 **Feedback**:
 A PR's review threads that are unresolved and not outdated: what is still left to address. Resolved threads, threads on code that has since changed, top-level comments and review bodies are not feedback.
 _Avoid_: comments, threads
 
 **Behind**:
-A PR is behind when the oldest commit on its repository's default branch that its head lacks landed there more than 24 hours ago. Only PRs based on the default branch can be behind; one based on another PR's branch never is. Measured by when that commit landed, not by how many commits are missing. A queued PR is never behind.
+A PR is behind when the oldest commit on its own base that its head lacks landed there more than 24 hours ago, whether that base is the default branch, a Feature branch or another PR's branch. Measured by when that commit landed, not by how many commits are missing. A queued PR is never behind.
 _Avoid_: stale, out of date
 
 **Queued**:
@@ -99,8 +103,16 @@ A git branch in a repository, identified by the repository and the branch name. 
 _Avoid_: ref, worktree
 
 **Stack**:
-PRs a Session owns that build on one another, each based on the one below it, in the order of their GitHub stack (bottom first). A Session can own several Stacks, all in one repository; a single PR based on the default branch is a Stack of one. Not a thing of its own, only an ordering.
+PRs a Session owns that build on one another, each based on the one below it, in the order of their GitHub stack (bottom first). A Session can own several Stacks, all in one repository; a single PR based on the default branch or a Feature branch is a Stack of one. Not a thing of its own, only an ordering.
 _Avoid_: chain, series
+
+**Feature branch**:
+A long-lived Branch based on the default branch, which its owner's Stacks are based on and merge into, and which merges into the default branch once, through its feature PR. A Task has zero, one or several, each independent of the others.
+_Avoid_: integration branch, epic branch, trunk
+
+**Feature PR**:
+The one PR whose head is a Feature branch and whose base is the default branch. Opened as a draft when its Feature branch is created, and merged last.
+_Avoid_: integration PR, rollup PR
 
 ### Data
 

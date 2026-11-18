@@ -3,71 +3,129 @@
   flow:explainer starter template.
 
   Everything here is optional and replaceable. Keep what helps, delete what doesn't,
-  and restyle freely. The script only cares about three conventions:
+  and restyle freely. The page is an intro followed by one <section class="xp"> per
+  diagram; copy a section for each main path. The script only cares about these
+  conventions, within each section:
 
     1. SVG elements with data-part="<id>" are components. Clicking one shows its detail.
     2. SVG elements with data-edge="<id>" are arrows, so they can be highlighted.
-    3. The JSON block #explainer-data gives the content: parts (detail per component)
-       and, optionally, flows (stepped walkthroughs) and groups (sets to highlight).
+    3. The JSON block .xp-data gives the content: parts (detail per component) and,
+       optionally, flows (stepped walkthroughs) and groups (sets to highlight). The
+       script builds the section's .controls row from its flows and groups.
 
-  Script API, for controls you build yourself in the controls region:
-    explainer.focus(partIds, edgeIds)   highlight these, dim everything else
-    explainer.clear()                   back to rest (also: Escape, or a click outside any component)
-    explainer.showDetail(html)          put html in the detail panel
-    explainer.startFlow(flowId)         begin stepping a flow (needs the step bar)
-    explainer.highlightGroup(groupId)   focus a group from the data and show its detail
+  Script API, per section, for controls you build yourself:
+    explainers[sectionId].focus(partIds, edgeIds)   highlight these, dim the rest
+    explainers[sectionId].clear()                   back to rest (also: Escape, or a click outside any component)
+    explainers[sectionId].showDetail(html)          put html in the section's detail panel
+    explainers[sectionId].startFlow(flowId, step)   step through a flow
+    explainers[sectionId].highlightGroup(groupId)   focus a group and show its detail
 
-  Hash state: #part=<id>, #flow=<id>&step=<n>, #group=<id>.
+  Hash state: #<sectionId>:part=<id>, #<sectionId>:flow=<id>&step=<n>, #<sectionId>:group=<id>.
 -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
 <style>
-  /* Layout: header, controls, full-width diagram, step bar and detail panel below it, collapsed sections last. */
+  /* Layout: a flat face on the housing, as on the flow dashboard: a header strip, then the deck holding
+     the intro, one section per diagram (narrative, controls, diagram on a channel card, step bar, the dark
+     detail window), and collapsed evidence. Depth comes only from flat tone steps and 1px rings: no
+     gradients, bevels or shadows. Single theme by choice, like the dashboard: light housing, dark window. */
   :root {
-    --bg: #f6f6f3; --surface: #ffffff; --ink: #1d2126; --muted: #5d6670;
-    --line: #c9cdd2; --accent: #2b5fd9; --accent-soft: #e4ecfb;
-    --font-body: "IBM Plex Sans", system-ui, sans-serif;
-    --font-code: "IBM Plex Mono", ui-monospace, monospace;
-    --dim: 0.22;
+    --housing: #D9D2C6; --face: #E9E6E0; --face-ring: #C9C4BA; --rule: #D3CEC5;
+    --chan: #F4F2EE; --chan-ring: #D6D1C7; --plate: #E2DCD1; --key: #B5B0A6; --key-down: #D6D1C8;
+    --ink: #2A2927; --ink2: #5E5B55; --ink3: #7A776F; --rail: #A9A59C; --white: #F2F0EB;
+    --needle: #BF1B1B; --act: #ED3F1C; --amber: #ED8008; --go: #736B1E; --fine: #C2BBAE; --draft: #8A8195;
+    --ro: #ECE9E1; --ro2: #A6A299; --ro3: #8C887F; --ro-rule: #3A3935; --ro-hi: #F4F1EA;
+    --sans: Inter, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+    --dim: 0.28;
     color-scheme: light;
   }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) {
-      --bg: #15181c; --surface: #1d2126; --ink: #e6e8eb; --muted: #9aa3ad;
-      --line: #3a4048; --accent: #7aa2ff; --accent-soft: #23304d; color-scheme: dark;
-    }
-  }
-  :root[data-theme="dark"] {
-    --bg: #15181c; --surface: #1d2126; --ink: #e6e8eb; --muted: #9aa3ad;
-    --line: #3a4048; --accent: #7aa2ff; --accent-soft: #23304d; color-scheme: dark;
-  }
+  * { box-sizing: border-box; }
   body {
-    background: var(--bg); color: var(--ink); font: 15px/1.55 var(--font-body);
+    background: var(--housing); color: var(--ink); font: 14px/1.55 var(--sans);
+    padding-block: 32px 64px;
     padding-left: max(16px, env(safe-area-inset-left, 0px));
     padding-right: max(16px, env(safe-area-inset-right, 0px));
   }
-  .page { max-width: 1240px; margin: 0 auto; padding-block: 20px 48px; display: grid; gap: 16px; }
-  code, .code { font-family: var(--font-code); font-size: 0.92em; }
-  h1 { font-size: 24px; line-height: 1.25; margin: 0; text-wrap: balance; }
-  .narrative { max-width: 68ch; display: grid; gap: 8px; }
-  .narrative p, .narrative ol { margin: 0; }
-  /* One row directly above the diagram. Each group is a short label followed by its options. */
-  .controls { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: center; margin-bottom: -8px; }
-  .controls .group { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-  .controls .group-label { font-size: 12px; color: var(--muted); margin-right: 2px; }
-  .controls:empty { display: none; }
+  a { color: inherit; }
+  code, .code { font-family: var(--mono); font-size: 0.88em; font-variant-ligatures: none; }
+  :focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
 
-  .stage { display: grid; gap: 12px; }
-  .figure { overflow-x: auto; }
-  .figure svg { display: block; width: 100%; height: auto; max-width: 100%; }
-  .panel {
-    background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
-    padding: 12px 16px; font-size: 14px; max-width: 80ch;
+  .face { max-width: 1280px; margin: 0 auto; border-radius: 4px; background: var(--face); box-shadow: 0 0 0 1px var(--face-ring); }
+  header.top { display: flex; align-items: center; gap: 12px; padding: 18px 24px 16px; border-bottom: 1px solid var(--rule); }
+  .brand { display: block; flex: none; }
+  .tagline { font-size: 12px; color: var(--ink2); }
+  .deck { display: grid; gap: 36px; padding: 28px 24px 32px; }
+
+  h1 { font-size: 20px; line-height: 1.3; margin: 0; font-weight: 600; letter-spacing: -0.01em; text-wrap: balance; }
+  h2 { font-size: 16px; line-height: 1.35; margin: 0; font-weight: 600; text-wrap: balance; }
+  h3 { font-size: 12px; line-height: 1.4; margin: 0; font-weight: 600; color: var(--ink2); }
+  .intro { display: grid; gap: 10px; }
+  .intro p { margin: 0; font-size: 15px; line-height: 1.6; }
+  .intro b, .xp-head b { font-weight: 600; }
+
+  .xp { display: grid; gap: 14px; }
+  .xp + .xp { border-top: 1px solid var(--rule); padding-top: 32px; }
+  .xp-head { display: grid; gap: 10px; }
+  .xp-head p, .xp-head ol { margin: 0; }
+  .xp-head h3 { margin-top: 4px; }
+  /* Forcing facts, numbered with the dashboard's count rings. */
+  .xp-head ol { list-style: none; padding: 0; display: grid; gap: 8px; counter-reset: fact; }
+  .xp-head ol li { position: relative; padding-left: 28px; counter-increment: fact; }
+  .xp-head ol li::before {
+    content: counter(fact); position: absolute; left: 0; top: 2px; width: 18px; height: 18px; border-radius: 50%;
+    border: 1.5px solid var(--ink2); display: flex; align-items: center; justify-content: center;
+    font-size: 10px; font-weight: 600; line-height: 1; font-feature-settings: "tnum" 1;
   }
-  .panel h2 { font-size: 15px; margin: 0 0 6px; }
-  .panel .hint { color: var(--muted); }
 
-  /* Focus: the figure dims everything except marked parts and edges. */
+  /* Controls: flat keys; a latched key is filled, as the dashboard's keys are when down. */
+  .controls { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: center; margin-top: 4px; }
+  .controls:empty { display: none; }
+  .controls .group { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .controls .group-label { font-size: 11px; color: var(--ink2); margin-right: 4px; }
+  .controls button, .stepbar button.nav {
+    font: 500 12px/1 var(--sans); min-height: 28px; padding: 0 10px; border: 1px solid var(--key); border-radius: 3px;
+    background: transparent; color: var(--ink); cursor: pointer; transition: background-color 120ms ease, border-color 120ms ease;
+  }
+  .controls button:hover, .stepbar button.nav:hover:not(:disabled) { border-color: #8C8981; }
+  .controls button[aria-pressed="true"] { background: var(--key-down); border-color: var(--ink2); }
+
+  /* The diagram sits on a channel card. */
+  .figure { overflow-x: auto; margin: 0; padding: 14px 12px; border-radius: 4px; background: var(--chan); box-shadow: 0 0 0 1px var(--chan-ring); }
+  .figure svg { display: block; width: 100%; min-width: 980px; height: auto; }
+
+  /* The detail panel is the dashboard's dark window. */
+  .panel { background: var(--ink); color: var(--ro); border-radius: 4px; padding: 18px 24px 20px; font-size: 13px; line-height: 1.6; }
+  .panel h4 { font-size: 15px; line-height: 1.4; font-weight: 500; color: var(--ro-hi); margin: 0 0 8px; }
+  .panel p { margin: 0 0 8px; }
+  .panel p:last-child, .panel ul:last-child { margin-bottom: 0; }
+  .panel ul { margin: 0 0 8px; padding-left: 18px; }
+  .panel code { color: var(--ro-hi); }
+  .panel .hint { color: var(--ro2); }
+  /* At rest the window holds only a hint, so it stays out of the way until something is selected. */
+  .panel:has(> .hint:only-child) { background: transparent; box-shadow: inset 0 0 0 1px var(--rule); }
+  .panel > .hint:only-child { color: var(--ink2); }
+  .panel .refs { color: var(--ro3); font-family: var(--mono); font-size: 11px; font-variant-ligatures: none; }
+
+  /* SVG: main path outlined in ink; everything that supports it in flat plate tones. */
+  svg text { fill: var(--ink); font-family: var(--sans); font-size: 12.9px; }
+  svg .ph { font-size: 13.5px; font-weight: 600; }  /* a column or phase heading */
+  svg .ct { font-size: 14.5px; font-weight: 600; }
+  svg .lane { fill: var(--ink3); font-size: 12.9px; font-weight: 500; }
+  svg .tm { font-family: var(--mono); font-size: 12.9px; font-variant-ligatures: none; }
+  svg .mu { fill: var(--ink2); }
+  svg .card { fill: var(--chan); stroke: var(--ink); stroke-width: 1.5; }  /* a component on the main path */
+  svg .card.sub { stroke-dasharray: 5 3; }
+  svg .plate, svg .grp { fill: var(--plate); stroke: none; }  /* a supporting component, or a group's ground */
+  svg .box { fill: var(--chan); stroke: var(--chan-ring); }  /* a component inside a group */
+  svg .hit { fill: transparent; }
+  [data-edge] { color: var(--rail); }
+  [data-edge] path { fill: none; stroke: currentColor; stroke-width: 1.3; }
+  [data-edge].main { color: var(--ink); }
+  [data-edge].main path { stroke-width: 1.8; }
+
+  /* Focus: everything dims except what is marked; the dashboard's red needle marks the selection. */
   .figure [data-part], .figure [data-edge] { transition: opacity 160ms ease; }
   .figure.is-focused [data-part], .figure.is-focused [data-edge] { opacity: var(--dim); }
   .figure.is-focused .is-past { opacity: 0.55; }
@@ -76,80 +134,75 @@
   .figure.is-focused [data-part]:not(.is-on):not(.is-context) [data-part],
   .figure.is-focused .is-on [data-part] { opacity: 1; }
   .figure [data-part] { cursor: pointer; }
-  .figure [data-part]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .figure .is-on > rect:first-of-type { stroke: var(--accent); stroke-width: 2; }
-  .figure [data-edge].is-on { color: var(--accent); }
-  .figure [data-edge].is-on [stroke="currentColor"] { stroke: var(--accent); }
+  .figure [data-part]:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+  .figure .is-on > rect:first-of-type { stroke: var(--needle); stroke-width: 2; stroke-dasharray: none; opacity: 1; }
+  .figure [data-edge].is-on { color: var(--needle); }
+  .figure [data-edge].is-on path { stroke-width: 2; }
 
-  /* Step bar, optional. */
-  .stepbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-height: 36px; }
+  /* Step bar: lamps for steps, grey ahead, ink behind, the needle at the current one. */
+  .stepbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-height: 30px; }
   [hidden] { display: none !important; }
-  .stepbar button.nav {
-    font: inherit; padding: 4px 12px; border: 1px solid var(--line); border-radius: 6px;
-    background: var(--surface); color: var(--ink); cursor: pointer;
-  }
   .stepbar button.nav:disabled { opacity: 0.4; cursor: default; }
-  .dots { display: inline-flex; }
-  .dots button { width: 22px; height: 22px; padding: 0; border: 0; background: none; position: relative; cursor: pointer; }
-  .dots button::before {
-    content: ""; position: absolute; inset: 7px; border-radius: 50%;
-    border: 1.5px solid var(--accent);
-  }
-  .dots button.done::before { background: var(--accent); opacity: 0.45; }
-  .dots button[aria-current="step"]::before { inset: 4px; background: var(--accent); }
-  .stepname { font-weight: 500; }
+  .dots { display: inline-flex; flex-wrap: wrap; }
+  .dots button { width: 20px; height: 22px; padding: 0; border: 0; background: none; position: relative; cursor: pointer; }
+  .dots button::before { content: ""; position: absolute; left: 5px; top: 6px; width: 10px; height: 10px; border-radius: 50%; background: var(--fine); }
+  .dots button.done::before { background: var(--ink3); }
+  .dots button[aria-current="step"]::before { background: var(--needle); }
+  .stepname { font-size: 13px; font-weight: 600; }
 
-  details { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; }
-  details + details { margin-top: -8px; }
-  summary { cursor: pointer; font-weight: 500; }
-  button:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .details { display: grid; gap: 8px; }
+  details { background: var(--chan); box-shadow: 0 0 0 1px var(--chan-ring); border-radius: 4px; padding: 12px 18px; line-height: 1.6; }
+  details p, details ul { margin: 8px 0 0; }
+  details ul { padding-left: 18px; }
+  summary { cursor: pointer; font-size: 13px; font-weight: 600; }
+  dl.terms { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 8px 0 0; }
+  dl.terms dt { font-weight: 600; }
+  dl.terms dd { margin: 0; }
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
   /* Automated browsers get no transitions, so screenshots never catch a fade halfway. */
   .no-motion * { transition: none !important; }
 </style>
 
-<div class="page">
-  <header class="narrative">
+<div class="face">
+  <header class="top"><svg class="brand" width="45.45" height="24" viewBox="0 0 60.6 32" role="img" aria-label="flow"><defs><clipPath id="wx0"><rect x="0" y="12.2" width="60.6" height="15.0"/></clipPath></defs><g fill="none" stroke="#2A2927" stroke-width="3.2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="10"><path d="M8.6 27.2 V11.4 C8.6 8.1 10.5 6.3 13.7 6.3 H16.2"/><path d="M20.4 4.7 V27.2"/><ellipse cx="31.1" cy="19.75" rx="5.45" ry="6.05"/><path clip-path="url(#wx0)" d="M39.4 8 L44.3 29 L49 10 L53.7 29 L58.6 8"/></g><rect x="3.8" y="12.2" width="10.4" height="3.2" fill="#BF1B1B"/></svg><span class="tagline">Explainer</span></header>
+<div class="deck">
+  <header class="intro">
     <h1>Subject name</h1>
-    <p>What it does for users, or the problem it solves.</p>
-    <ol>
-      <li>A fact that forces the design.</li>
-    </ol>
-    <p>What those facts make the code do.</p>
+    <p>What the subject does or the problem it solves, defining its roles and components inline as it names them, and what each diagram below shows.</p>
   </header>
 
-  <!-- Controls: one row directly above the diagram, so they read as part of it.
-       Put whatever controls fit the subject here as .group elements, or leave it empty. -->
-  <div class="controls" id="controls"></div>
-
-  <div class="stage" id="stage">
-      <figure class="figure" id="figure" style="margin:0">
-        <svg viewBox="0 0 900 110" role="img" aria-label="Describe the claim the diagram makes">
-          <defs>
-            <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-              <path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/>
-            </marker>
-          </defs>
-          <g data-part="example-a"><rect x="20" y="20" width="200" height="70" rx="8" fill="var(--surface)" stroke="var(--line)"/><text x="40" y="60" fill="currentColor">Component A</text></g>
-          <g data-edge="a-to-b" color="var(--muted)"><line x1="220" y1="55" x2="338" y2="55" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)"/></g>
-          <g data-part="example-b"><rect x="340" y="20" width="200" height="70" rx="8" fill="var(--surface)" stroke="var(--line)"/><text x="360" y="60" fill="currentColor">Component B</text></g>
-        </svg>
-      </figure>
-      <!-- Step bar, optional: delete it if nothing is stepped through. -->
-      <div class="stepbar" id="stepbar" hidden>
-        <button class="nav" id="prev" type="button">Prev</button>
-        <span class="dots" id="dots" role="group" aria-label="Steps"></span>
-        <button class="nav" id="next" type="button">Next</button>
-        <span class="stepname" id="stepname" aria-live="polite"></span>
-      </div>
-      <aside class="panel" id="panel" aria-live="polite"><p class="hint">Select a component to see its detail.</p></aside>
-  </div>
-
-  <!-- Details region: information that matters but doesn't belong in the diagram. -->
-  <section class="details" id="details"></section>
-</div>
-
-<script type="application/json" id="explainer-data">
+  <!-- One section per main path. Copy this section for a second diagram, with its own id. -->
+  <section class="xp" id="main">
+    <div class="xp-head">
+      <h2>What this diagram shows</h2>
+      <p>How to read it.</p>
+      <h3>What forces this shape</h3>
+      <ol>
+        <li>A fact that forces the design.</li>
+      </ol>
+      <p>What those facts make the code do.</p>
+    </div>
+    <div class="controls"></div>
+    <figure class="figure">
+      <svg viewBox="0 0 900 110" role="img" aria-label="Describe the claim the diagram makes">
+        <defs>
+          <marker id="arrow-main" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/>
+          </marker>
+        </defs>
+        <g data-part="example-a"><rect x="20" y="20" width="200" height="70" rx="4" class="card"/><text x="40" y="60" class="ct">Component A</text></g>
+        <g data-edge="a-to-b" class="main"><path d="M220 55 H340" marker-end="url(#arrow-main)"/></g>
+        <g data-part="example-b"><rect x="340" y="20" width="200" height="70" rx="4" class="card"/><text x="360" y="60" class="ct">Component B</text></g>
+      </svg>
+    </figure>
+    <div class="stepbar" hidden>
+      <button class="nav prev" type="button">Prev</button>
+      <span class="dots" role="group" aria-label="Steps"></span>
+      <button class="nav next" type="button">Next</button>
+      <span class="stepname" aria-live="polite"></span>
+    </div>
+    <aside class="panel" aria-live="polite"><p class="hint">Select a component to see its detail.</p></aside>
+    <script type="application/json" class="xp-data">
 {
   "parts": {
     "example-a": { "title": "Component A", "html": "<p>Its role, the phases that touch it, and the rule or query that matters.</p>" },
@@ -162,161 +215,168 @@
   },
   "groups": {}
 }
-</script>
+    </script>
+  </section>
+
+  <!-- Supporting evidence no diagram carries. -->
+  <section class="details"></section>
+</div>
+</div>
 
 <script>
 (function () {
   if (navigator.webdriver) document.documentElement.classList.add("no-motion");
-  var DATA = JSON.parse(document.getElementById("explainer-data").textContent);
-  var parts = DATA.parts || {}, flows = DATA.flows || {}, groups = DATA.groups || {};
-  var fig = document.getElementById("figure");
-  var panel = document.getElementById("panel");
-  var stepbar = document.getElementById("stepbar");
-  var restHtml = panel ? panel.innerHTML : "";
-  var state = { flow: null, step: 0 };
+  var all = {};
 
-  function all(sel) { return Array.prototype.slice.call(fig.querySelectorAll(sel)); }
-  function byIds(attr, ids) {
-    return all("[" + attr + "]").filter(function (el) { return ids.indexOf(el.getAttribute(attr)) !== -1; });
-  }
-  function unmark() {
-    all("[data-part],[data-edge]").forEach(function (el) { el.classList.remove("is-on", "is-past", "is-context"); });
-    fig.classList.remove("is-focused");
-  }
-  function focus(partIds, edgeIds, past) {
-    unmark();
-    fig.classList.add("is-focused");
-    if (past) {
-      byIds("data-part", past.parts || []).concat(byIds("data-edge", past.edges || []))
-        .forEach(function (el) { el.classList.add("is-past"); });
+  function Explainer(section) {
+    var DATA = JSON.parse(section.querySelector(".xp-data").textContent);
+    var parts = DATA.parts || {}, flows = DATA.flows || {}, groups = DATA.groups || {};
+    var fig = section.querySelector(".figure");
+    var panel = section.querySelector(".panel");
+    var stepbar = section.querySelector(".stepbar");
+    var controls = section.querySelector(".controls");
+    var restHtml = panel.innerHTML;
+    var state = { flow: null, step: 0, group: null };
+    var id = section.id;
+
+    function q(sel) { return Array.prototype.slice.call(fig.querySelectorAll(sel)); }
+    function byIds(attr, ids) { return q("[" + attr + "]").filter(function (el) { return ids.indexOf(el.getAttribute(attr)) !== -1; }); }
+    function unmark() {
+      q("[data-part],[data-edge]").forEach(function (el) { el.classList.remove("is-on", "is-past", "is-context"); });
+      fig.classList.remove("is-focused");
     }
-    byIds("data-part", partIds || []).concat(byIds("data-edge", edgeIds || []))
-      .forEach(function (el) {
+    function focus(partIds, edgeIds, past) {
+      unmark();
+      fig.classList.add("is-focused");
+      if (past) byIds("data-part", past.parts || []).concat(byIds("data-edge", past.edges || [])).forEach(function (el) { el.classList.add("is-past"); });
+      byIds("data-part", partIds || []).concat(byIds("data-edge", edgeIds || [])).forEach(function (el) {
         el.classList.add("is-on");
-        // Containers of a highlighted part stay at full strength so it isn't dimmed through them.
         for (var p = el.parentElement; p && p !== fig; p = p.parentElement) {
           if (p.hasAttribute("data-part") && !p.classList.contains("is-on")) p.classList.add("is-context");
         }
       });
-  }
-  function showDetail(html) { if (panel) panel.innerHTML = html; }
-  function setHash(h) {
-    try { history.replaceState(null, "", h ? "#" + h : location.pathname + location.search); } catch (e) {}
-  }
-
-  function clear() {
-    state.flow = null;
-    unmark();
-    showDetail(restHtml);
-    if (stepbar) stepbar.hidden = true;
-    setHash("");
-  }
-
-  function showPart(id) {
-    var p = parts[id];
-    if (!p) return;
-    state.flow = null;
-    if (stepbar) stepbar.hidden = true;
-    focus([id], []);
-    showDetail("<h2>" + p.title + "</h2>" + (p.html || ""));
-    setHash("part=" + encodeURIComponent(id));
-  }
-
-  function highlightGroup(id) {
-    var g = groups[id];
-    if (!g) return;
-    state.flow = null;
-    if (stepbar) stepbar.hidden = true;
-    focus(g.parts, g.edges);
-    showDetail("<h2>" + g.label + "</h2>" + (g.html || ""));
-    setHash("group=" + encodeURIComponent(id));
-  }
-
-  function renderStep() {
-    var f = flows[state.flow], steps = f.steps, s = steps[state.step];
-    var past = { parts: [], edges: [] };
-    for (var i = 0; i < state.step; i++) {
-      past.parts = past.parts.concat(steps[i].parts || []);
-      past.edges = past.edges.concat(steps[i].edges || []);
     }
-    focus(s.parts, s.edges, past);
-    showDetail("<h2>" + s.title + "</h2>" + (s.html || ""));
-    if (!stepbar) return;
-    stepbar.hidden = false;
-    document.getElementById("stepname").textContent = "Step " + (state.step + 1) + " of " + steps.length + ": " + s.title;
-    document.getElementById("prev").disabled = state.step === 0;
-    document.getElementById("next").disabled = state.step === steps.length - 1;
-    var dots = document.getElementById("dots");
-    dots.innerHTML = "";
-    steps.forEach(function (st, i) {
-      var b = document.createElement("button");
-      b.type = "button";
-      b.setAttribute("aria-label", "Step " + (i + 1) + ": " + st.title);
-      if (i < state.step) b.className = "done";
-      if (i === state.step) b.setAttribute("aria-current", "step");
-      b.addEventListener("click", function () { go(i); });
-      dots.appendChild(b);
+    function show(html) { panel.innerHTML = html; }
+    function setHash(h) { try { history.replaceState(null, "", h ? "#" + id + ":" + h : location.pathname + location.search); } catch (e) {} }
+    function press() {
+      Array.prototype.forEach.call(controls.querySelectorAll("button"), function (b) {
+        var on = (b.dataset.flow && b.dataset.flow === state.flow) || (b.dataset.group && b.dataset.group === state.group);
+        b.setAttribute("aria-pressed", on ? "true" : "false");
+      });
+    }
+    function clear(keepHash) {
+      state.flow = null; state.group = null;
+      unmark(); show(restHtml); stepbar.hidden = true; press();
+      if (!keepHash) setHash("");
+    }
+    function showPart(pid) {
+      var p = parts[pid]; if (!p) return;
+      state.flow = null; state.group = null; stepbar.hidden = true;
+      focus([pid], []);
+      show("<h4>" + p.title.replace(/</g, "&lt;") + "</h4>" + (p.html || ""));
+      setHash("part=" + encodeURIComponent(pid)); press();
+    }
+    function highlightGroup(gid) {
+      var g = groups[gid]; if (!g) return;
+      state.flow = null; state.group = gid; stepbar.hidden = true;
+      focus(g.parts, g.edges);
+      show("<h4>" + g.label + "</h4>" + (g.html || ""));
+      setHash("group=" + encodeURIComponent(gid)); press();
+    }
+    function renderStep() {
+      var f = flows[state.flow], steps = f.steps, s = steps[state.step];
+      var past = { parts: [], edges: [] };
+      for (var i = 0; i < state.step; i++) { past.parts = past.parts.concat(steps[i].parts || []); past.edges = past.edges.concat(steps[i].edges || []); }
+      focus(s.parts, s.edges, past);
+      show("<h4>" + s.title + "</h4>" + (s.html || ""));
+      stepbar.hidden = false;
+      stepbar.querySelector(".stepname").textContent = f.label + " · step " + (state.step + 1) + " of " + steps.length + ": " + s.title;
+      stepbar.querySelector(".prev").disabled = state.step === 0;
+      stepbar.querySelector(".next").disabled = state.step === steps.length - 1;
+      var dots = stepbar.querySelector(".dots");
+      dots.innerHTML = "";
+      steps.forEach(function (st, i) {
+        var b = document.createElement("button");
+        b.type = "button";
+        b.setAttribute("aria-label", "Step " + (i + 1) + ": " + st.title);
+        if (i < state.step) b.className = "done";
+        if (i === state.step) b.setAttribute("aria-current", "step");
+        b.addEventListener("click", function () { go(i); });
+        dots.appendChild(b);
+      });
+      setHash("flow=" + encodeURIComponent(state.flow) + "&step=" + (state.step + 1)); press();
+    }
+    function startFlow(fid, step) {
+      if (!flows[fid]) { clear(); return; }
+      state.flow = fid; state.group = null;
+      state.step = Math.max(0, Math.min((step || 1) - 1, flows[fid].steps.length - 1));
+      renderStep();
+    }
+    function go(i) {
+      if (!state.flow) return;
+      if (i < 0 || i >= flows[state.flow].steps.length) return;
+      state.step = i; renderStep();
+    }
+    function group(label, items) {
+      if (!items.length) return;
+      var g = document.createElement("div"); g.className = "group";
+      var l = document.createElement("span"); l.className = "group-label"; l.textContent = label; g.appendChild(l);
+      items.forEach(function (it) { g.appendChild(it); });
+      controls.appendChild(g);
+    }
+    function button(text, data, onClick) {
+      var b = document.createElement("button"); b.type = "button"; b.textContent = text;
+      Object.keys(data).forEach(function (k) { b.dataset[k] = data[k]; });
+      b.setAttribute("aria-pressed", "false"); b.addEventListener("click", onClick);
+      return b;
+    }
+    group("Walk through", Object.keys(flows).map(function (fid) {
+      return button(flows[fid].label, { flow: fid }, function () { state.flow === fid ? clear() : startFlow(fid, 1); });
+    }));
+    group("Highlight", Object.keys(groups).map(function (gid) {
+      return button(groups[gid].label, { group: gid }, function () { state.group === gid ? clear() : highlightGroup(gid); });
+    }));
+    q("[data-part]").forEach(function (el) {
+      var pid = el.getAttribute("data-part");
+      if (!parts[pid]) return;
+      el.setAttribute("tabindex", "0"); el.setAttribute("role", "button"); el.setAttribute("aria-label", parts[pid].title);
+      el.addEventListener("click", function (e) { e.stopPropagation(); showPart(pid); });
+      el.addEventListener("keydown", function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); showPart(pid); } });
     });
-    setHash("flow=" + encodeURIComponent(state.flow) + "&step=" + (state.step + 1));
-  }
-  function startFlow(id, step) {
-    if (!flows[id]) { clear(); return; }
-    state.flow = id;
-    state.step = Math.max(0, Math.min((step || 1) - 1, flows[id].steps.length - 1));
-    renderStep();
-  }
-  function go(i) {
-    if (!state.flow) return;
-    var n = flows[state.flow].steps.length;
-    if (i < 0 || i >= n) return;
-    state.step = i;
-    renderStep();
+    stepbar.querySelector(".prev").addEventListener("click", function () { go(state.step - 1); });
+    stepbar.querySelector(".next").addEventListener("click", function () { go(state.step + 1); });
+
+    return { id: id, section: section, state: state, focus: focus, showDetail: show, clear: clear, showPart: showPart, highlightGroup: highlightGroup, startFlow: startFlow, go: go, flows: flows, groups: groups, parts: parts };
   }
 
-  all("[data-part]").forEach(function (el) {
-    var id = el.getAttribute("data-part");
-    if (!parts[id]) return;
-    el.setAttribute("tabindex", "0");
-    el.setAttribute("role", "button");
-    el.setAttribute("aria-label", parts[id].title);
-    el.addEventListener("click", function (e) { e.stopPropagation(); showPart(id); });
-    el.addEventListener("keydown", function (e) {
-      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); showPart(id); }
-    });
-  });
-
-  if (stepbar) {
-    document.getElementById("prev").addEventListener("click", function () { go(state.step - 1); });
-    document.getElementById("next").addEventListener("click", function () { go(state.step + 1); });
-  }
-  // A click anywhere outside a component clears the selection, except on controls and text the reader may be using.
+  Array.prototype.forEach.call(document.querySelectorAll("section.xp"), function (s) { all[s.id] = Explainer(s); });
+  var active = null;
   document.addEventListener("click", function (e) {
-    var t = e.target;
-    if (!t || !t.closest) return;
-    if (t.closest("[data-part], #controls, #stepbar, #panel, #details, a, button, input, select, textarea, label, summary")) return;
-    clear();
+    var t = e.target; if (!t || !t.closest) return;
+    var sec = t.closest("section.xp");
+    if (sec) active = all[sec.id];
+    if (t.closest("[data-part], .controls, .stepbar, .panel, a, button, summary, details")) return;
+    Object.keys(all).forEach(function (k) { all[k].clear(true); });
+    try { history.replaceState(null, "", location.pathname + location.search); } catch (err) {}
   });
   document.addEventListener("keydown", function (e) {
-    var t = e.target && e.target.tagName;
-    if (!state.flow || t === "INPUT" || t === "TEXTAREA" || t === "SELECT") return;
-    if (e.key === "ArrowRight") { e.preventDefault(); go(state.step + 1); }
-    if (e.key === "ArrowLeft") { e.preventDefault(); go(state.step - 1); }
-    if (e.key === "Escape") { clear(); }
+    if (e.key === "Escape") { Object.keys(all).forEach(function (k) { all[k].clear(); }); return; }
+    if (!active || !active.state.flow) return;
+    if (e.key === "ArrowRight") { e.preventDefault(); active.go(active.state.step + 1); }
+    if (e.key === "ArrowLeft") { e.preventDefault(); active.go(active.state.step - 1); }
   });
-
   function applyHash() {
-    var h = new URLSearchParams(location.hash.slice(1));
-    if (h.get("flow")) startFlow(h.get("flow"), parseInt(h.get("step"), 10) || 1);
-    else if (h.get("part")) showPart(h.get("part"));
-    else if (h.get("group")) highlightGroup(h.get("group"));
+    var raw = location.hash.slice(1), i = raw.indexOf(":");
+    if (i < 0) return;
+    var x = all[raw.slice(0, i)]; if (!x) return;
+    var h = new URLSearchParams(raw.slice(i + 1));
+    active = x;
+    if (h.get("flow")) x.startFlow(h.get("flow"), parseInt(h.get("step"), 10) || 1);
+    else if (h.get("part")) x.showPart(h.get("part"));
+    else if (h.get("group")) x.highlightGroup(h.get("group"));
   }
   applyHash();
   window.addEventListener("hashchange", applyHash);
-
-  window.explainer = {
-    focus: focus, clear: clear, showDetail: showDetail,
-    startFlow: startFlow, highlightGroup: highlightGroup, showPart: showPart,
-    flows: flows, groups: groups
-  };
+  window.explainers = all;
 })();
 </script>

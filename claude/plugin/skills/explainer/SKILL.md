@@ -1,6 +1,6 @@
 ---
 name: explainer
-description: Build an Explainer, an interactive one-diagram page for reviewers who need the design before the diffs. Use when the Director asks for an Explainer of a change, an existing system or a plan.
+description: Build an Explainer, an interactive page of one or more diagrams for reviewers who need the design before the diffs. Use when the Director asks for an Explainer of a change, an existing system or a plan.
 ---
 
 # Explainer
@@ -25,12 +25,16 @@ If the Director offers a sketch, follow its choices and correct it wherever the 
 
 ## The page
 
-At rest, the reader sees a title, a narrative under 200 words, and one diagram with any controls in a single row directly above it.
+At rest, the reader sees a title, a brief narrative, and a diagram with any controls in a single row directly above it.
 
-- **The narrative** says what the subject does or what problem it solves, gives each forcing fact a line, and says in one sentence what the facts force the code to do.
-- **The diagram is readable without interaction.** At 1280×800 everything above fits without scrolling in either direction, with no diagram label smaller than 12px. If it doesn't fit, the diagram is at the wrong level of abstraction. Rethink the level rather than shrinking type or deleting components one at a time.
+- **The narrative** says what the subject does or what problem it solves, gives each forcing fact a line, and says in one sentence what the facts force the code to do. Put the forcing facts in a numbered list under a heading that says what they are.
+- **Define each term before its first use,** briefly and in prose, in the sentence that first needs it, rather than in a glossary list. One line can define several. Leave out terms that explain themselves.
+- **Set the prose in a single column.**
+- **The diagram is readable without interaction.** At 1280×800 the diagram and the narrative above it fit without scrolling in either direction, with no diagram label smaller than 12px. If it doesn't fit, the diagram is at the wrong level of abstraction or is doing the work of two diagrams. Rethink the level rather than shrinking type or deleting components one at a time.
 
-Below the diagram are a step bar when a flow is selected, a **detail panel** that every interaction fills, and **collapsed sections** for supporting evidence the diagram doesn't carry. Make every component clickable to show its detail, including links to the code behind each claim.
+**Add a diagram when a reader question needs a different kind of picture.** Pick the kind that fits the question: a component diagram for what the parts are and what calls what, a sequence diagram for who talks to whom and in what order, a flow chart for decisions and branches, a state diagram for a lifecycle. A diagram that mixes two kinds is busy; split it. Each diagram gets its own narrative, controls, step bar and detail panel, and each forcing fact sits with the diagram that answers it.
+
+Below each diagram are a step bar when a flow is selected and a **detail panel** that every interaction fills. **Collapsed sections** at the end of the page hold supporting evidence no diagram carries. Make every component clickable to show its detail, including links to the code behind each claim.
 
 Match each interaction to the axis the subject varies along:
 - **Sequence:** step through a flow. A flow is one user action on a main path, named for what it accomplishes. Drop a flow that mostly repeats another.
@@ -53,9 +57,9 @@ Readers figure out controls on their own, so leave them unexplained. Clicking ou
 
 ## Build and verify
 
-1. **Build** with whatever design and diagramming guidance the harness offers. `template.html` beside this file is an optional starting point: it provides the page frame, clickable components, highlighting, a step bar and a detail panel. Check the rendered page at 1280×800.
+1. **Build** with whatever design and diagramming guidance the harness offers. `template.html` beside this file is an optional starting point: it provides the page frame and, per diagram, clickable components, highlighting, a step bar and a detail panel. Check each rendered diagram at 1280×800.
 2. **Test with fresh agents who see only full-page screenshots,** never the source, your notes or your answers. Make sure no screenshot catches a transition halfway; the template turns transitions off in automated browsers. A round is one first-glance test and one question test, each run by a new agent. After each round, fix what they found in the order above.
-   - **First glance:** show the diagram at rest without the narrative. Ask what makes the design complex, and whether anything is hard to read. It passes when they name the forcing facts.
+   - **First glance:** show each diagram at rest without its narrative. Ask what makes the design complex, and whether anything is hard to read. It passes when they name the forcing facts of every diagram.
    - **Question test:** show the page at rest, every flow step, and every highlight or option, along with the reader questions. Grade the answers against yours. It passes when every answer is correct. Leave out the detail panels of individual components, because the diagram and its interactions should carry the answers, and the review below checks the panels.
 
    Stop after the first round in which both tests pass, or after three rounds, and report what is still unclear. If you can't run these tests, say so.
@@ -64,5 +68,5 @@ Readers figure out controls on their own, so leave them unexplained. Clicking ou
    - It checks that every value a flow shows the reader, and whatever decides which values appear, can be traced along drawn arrows to its source. A gap counts only if it passes the inclusion test, and the reviewer justifies each one against it.
    - It checks each forcing fact for depth: does it name what in the data model, architecture or an interface stops the obvious approach, or only a consequence of that? A consequence is a finding, and the reviewer names the deeper fact and verifies it in the code.
 
-   Rerun the question test if the diagram changes.
+   Rerun the question test if a diagram changes.
 4. **Iterate with the Director,** updating the same page in place.
