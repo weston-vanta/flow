@@ -173,24 +173,30 @@ fn a_poll_stores_each_prs_github_stack_number_beside_its_position() {
 }
 
 #[test]
-fn behind_since_is_when_the_oldest_missing_default_branch_commit_landed() {
+fn behind_since_is_when_the_oldest_missing_commit_on_its_own_base_landed() {
     let ts = TestStore::new();
     let log = fake_gh(&ts, &search_ok(), &gadgets_ok());
     let mut flowd = ts.flowd();
     flowd.wait_for_line(CYCLE);
 
-    assert!(
-        calls(&log).contains(r#"compare(headRef: "main")"#),
-        "{}",
-        calls(&log)
-    );
-    let behind = |key: &str| pr_get(&ts, key)["github"]["behindSince"].clone();
+    // Each PR's head is compared with its own base.
+    let calls = calls(&log);
+    assert!(calls.contains(r#"compare(headRef: "main")"#), "{calls}");
+    assert!(calls.contains(r#"compare(headRef: "feat/x")"#), "{calls}");
+    let out = ts.flow().args(["pr", "list", "--all"]).assert().success();
+    let prs: Vec<Value> = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    let behind = |key: &str| {
+        prs.iter()
+            .find(|pr| pr["key"] == key)
+            .unwrap_or_else(|| panic!("{key} not listed"))["github"]["behindSince"]
+            .clone()
+    };
     // The oldest missing commit has no PR: its commit date.
     assert_eq!(behind("acme/gadgets#3"), "2026-11-08T06:00:00Z");
     // 0 behind.
     assert_eq!(behind("acme/gadgets#4"), Value::Null);
-    // Based on another PR's branch, though its head lacks commits on `main`.
-    assert_eq!(behind("acme/widgets#8"), Value::Null);
+    // Based on #7's branch `feat/x`, whose oldest commit #8 lacks landed through a PR.
+    assert_eq!(behind("acme/widgets#8"), "2026-11-09T08:30:00Z");
     // Merged, though its head lacks commits on `main`.
     assert_eq!(behind("acme/widgets#5"), Value::Null);
 }

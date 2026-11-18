@@ -3,6 +3,7 @@
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::jira::Jira;
 use crate::session::Stamped;
 use crate::store::Entity;
 
@@ -17,13 +18,14 @@ pub fn key(repo: &str, number: u64) -> String {
     format!("{repo}#{number}")
 }
 
-/// A PR as the CLI prints it. `owner` is derived at read time, never stored: the `reporter`
-/// Session of the Branch keyed `<repo>:<headRefName>`, or `None`.
+/// A PR as the CLI prints it. `owner` and `jira` are derived at read time, never stored: the
+/// `reporter` Session and the Jira issue of its head Branch, keyed `<repo>:<headRefName>`.
 #[derive(Debug, Clone, Serialize)]
 pub struct Pr {
     pub key: String,
     pub owner: Option<String>,
     pub github: Option<Stamped<Github>>,
+    pub jira: Option<Jira>,
 }
 
 /// The PR as GitHub reports it, raw. Writer: the PR Writer in `flowd`.
@@ -70,9 +72,8 @@ pub struct Github {
     /// The Feedback: unresolved, not-outdated review threads, each by its first comment.
     #[serde(default)]
     pub threads: Vec<Thread>,
-    /// When the oldest default-branch commit the head lacks landed there; `None` unless the
-    /// PR is open, based on the default branch, behind it by at least one commit, and not
-    /// queued.
+    /// When the oldest commit on the PR's base that its head lacks landed there; `None` unless
+    /// the PR is open, behind its base by at least one commit, and not queued.
     #[serde(default)]
     pub behind_since: Option<String>,
     /// The PR's place in its repository's merge queue; `None` unless it is queued.
@@ -158,7 +159,7 @@ pub struct StackPosition {
 }
 
 impl Pr {
-    /// The PR stored as `entity`, with no `owner` yet.
+    /// The PR stored as `entity`, with no `owner` or `jira` yet.
     pub fn from_entity(entity: &Entity) -> Result<Self> {
         let github = match entity.facets.get(GITHUB) {
             None => None,
@@ -172,6 +173,7 @@ impl Pr {
             key: entity.id.clone(),
             owner: None,
             github,
+            jira: None,
         })
     }
 
