@@ -24,7 +24,7 @@ const INHERITED_ENV: &[&str] = &[
 
 /// A temp directory the binaries get as `FLOW_HOME`, holding their Store, the hook log beside
 /// it, and a `bin` directory put first on PATH for fake executables (holding a `gh` that
-/// always fails until a test replaces it); removed on drop.
+/// always fails until a test replaces it, and an `acli` likewise); removed on drop.
 pub struct TestStore {
     dir: TempDir,
 }
@@ -36,6 +36,8 @@ impl TestStore {
         let ts = Self { dir };
         // `flowd` polls GitHub through `gh`; no test reaches the real one.
         ts.fake_bin("gh", "echo 'no fake gh in this test' >&2; exit 1");
+        // Nor does any reach the real `acli`, which the Jira poller calls.
+        ts.fake_bin("acli", "echo 'no fake acli in this test' >&2; exit 1");
         ts
     }
 
