@@ -12,6 +12,13 @@ prints this note.
   `flow pr list`). A PR's `owner` is its owning Session's id, and `$CLAUDE_CODE_SESSION_ID`
   is yours. Your Stack:
   `flow pr list | jq '.[] | select(.owner == env.CLAUDE_CODE_SESSION_ID)'`
+- Tasks: `flow task create <slug>` creates a Task and its Task directory,
+  `$FLOW_HOME/tasks/<slug>/`, and prints `{slug, dir}`; it fails if the slug is taken and
+  joins no Session. `flow task join <slug>` puts this Session on that Task, replacing any
+  earlier one (a Session is on at most one Task, and `/clear` leaves the new Session on none).
+  `flow task list` prints every Task a listed Session is on, in slug order, and
+  `flow task get <slug>` prints one; each is `{slug, dir, sessions: [ids], resources}`.
+  `flow session list` and `flow session get` carry `task`: the Session's Task slug, or null.
 - Record the Jira issue a Branch implements with `flow branch jira set <KEY>` in its worktree,
   or `flow branch jira set <KEY> --branch <name>` from the repo's main checkout (right after
   `flow wt create`); `set` replaces any earlier key and `flow branch jira clear [--branch <name>]`
