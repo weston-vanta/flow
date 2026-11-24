@@ -1,5 +1,5 @@
 // Polls flowd's read API, keeps the last good data in memory and redraws with innerHTML.
-import { isFolded, jiraDataAge, prDataAge, sessionPanel, sessionViews, stepPr } from "./model.ts";
+import { isFolded, jiraDataAge, lanes, prDataAge, sessionPanel, sessionViews, stepPr } from "./model.ts";
 import type { Branch, Pr, Session, Task } from "./model.ts";
 import { render } from "./render.ts";
 import type { Column, TrayState } from "./render.ts";
@@ -18,9 +18,9 @@ let failing = false;
  * no PRs start folded); in memory only, so a reload resets them. */
 const toggled = new Set<string>();
 let legend = false;
-/** The selected PR's tray, or null while the window shows its empty state. */
+/** The selected PR's or Branch's panel, or null while the panel shows its empty state. */
 let tray: TrayState | null = null;
-/** The id of the Session whose panel the window shows; never set together with `tray`. */
+/** The id of the Session whose panel shows; never set together with `tray`. */
 let panel: string | null = null;
 const root = document.getElementById("root")!;
 
@@ -30,7 +30,7 @@ async function get<T>(path: string): Promise<T> {
   return r.json();
 }
 
-/** The page for the current state. Drops the tray once its PR leaves the list, and the panel
+/** The page for the current state. Drops the tray once its node leaves the board, and the panel
  * once its Session does. */
 function page(): string {
   const notices: string[] = [];
@@ -46,40 +46,52 @@ function page(): string {
   const jiraStale = jiraDataAge(prs, branches);
   if (jiraStale != null) notices.push(`Jira data ${jiraStale} min old`);
   const views = sessionViews(sessions, prs, branches);
-  if (tray && !views.some((v) => v.prs.some((p) => p.url === tray!.url))) tray = null;
+  if (tray && !views.some((v) => lanes(v).rows.some((r) => r.id === tray!.id))) tray = null;
   const pv = panel ? sessionPanel(panel, views, tasks) : null;
   if (!pv) panel = null;
-  return render(views, toggled, notices, !failing, legend, tray, pv);
+  return render(views, toggled, notices, failing, legend, tray, pv);
 }
 
 const $ = <T extends HTMLElement>(sel: string) => root.querySelector<T>(sel);
 
 function draw() {
-  // Redraw only on change, so hover tooltips and selections survive quiet polls.
+  // Redraw only on change, so hover tooltips and selections survive quiet polls. The board and
+  // the panel scroll on their own, so both keep their place.
   const html = page();
   if (html === drawn) return;
-  const top = $(".tscroll")?.scrollTop ?? 0;
+  const board = $(".board")?.scrollTop ?? 0;
+  const p = $(".p")?.scrollTop ?? 0;
   root.innerHTML = drawn = html;
-  $(".tscroll")!.scrollTop = top;
+  $(".board")!.scrollTop = board;
+  $(".p")!.scrollTop = p;
 }
 
-/** Selects the PR at `url`, with the window scrolled to `col`'s section (tinted briefly) or the top. */
-function openTray(url: string, col: Column | null) {
+/** Selects the node `id`, with the panel scrolled to `col`'s section or the top. */
+function openTray(id: string, col: Column | null) {
   panel = null;
-  tray = { url, focus: col, expanded: tray?.expanded ?? new Set() };
+  tray = { id, expanded: tray?.expanded ?? new Set() };
   draw();
-  $(".tscroll")!.scrollTop = col ? $(`[data-sec="${col}"]`)!.offsetTop : 0;
-  $(".tclose")!.focus({ preventScroll: true });
-  if (col) {
-    setTimeout(() => {
-      if (tray?.focus !== col) return;
-      // Clear the tint on the drawn page rather than redrawing, so its fade runs.
-      draw();
-      tray.focus = null;
-      $(".tsec.focus")?.classList.remove("focus");
-      drawn = page();
-    }, 1000);
-  }
+  const p = $(".p")!;
+  p.scrollTop = col ? $(`[data-sec="${col}"]`)!.offsetTop - $(".p-head")!.offsetHeight : 0;
+  $(".p-x")!.focus({ preventScroll: true });
+}
+
+const still = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/** Folds or unfolds Session `id`, animating the lane's height and its rail's leg. */
+function toggle(id: string) {
+  const sel = `[data-chan="${CSS.escape(id)}"]`;
+  const h0 = $(sel)?.offsetHeight;
+  if (!toggled.delete(id)) toggled.add(id);
+  draw();
+  const el = $(sel);
+  if (!el || h0 == null || still()) return;
+  const T = { duration: 220, easing: "cubic-bezier(.2,.8,.2,1)" };
+  const folded = el.classList.contains("folded");
+  el.style.overflow = "hidden";
+  el.animate([{ height: `${h0}px` }, { height: `${el.offsetHeight}px` }], T).onfinish = () => (el.style.overflow = "");
+  const leg = [{ height: "33px" }, { height: "3px" }];
+  el.querySelector(".trail")?.animate(folded ? leg : leg.reverse(), { ...T, pseudoElement: "::before" });
 }
 
 /** Empties the window: deselects the PR and closes the Session panel. */
@@ -94,8 +106,8 @@ function openPanel(id: string) {
   tray = null;
   panel = id;
   draw();
-  $(".tscroll")!.scrollTop = 0;
-  $(".tclose")!.focus({ preventScroll: true });
+  $(".p")!.scrollTop = 0;
+  $(".p-x")!.focus({ preventScroll: true });
 }
 
 async function poll() {
@@ -143,8 +155,8 @@ root.addEventListener("click", (e) => {
   const pr = target.closest<HTMLElement>("[data-open]");
   if (pr) {
     const col = (pr.dataset.col as Column | undefined) ?? null;
-    // Clicking the selected strip's node or title again deselects it; its lamps still select.
-    if (!col && tray?.url === pr.dataset.open) return closeTray();
+    // Clicking the selected node's number or title again deselects it; its dots still select.
+    if (!col && tray?.id === pr.dataset.open) return closeTray();
     return openTray(pr.dataset.open!, col);
   }
   if (target.closest("[data-legend]")) {
@@ -153,21 +165,19 @@ root.addEventListener("click", (e) => {
   }
   const el = target.closest<HTMLElement>("[data-toggle]");
   if (!el) return;
-  const id = el.dataset.toggle!;
-  if (!toggled.delete(id)) toggled.add(id);
-  draw();
+  toggle(el.dataset.toggle!);
 });
 
-// ↑ ↓ step through the visible PRs; `h` toggles the legend; Esc deselects the PR or closes the
+// ↑ ↓ step through the visible PRs and Branches; `h` toggles the legend; Esc deselects the PR or closes the
 // Session panel, else closes the legend. Listening on the document means the page needs no focus first.
 document.addEventListener("keydown", (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-    const url = stepPr(sessionViews(sessions, prs, branches), toggled, tray?.url ?? null, e.key === "ArrowDown" ? 1 : -1);
-    if (!url) return;
+    const id = stepPr(sessionViews(sessions, prs, branches), toggled, tray?.id ?? null, e.key === "ArrowDown" ? 1 : -1);
+    if (!id) return;
     e.preventDefault();
-    openTray(url, null);
-    $(".strip.sel")?.scrollIntoView({ block: "nearest" });
+    openTray(id, null);
+    $(".n7.tuned")?.scrollIntoView({ block: "nearest" });
     return;
   }
   if (e.repeat) return;

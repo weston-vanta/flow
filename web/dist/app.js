@@ -51,28 +51,28 @@
     return done(g, "feedback") ?? { lamp: "fine", tip: "feedback: none open" };
   }
   function reviewLight(g) {
-    const light2 = (lamp2, tip, count = null) => ({ lamp: lamp2, tip, count });
+    const light = (lamp, tip, count = null) => ({ lamp, tip, count });
     const closed = done(g, "review");
     if (closed) return { ...closed, count: null };
     if (g.reviewDecision === "CHANGES_REQUESTED" || g.reviews.some((r) => r.state === "CHANGES_REQUESTED")) {
-      return light2("act", "review: changes requested");
+      return light("act", "review: changes requested");
     }
     const names = g.reviewRequests.map((r) => "login" in r ? r.login : r.team);
-    if (names.length) return light2("fine", `review needed: ${names.join(", ")}`, names.length);
-    if (g.reviewDecision === "REVIEW_REQUIRED") return light2("act", "review: no reviewers requested");
-    return light2("fine", g.reviewDecision === "APPROVED" ? "review: approved" : "review: none required");
+    if (names.length) return light("fine", `review needed: ${names.join(", ")}`, names.length);
+    if (g.reviewDecision === "REVIEW_REQUIRED") return light("act", "review: no reviewers requested");
+    return light("fine", g.reviewDecision === "APPROVED" ? "review: approved" : "review: none required");
   }
   var SQUARE = { "to do": "todo", "in progress": "progress", "in review": "review", done: "done" };
   function jiraView(j) {
     if (!j) return null;
-    const { key: key2, url } = j;
-    if (j.found == null) return { key: key2, url, state: "not fetched", square: "todo", status: null, tip: "not fetched yet" };
-    if (!j.found) return { key: key2, url: null, state: "not found", square: null, status: null, tip: "not found in Jira" };
+    const { key, url } = j;
+    if (j.found == null) return { key, url, state: "not fetched", square: "todo", status: null, tip: "not fetched yet" };
+    if (!j.found) return { key, url: null, state: "not found", square: null, status: null, tip: "not found in Jira" };
     const state = j.category === "done" ? "done" : j.category === "indeterminate" ? /review/i.test(j.status ?? "") ? "in review" : "in progress" : "to do";
     const status = j.status ?? state;
-    return { key: key2, url, state, square: SQUARE[state], status, tip: `${key2} \xB7 ${status} \xB7 open in Jira` };
+    return { key, url, state, square: SQUARE[state], status, tip: `${key} \xB7 ${status} \xB7 open in Jira` };
   }
-  function prView(g, pos, below = null, now = Date.now(), jira2 = null) {
+  function prView(g, pos, below = null, now = Date.now(), jira = null) {
     const base = baseLight(g, below, now);
     const ci = ciLight(g);
     const feedback = feedbackLight(g);
@@ -90,17 +90,15 @@
       node: g.state === "MERGED" ? "merged" : g.state === "CLOSED" ? "closed" : q ? "queued" : ready ? "ready" : "open",
       draft: g.isDraft,
       queue: q && {
-        label: `${q.position}/${q.size}`,
-        text: `in merge queue \xB7 ${q.position} of ${q.size}`,
-        at: q.size > 1 ? Math.min(Math.max((q.position - 1) / (q.size - 1), 0), 1) : 0
+        text: `merge queue \xB7 ${q.position} of ${q.size}`,
+        fill: q.size > 1 ? Math.min(Math.max((q.size - q.position) / (q.size - 1), 0), 1) : 1
       },
       base,
       ci,
       feedback,
       review,
-      attention: open && (ready || lamps.some((l) => l.lamp === "act")),
       tray: trayView(g, below, now),
-      jira: jiraView(jira2)
+      jira: jiraView(jira)
     };
   }
   function section(items2, fine) {
@@ -196,7 +194,7 @@
         const below = stack.find((o) => o.headRefName === g.baseRefName)?.number ?? null;
         return prView(g, stack.length > 1 ? i + 1 : null, below, now, jiras.get(g.url) ?? null);
       });
-      const on = (key2) => raw.filter((st) => base(st[0]) === key2).map(view);
+      const on = (key) => raw.filter((st) => base(st[0]) === key).map(view);
       const own = loose.filter((b) => b.owner === s.id);
       const feature = new Set(raw.filter((st) => st.length === 1 && !named.has(base(st[0])) && on(head(st[0])).length).map((st) => head(st[0])));
       const fbranches = /* @__PURE__ */ new Set([...feature, ...own.map((b) => b.key)]);
@@ -206,7 +204,7 @@
           if (feature.has(head(st[0]))) return [{ kind: "feature", head: view(st)[0], stacks: on(head(st[0])) }];
           return [{ kind: "stack", head: null, stacks: [view(st)] }];
         }),
-        ...own.map((b) => ({ kind: "branch", head: { name: b.branch, jira: jiraView(b.jira) }, stacks: on(b.key) }))
+        ...own.map((b) => ({ kind: "branch", head: { key: b.key, repo: b.repo, name: b.branch, jira: jiraView(b.jira) }, stacks: on(b.key) }))
       ];
       const state = s.status?.state ?? null;
       const cwd = s.origin?.cwd;
@@ -233,20 +231,36 @@
     if (h < 24) return `${h} h`;
     return `${Math.floor(h / 24)} d`;
   }
-  function attentionLight(v) {
-    const n = v.prs.length;
-    const prs2 = n ? `${n} pull request${n === 1 ? "" : "s"}` : "No pull requests";
-    if (v.status.state === "waiting") return { lamp: "act", tip: `${prs2}: waiting for you` };
-    if (v.prs.some((p) => p.attention)) return { lamp: "act", tip: `${prs2}: something needs action` };
-    return { lamp: "fine", tip: `${prs2}: nothing needs action` };
-  }
   function isFolded(v, toggled2) {
     return (v.status.state === "done" || !v.prs.length) !== toggled2.has(v.id);
   }
-  function stepPr(views, toggled2, url, dir) {
-    const order = views.filter((v) => !isFolded(v, toggled2)).flatMap((v) => v.prs.map((p) => p.url));
+  var stageOf = (p) => !p ? "open" : p.node === "ready" ? "ready" : p.node === "open" ? "open" : "merge";
+  function lanes(v) {
+    const rows = [];
+    const edges = [];
+    const pr = (p, feature, child) => rows.push({ id: p.url, stage: stageOf(p), feature, child, pr: p, branch: null }) - 1;
+    const stack = (s, child) => s.forEach((p, j) => {
+      const i = pr(p, false, child);
+      if (j) edges.push({ from: i - 1, to: i, kind: "stack" });
+    });
+    for (const g of v.groups) {
+      if (g.kind === "stack") {
+        stack(g.stacks[0], false);
+        continue;
+      }
+      const feature = g.stacks.length > 0;
+      const head = g.kind === "feature" ? pr(g.head, feature, false) : rows.push({ id: g.head.key, stage: "open", feature, child: false, pr: null, branch: g.head }) - 1;
+      for (const s of g.stacks) {
+        edges.push({ from: head, to: rows.length, kind: "feat" });
+        stack(s, true);
+      }
+    }
+    return { rows, edges };
+  }
+  function stepPr(views, toggled2, id, dir) {
+    const order = views.filter((v) => !isFolded(v, toggled2)).flatMap((v) => lanes(v).rows.map((r) => r.id));
     if (!order.length) return null;
-    const i = url == null ? -1 : order.indexOf(url);
+    const i = id == null ? -1 : order.indexOf(id);
     if (i < 0) return order[dir > 0 ? 0 : order.length - 1];
     return order[(i + dir + order.length) % order.length];
   }
@@ -296,207 +310,199 @@
   function esc(s) {
     return String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
   }
-  var lamp = (l) => `<span class="lamp ${l.lamp}" aria-hidden="true"></span>`;
-  var light = (l) => "count" in l && l.count != null ? `<span class="count" aria-hidden="true">${l.count}</span>` : lamp(l);
   var COLUMNS = [
     ["base", "base"],
     ["ci", "CI"],
     ["feedback", "feedback"],
     ["review", "review"]
   ];
+  var STAGES = [
+    ["open", "Open"],
+    ["ready", "Ready"],
+    ["merge", "Merge"]
+  ];
+  var sig = (l) => "count" in l && l.count != null ? "count" : l.lamp === "fine" ? "ok" : l.lamp === "off" ? "none" : l.lamp;
   var NODE_WORD = { merged: "merged", closed: "closed", queued: "in merge queue", ready: "mergeable" };
-  var gauge = (q) => `<span class="gauge" style="--at:${q.at}" aria-hidden="true"><span class="ahead"></span><span class="mark"></span></span>`;
-  var nodeClass = (p) => p.node === "open" && p.draft ? "open draft" : p.node;
   var nodeWord = (p) => p.node === "open" ? p.draft ? "draft" : "not yet mergeable" : NODE_WORD[p.node];
-  var nodeCell = (j, n, node) => `<span class="ncell">${j > 0 ? '<span class="up"></span>' : ""}${j < n - 1 ? '<span class="down"></span>' : ""}${node}</span>`;
-  var led = (p, col, label) => {
+  var badge = (p, text) => `<span class="bd ${p.node}${p.draft && p.node === "open" ? " draft" : ""}"${p.queue ? ` style="--fill:${p.queue.fill.toFixed(3)}"` : ""}>${esc(text)}</span>`;
+  var PITCH = 36;
+  var NODE = 28;
+  var PAD = 12;
+  var NARROW = 96;
+  var COL = { open: 0, ready: 1, merge: 2 };
+  var xl = (c) => c === 0 ? "0px" : `(100% - ${(3 - c) * NARROW}px)`;
+  var indent = (r) => r.child ? COL[r.stage] === 0 ? 24 : 16 : 0;
+  var top = (i) => PAD + i * PITCH;
+  function edge(e, rows) {
+    const a = rows[e.from];
+    const b = rows[e.to];
+    const [ca, cb, ia, ib] = [COL[a.stage], COL[b.stage], indent(a), indent(b)];
+    const y = top(e.from) + NODE;
+    const h = top(e.to) + NODE / 2 - y;
+    const cls = `edge e-${e.kind}`;
+    if (ca === cb && ia === ib) {
+      return `<i class="${cls} e-v" style="left:calc(${xl(ca)} + ${20 + ia}px);top:${y}px;height:${top(e.to) - y}px"></i>`;
+    }
+    if (cb < ca) {
+      return `<i class="${cls} e-l" style="left:calc(${xl(cb + 1)} - 6px);width:calc(${xl(ca)} - ${xl(cb + 1)} + ${26 + ia}px);top:${y}px;height:${h}px"></i>`;
+    }
+    return `<i class="${cls} e-r" style="left:calc(${xl(ca)} + ${20 + ia}px);width:calc(${xl(cb)} - ${xl(ca)} + ${ib - ia - 14}px);top:${y}px;height:${h}px"></i>`;
+  }
+  var dot = (p, col, label) => {
     const l = p[col];
-    return `<button type="button" class="led" data-open="${esc(p.url)}" data-col="${col}" title="${esc(l.tip)}" aria-label="${esc(`${l.tip}. Show ${label} details for #${p.number}`)}">${light(l)}</button>`;
+    return `<button type="button" class="t-${sig(l)}" data-open="${esc(p.url)}" data-col="${col}" title="${esc(l.tip)}" aria-label="${esc(`${l.tip}. Show ${label} details for #${p.number}`)}"></button>`;
   };
-  var square = (j) => j.square ? `<span class="jsq ${j.square}" aria-hidden="true"></span>` : "";
-  function jira(j, cls, status = false) {
-    const inner = `${square(j)}<span class="mono">${esc(j.key)}</span>${status && j.status ? `<span>${esc(j.status)}</span>` : ""}`;
-    return j.url ? `<a class="${cls}" href="${esc(j.url)}" target="_blank" rel="noreferrer" title="${esc(j.tip)}" aria-label="${esc(`${j.key}: ${j.tip}`)}">${inner}</a>` : `<span class="${cls} missing" title="${esc(j.tip)}">${inner}</span>`;
-  }
-  var jiraCell = (j) => `<span class="jcell">${j ? jira(j, "jira") : ""}</span>`;
-  function strip(p, j, n, selected, feature = false) {
-    const word = feature ? `feature branch \xB7 ${nodeWord(p)}` : nodeWord(p);
-    return `<div class="strip pr${selected ? " sel" : ""}">
-    <span class="needle" aria-hidden="true"></span>
-    <button type="button" class="pick" data-open="${esc(p.url)}" title="${esc(`#${p.number} ${p.title} \xB7 ${word}`)}" aria-label="${esc(`Tune in #${p.number}, ${p.title}, ${word}`)}" aria-pressed="${selected}">
-      ${nodeCell(j, n, `<span class="node ${nodeClass(p)}">${feature ? "F" : p.pos ?? ""}</span>`)}
-      <span class="tline"><span class="title ${p.node}">${esc(p.title)}</span>${p.queue ? `<span class="queue" title="${esc(p.queue.text)}">${gauge(p.queue)}<span class="mono">${p.queue.label}</span></span>` : ""}</span>
-    </button>
-    ${jiraCell(p.jira)}
-    ${COLUMNS.map(([col, label]) => led(p, col, label)).join("")}
-  </div>`;
-  }
-  var branchPlate = ({ name, jira: jira2 }, feature = false) => `<div class="plate branch" role="group" aria-label="${feature ? "Feature branch" : "Branch"} ${esc(name)}, no pull request yet">
-    <div class="strip" title="${esc(name)} \xB7 ${feature ? "feature branch, " : ""}no pull request yet">
-      <span class="pick">${nodeCell(0, feature ? 2 : 1, `<span class="node branch">${feature ? "F" : ""}</span>`)}<span class="title mono">${esc(name)}</span></span>
-      ${jiraCell(jira2)}
-      ${'<span class="led"></span>'.repeat(COLUMNS.length)}
-    </div>
-  </div>`;
-  var plate = (stack, url) => `<div class="plate" role="group" aria-label="${stack.length === 1 ? "Pull request" : `Stack of ${stack.length} pull requests`}">${stack.map((p, j) => strip(p, j, stack.length, p.url === url)).join("")}</div>`;
-  function group(g, url) {
-    if (g.kind === "stack") return plate(g.stacks[0], url);
-    if (g.kind === "branch" && !g.stacks.length) return branchPlate(g.head);
-    const n = g.stacks.length;
-    const head = g.kind === "branch" ? branchPlate(g.head, true) : `<div class="plate" role="group" aria-label="Feature PR">${strip(g.head, 0, 2, g.head.url === url, true)}</div>`;
-    const name = g.kind === "branch" ? g.head.name : `#${g.head.number}`;
-    return `<div class="fgroup" role="group" aria-label="${esc(`Feature branch ${name} with ${n} ${n === 1 ? "stack" : "stacks"}`)}">${head}<div class="fstacks">${g.stacks.map((s) => `<div class="fstack">${plate(s, url)}</div>`).join("")}</div></div>`;
+  function node(r, i, sel) {
+    const c = COL[r.stage];
+    const full = c === 0;
+    const tuned = r.id === sel ? " tuned" : "";
+    const style = `grid-row:${i + 1};grid-column:${c + 1};margin-left:${6 + indent(r)}px`;
+    if (r.branch) {
+      const b = r.branch;
+      const tip2 = `${b.name} \xB7 ${r.feature ? "feature branch, " : ""}no pull request yet${b.jira ? ` \xB7 ${b.jira.key}` : ""}`;
+      return `<div class="n7 local${r.feature ? " feat" : ""}${tuned}" style="${style}" title="${esc(tip2)}">
+      <span class="bd">${r.feature ? "F" : ""}</span>
+      <button type="button" class="tl" data-open="${esc(r.id)}" aria-label="${esc(`Select branch ${b.name}, no pull request yet`)}">${esc(b.name)}</button>
+    </div>`;
+    }
+    const p = r.pr;
+    const word = r.feature ? `feature branch \xB7 ${nodeWord(p)}` : nodeWord(p);
+    const aria = `Select #${p.number}, ${p.title}, ${word}`;
+    const tip = `#${p.number} ${p.title} \xB7 ${word}${p.queue ? ` \xB7 ${p.queue.text}` : ""}`;
+    const st = p.node === "closed" ? "merged" : p.node;
+    return `<div class="n7 st-${st}${r.feature ? " feat" : ""}${full ? "" : " compact"}${tuned}" style="${style}" title="${esc(tip)}">
+      ${badge(p, r.feature ? "F" : String(p.pos ?? ""))}
+      <button type="button" class="nm mono" data-open="${esc(p.url)}" aria-label="${esc(aria)}">${p.number}</button>${full ? `<button type="button" class="tl" data-open="${esc(p.url)}" tabindex="-1">${esc(p.title)}</button><span class="dots">${COLUMNS.map(([col, label]) => dot(p, col, label)).join("")}</span>` : ""}
+    </div>`;
   }
   var ext = (url, cls, title, text) => `<a class="${cls}" href="${esc(url)}" target="_blank" rel="noreferrer" title="${esc(title)}">${esc(text)}</a>`;
   function items(p, col, expanded) {
     const t = p.tray;
-    if (col === "base") return t.base.items.map((s) => `<span>${esc(s)}</span>`).join("");
+    if (col === "base") return t.base.items.map((s) => `<div class="p-item">${esc(s)}</div>`).join("");
     if (col === "ci") {
-      return t.ci.items.map((c) => c.url ? ext(c.url, "item mono", "Open job", c.name) : `<span class="item mono">${esc(c.name)}</span>`).join("");
+      return t.ci.items.map((c) => `<div class="p-item">${c.url ? ext(c.url, "p-mono", "Open job", c.name) : `<span class="p-mono">${esc(c.name)}</span>`}</div>`).join("");
     }
     if (col === "feedback") {
       return t.feedback.items.map((th) => {
         const open = expanded.has(th.url);
-        return `<article>
-        <div class="tby"><b>${esc(th.author)}</b>${ext(th.url, "item mono", `Open comment: ${th.where}`, th.where)}<span title="${esc(th.at)}">${esc(th.ago)}</span></div>
-        <p${th.long && !open ? ' class="clamp"' : ""}>${esc(th.body)}</p>
-        ${th.long ? `<button type="button" class="plain" data-thread="${esc(th.url)}" aria-expanded="${open}">${open ? "show less" : "show all"}</button>` : ""}
+        return `<article class="p-thread">
+        <div class="p-th-h"><b>${esc(th.author)}</b>${ext(th.url, "p-mono p-host", `Open comment: ${th.where}`, th.where)}<span class="p-host p-ago" title="${esc(th.at)}">${esc(th.ago)}</span></div>
+        <p class="p-body${th.long && !open ? " clamp" : ""}">${esc(th.body)}</p>
+        ${th.long ? `<button type="button" class="p-more" data-thread="${esc(th.url)}" aria-expanded="${open}">${open ? "show less" : "show all"}</button>` : ""}
       </article>`;
       }).join("");
     }
-    return t.review.items.map((r) => `<div class="rv">
-      <span class="${r.team ? "who mono" : "who"}">${esc(r.name)}</span>
-      ${r.codeOwner ? '<span class="co" title="Requested as code owner">code owner</span>' : ""}
-      ${r.teams.length ? `<span class="for mono" title="Reviewed for ${esc(r.teams.join(", "))}">${esc(r.teams.join(", "))}</span>` : ""}
-      <span class="state${r.state === "changes requested" ? " act" : ""}">${r.state}</span>
+    return t.review.items.map((r) => `<div class="p-item">
+      <span><span class="${r.team ? "p-mono" : ""}">${esc(r.name)}</span>${r.codeOwner ? ' <span class="p-host" title="Requested as code owner">code owner</span>' : ""}${r.teams.length ? ` <span class="p-host p-mono" title="Reviewed for ${esc(r.teams.join(", "))}">${esc(r.teams.join(", "))}</span>` : ""}</span>
+      <span class="p-rw${r.state === "changes requested" ? " p-rw-act" : ""}">${r.state}</span>
     </div>`).join("");
   }
-  var CLOSE = `<button type="button" class="tclose" data-close aria-label="Close details"><svg width="10" height="10" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"></path></svg></button>`;
-  function tray(p, t) {
-    const word = nodeWord(p);
+  var CLOSE = (label) => `<button type="button" class="p-x" data-close aria-label="${label}"><svg width="10" height="10" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"></path></svg></button>`;
+  function jiraLine(j) {
+    const text = `<span class="p-mono">${esc(j.key)}</span>${j.status ? ` \xB7 ${esc(j.status)}` : ` \xB7 ${esc(j.state)}`}`;
+    return `<div class="p-line p-dim">${j.url ? `<a href="${esc(j.url)}" target="_blank" rel="noreferrer" title="${esc(j.tip)}">${text}</a>` : `<span title="${esc(j.tip)}">${text}</span>`}</div>`;
+  }
+  function prPanel(p, t) {
     const sections = COLUMNS.map(([col, label]) => {
       const s = p.tray[col];
       const l = p[col];
-      return `<section class="tsec${t.focus === col ? " focus" : ""}" data-sec="${col}" aria-label="${label}">
-      <span class="tlamp" title="${esc(l.tip)}">${light(l)}</span>
-      <div class="thd"><h3>${label}</h3>${s.fine != null ? `<span class="${l.lamp === "act" ? "act" : ""}">${esc(s.fine)}</span>` : ""}</div>
-      ${s.items ? `<div class="titems ${col}">${items(p, col, t.expanded)}</div>` : ""}
+      const led = "count" in l && l.count != null ? String(l.count) : "";
+      return `<section class="p-sec" data-sec="${col}" aria-label="${label}">
+      <div class="p-sech"><span class="p-led t-${sig(l)}" title="${esc(l.tip)}">${led}</span><span class="p-key">${label}</span>${s.fine != null ? `<span class="p-fine${l.lamp === "act" ? " act" : ""}">${esc(s.fine)}</span>` : ""}</div>
+      ${s.items ? `<div class="p-items">${items(p, col, t.expanded)}</div>` : ""}
     </section>`;
     }).join("");
-    return `<header class="whead">
-      <div class="wline">
-        <span class="node ${nodeClass(p)}" title="${esc(word)}" aria-hidden="true"></span>
-        ${ext(p.url, "num mono", `Open #${p.number} on GitHub`, `#${p.number}`)}
-        <span>${word}</span>
-        <span class="wsize mono">${esc(p.sizeTip)}</span>
-        ${CLOSE}
-      </div>
-      <h2>${esc(p.title)}</h2>
-      ${p.jira ? jira(p.jira, "wjira", true) : ""}
-      ${p.queue ? `<div class="wqueue">${gauge(p.queue)}<span>${esc(p.queue.text)}</span></div>` : ""}
-    </header>${sections}`;
+    return `<div class="p-head">${ext(p.url, "p-mono p-num", `Open #${p.number} on GitHub`, `#${p.number}`)}${p.draft && p.node === "open" ? '<span class="p-draft">draft</span>' : ""}<span class="p-meta p-mono">${esc(p.sizeTip)}</span>${CLOSE("Close details")}</div>
+    <h2 class="p-title">${esc(p.title)}</h2>
+    ${p.jira ? jiraLine(p.jira) : ""}
+    ${p.queue ? `<div class="p-line p-dim">${esc(p.queue.text)}</div>` : ""}
+    ${sections}`;
   }
-  var EMPTY = `<header class="whead">
-    <div class="wline"><span class="node none" aria-hidden="true"></span><span>no pull request tuned in</span></div>
-    <span class="whint">Select a strip or a session title, or press \u2191 \u2193</span>
-  </header>${COLUMNS.map(([, label]) => `<div class="tsec idle"><span class="tlamp"><span class="lamp unlit" aria-hidden="true"></span></span><span class="thd">${label}</span></div>`).join("")}`;
+  var branchPanel = (b, feature) => `<div class="p-head"><span class="lb lb-l" aria-hidden="true">${feature ? "F" : ""}</span><span>${feature ? "feature branch" : "local branch"}</span><span class="p-meta p-mono">${esc(b.repo)}</span>${CLOSE("Close details")}</div>
+    <h2 class="p-title p-mono-title">${esc(b.name)}</h2>
+    ${b.jira ? jiraLine(b.jira) : ""}
+    <div class="p-sub">no pull request yet</div>`;
+  var EMPTY = `<div class="p-empty"><div class="p-empty-t">Nothing selected</div><div class="p-empty-s">Select a PR or a session, or press \u2191 \u2193</div></div>`;
+  var statusFor = (v) => `<span class="st">${esc(v.status.state ?? "unknown")}</span>${v.status.since ? ` ${esc(age(v.status.since))}` : ""}`;
   var statusTip = (v) => v.status.since ? `${v.status.tip}, ${age(v.status.since)}` : v.status.tip;
-  var key = (v, folded) => `<button type="button" class="skey${folded ? " up" : ""}" data-toggle="${esc(v.id)}" aria-expanded="${!folded}" title="${esc(statusTip(v))}" aria-label="${folded ? "Expand" : "Collapse"} session: ${esc(v.title)} (${esc(statusTip(v))})"><span>${lamp(v.status)}</span></button>`;
-  var DOT = '<span class="dot" aria-hidden="true">\xB7</span>';
-  function meta(v) {
-    const since = v.status.since ? ` ${age(v.status.since)}` : "";
-    return `<span class="smeta"><span>${esc(v.cde ?? "unknown CDE")}</span>${v.repo ? `${DOT}<span class="repo mono" title="${esc(v.repo)}">${esc(v.repo)}</span>` : ""}${DOT}<span title="${esc(statusTip(v))}"><span class="${v.status.lamp}">${esc(v.status.state ?? "unknown")}</span>${since}</span></span>`;
-  }
-  var statusWord = (v) => `<span class="${v.status.lamp === "act" ? "act" : ""}">${esc(v.status.tip)}</span>${v.status.since ? ` ${esc(age(v.status.since))}` : ""}`;
-  function panelHtml({ session: v, counts, task }) {
+  function sessionPanel2({ session: v, counts, task }) {
     const activity = v.activity?.replace(/\s+/g, " ");
-    const resources = task?.resources.length ? `<div class="pres">${task.resources.map((r) => {
-      const cls = `rlabel${r.mono ? " mono" : ""}`;
+    const resources = task ? task.resources.map((r) => {
+      const cls = r.mono ? "p-mono" : "";
       const label = r.link ? `<a class="${cls}" href="${esc(r.url)}" target="_blank" rel="noreferrer" title="${esc(r.url)}">${esc(r.label)}</a>` : `<span class="${cls}" title="${esc(r.url)}">${esc(r.label)}</span>`;
-      return `<div class="rrow">${label}${r.host ? `<span class="rhost mono">${esc(r.host)}</span>` : ""}</div>`;
-    }).join("")}</div>` : "";
-    const others = task?.others.length ? `<div class="pothers"><span class="plabel">also on this task</span>${task.others.map((o) => `<button type="button" class="psess" data-goto="${esc(o.id)}" title="Show this session">
-          ${lamp(o.status)}<span class="ptitle">${esc(o.title)}</span><span class="pstatus">${statusWord(o)}</span>
-        </button>`).join("")}</div>` : "";
-    return `<header class="whead">
-      <div class="wline">
-        <span class="wkey" title="${esc(statusTip(v))}">${lamp(v.status)}</span>
-        <span>${statusWord(v)}</span>
-        <span class="wsize">${esc(counts)}</span>
-        ${CLOSE.replace("Close details", "Close session")}
-      </div>
-      <h2>${esc(v.title)}</h2>
-      ${activity ? `<span class="wactivity" title="${esc(v.activity)}">${esc(activity)}</span>` : ""}
-      <span class="wmeta">${esc(v.cde ?? "unknown CDE")}${v.repo ? `${DOT}<span class="mono">${esc(v.repo)}</span>` : ""}</span>
-    </header>
-    <section class="psec" aria-label="task">
-      <div class="thd"><h3>task</h3><span>${task ? esc(task.counts) : "not part of a task"}</span></div>
-      ${resources}${others}
+      return `<div class="p-item">${label}${r.host ? `<span class="p-host">${esc(r.host)}</span>` : ""}</div>`;
+    }).join("") : "";
+    const others = task?.others.length ? `<div class="p-sub">also on this task</div>${task.others.map((o) => `<button type="button" class="p-item p-btn w-${o.status.state ?? "none"}" data-goto="${esc(o.id)}" title="Show this session"><span>${esc(o.title)}</span><span class="p-host">${statusFor(o)}</span></button>`).join("")}` : "";
+    return `<div class="p-head w-${v.status.state ?? "none"}"><span title="${esc(statusTip(v))}">${statusFor(v)}</span><span class="p-meta">${esc(counts)}</span>${CLOSE("Close session")}</div>
+    <h2 class="p-title">${esc(v.title)}</h2>
+    ${activity ? `<div class="p-line" title="${esc(v.activity)}">${esc(activity)}</div>` : ""}
+    <div class="p-line p-dim">${esc(v.cde ?? "unknown CDE")}${v.repo ? ` \xB7 <span class="p-mono">${esc(v.repo)}</span>` : ""}</div>
+    <section class="p-sec" aria-label="task">
+      <div class="p-sech"><span class="p-key">task</span>${task ? "" : '<span class="p-fine">not part of a task</span>'}</div>
+      ${task ? `<div class="p-list">${resources}${others}</div>` : ""}
     </section>`;
   }
-  function channel(v, toggled2, url, open) {
-    const h2 = `<h2><button type="button" class="stitle" data-session="${esc(v.id)}" aria-pressed="${open}" aria-label="${esc(`${open ? "Close" : "Show"} session details: ${v.title}`)}" title="${esc(v.title)}">${esc(v.title)}</button></h2>`;
-    const cls = `chan${open ? " open" : ""}`;
-    const needle = '<span class="needle" aria-hidden="true"></span>';
-    if (isFolded(v, toggled2)) {
-      const a = attentionLight(v);
-      return `<section class="${cls} folded" data-chan="${esc(v.id)}" data-toggle="${esc(v.id)}" aria-label="${esc(v.title)}">
-      <div class="chead">${needle}${key(v, true)}<div class="ctext"><div class="cline">${h2}<span class="attn" title="${esc(a.tip)}" aria-label="${esc(a.tip)}">${lamp(a)}</span></div></div></div>
-    </section>`;
-    }
+  var rail = (v, folded) => `<button type="button" class="trail" data-toggle="${esc(v.id)}" aria-expanded="${!folded}" title="${esc(statusTip(v))}" aria-label="${folded ? "Expand" : "Collapse"} session: ${esc(v.title)} (${esc(statusTip(v))})"></button>`;
+  function lane(v, toggled2, sel, open) {
+    const folded = isFolded(v, toggled2);
+    const { rows, edges } = lanes(v);
     const activity = v.activity?.replace(/\s+/g, " ");
-    const body = v.groups.length ? `<div class="plates">${v.groups.map((g) => group(g, url)).join("")}</div>` : '<div class="noprs">no pull requests yet</div>';
-    return `<section class="${cls}" data-chan="${esc(v.id)}" aria-label="${esc(v.title)}">
-      <div class="chead">${needle}${key(v, false)}<div class="ctext">
-        <div class="cline">${h2}</div>
-        ${activity ? `<span class="activity" title="${esc(v.activity)}">${esc(activity)}</span>` : ""}
-        ${meta(v)}
-      </div></div>
-      ${body}
-    </section>`;
+    const head = `<div class="lh">
+      <div class="lht"><button type="button" class="tt${v.untitled ? " untitled" : ""}" data-session="${esc(v.id)}" aria-pressed="${open}" aria-label="${esc(`${open ? "Close" : "Show"} session details: ${v.title}`)}" title="${esc(v.title)}">${esc(v.title)}</button>${rail(v, folded)}</div>
+      ${!folded && activity ? `<div class="lm" title="${esc(v.activity)}">${esc(activity)}</div>` : ""}
+      <div class="lm2"><span title="${esc(statusTip(v))}">${statusFor(v)}</span><span>\xB7</span><span>${esc(v.cde ?? "unknown CDE")}</span>${v.repo ? `<span>\xB7</span><span class="mono" title="${esc(v.repo)}">${esc(v.repo)}</span>` : ""}</div>
+    </div>`;
+    const cls = `g lane w-${v.status.state ?? "none"}${folded ? " folded" : ""}${open ? " sel" : ""}`;
+    let body;
+    if (folded) {
+      body = STAGES.map(([st], c) => {
+        const n = rows.filter((r) => r.stage === st).length;
+        return `<div class="fc" style="grid-column:${c + 2}">${n ? `<span class="cnt mono">${n}</span>` : ""}</div>`;
+      }).join("");
+    } else if (rows.length) {
+      body = `<div class="area" style="grid-template-rows:repeat(${rows.length},${NODE}px);row-gap:${PITCH - NODE}px;padding:${PAD}px 0">${edges.map((e) => edge(e, rows)).join("")}${rows.map((r, i) => node(r, i, sel)).join("")}</div>`;
+    } else {
+      body = '<div class="area none">no pull requests yet</div>';
+    }
+    return `<section class="${cls}" data-chan="${esc(v.id)}" aria-label="${esc(v.title)}">${head}${body}</section>`;
   }
-  var WORDMARK = `<svg class="brand" width="45.45" height="24" viewBox="0 0 60.6 32" role="img" aria-label="flow"><defs><clipPath id="wx0"><rect x="0" y="12.2" width="60.6" height="15.0"/></clipPath></defs><g fill="none" stroke="#2A2927" stroke-width="3.2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="10"><path d="M8.6 27.2 V11.4 C8.6 8.1 10.5 6.3 13.7 6.3 H16.2"/><path d="M20.4 4.7 V27.2"/><ellipse cx="31.1" cy="19.75" rx="5.45" ry="6.05"/><path clip-path="url(#wx0)" d="M39.4 8 L44.3 29 L49 10 L53.7 29 L58.6 8"/></g><rect x="3.8" y="12.2" width="10.4" height="3.2" fill="#BF1B1B"/></svg>`;
-  var LEGEND = `<div class="legend" role="note" aria-label="Legend">
-    <div><span class="lh">lights</span>
-      <span class="li act"><span class="lamp act"></span>needs action</span>
-      <span class="li"><span class="lamp run still"></span>in progress</span>
-      <span class="li"><span class="lamp fine"></span>fine</span>
-      <span class="li"><span class="count">2</span>pending reviews</span>
+  var WORDMARK = `<svg class="brand" width="45.45" height="24" viewBox="0 0 60.6 32" role="img" aria-label="flow"><defs><clipPath id="wx0"><rect x="0" y="12.2" width="60.6" height="15.0"/></clipPath></defs><g fill="none" stroke="#111110" stroke-width="3.2" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="10"><path d="M8.6 27.2 V11.4 C8.6 8.1 10.5 6.3 13.7 6.3 H16.2"/><path d="M20.4 4.7 V27.2"/><ellipse cx="31.1" cy="19.75" rx="5.45" ry="6.05"/><path clip-path="url(#wx0)" d="M39.4 8 L44.3 29 L49 10 L53.7 29 L58.6 8"/></g><rect x="3.8" y="12.2" width="10.4" height="3.2" fill="#BF1B1B"/></svg>`;
+  var LEGEND = `<div class="lg" role="note" aria-label="Legend">
+    <div class="lg-col"><span class="lg-h">Sessions</span>
+      <span><i class="lr lr-w"></i>waiting for you</span><span><i class="lr lr-r"></i>running</span><span><i class="lr"></i>idle</span><span><i class="lr lr-d"></i>done</span><span><i class="lr lr-f"></i>folded: click the rail</span>
     </div>
-    <div><span class="lh">pull requests</span>
-      <span class="li"><span class="node key open"></span>open</span>
-      <span class="li"><span class="node key ready"></span>mergeable</span>
-      <span class="li"><span class="node key queued"></span>in merge queue</span>
-      <span class="li"><span class="node key merged"></span>merged</span>
-      <span class="li"><span class="node key branch"></span>draft, or branch with no PR</span>
-      <span class="li"><span class="node key open">F</span>feature branch</span>
+    <div class="lg-col"><span class="lg-h">Signals</span><span class="lg-sub">base \xB7 CI \xB7 feedback \xB7 review</span>
+      <span><i class="ld t-act"></i>needs you</span><span><i class="ld t-run"></i>running</span><span><i class="ld t-count"></i>review requested</span><span><i class="ld t-ok"></i>fine</span>
     </div>
-    <div><span class="lh">jira status</span>
-      <span class="li"><span class="jsq todo"></span>to do</span>
-      <span class="li"><span class="jsq progress"></span>in progress</span>
-      <span class="li"><span class="jsq review"></span>in review</span>
-      <span class="li"><span class="jsq done"></span>done</span>
+    <div class="lg-col"><span class="lg-h">Pull requests</span>
+      <span><i class="lb"></i>open</span><span><i class="lb">2</i>position in a stack</span><span><i class="lb lb-f">F</i>feature branch</span><span><i class="lb lb-d"></i>draft</span><span><i class="lb lb-m"></i>mergeable</span><span><i class="lb lb-q"></i>in merge queue</span><span><i class="lb lb-x"></i>merged or closed</span><span><i class="lb lb-l"></i>local branch, no PR</span>
+    </div>
+    <div class="lg-col"><span class="lg-h">Lines</span>
+      <span><i class="ll"></i>stacked on the PR above</span><span><i class="ll ll-f"></i>based on a feature branch</span>
+      <span class="lg-h lg-gap">Columns</span><span class="lg-txt">Open includes local branches. Ready = mergeable. Merge = queued, merged or closed.</span>
+      <span class="lg-h lg-gap">Keys</span><span><kbd>\u2191</kbd><kbd>\u2193</kbd>step through the board</span><span><kbd>Esc</kbd>clear selection</span>
     </div>
   </div>`;
-  function render(views, toggled2, notices, live, legend2, t, panel2 = null) {
-    const p = !panel2 && t && views.flatMap((v) => v.prs).find((x) => x.url === t.url);
+  function render(views, toggled2, notices, alarm, legend2, t, panel2 = null) {
+    const all = views.flatMap((v) => lanes(v).rows);
+    const r = !panel2 && t ? all.find((x) => x.id === t.id) : void 0;
+    const sel = r ? r.id : null;
     const open = panel2?.session.id ?? null;
-    return `<div class="face">
-    <header class="top">
-      ${WORDMARK}<span class="tagline">agent sessions and pull requests</span>
-      <div class="controls">
-        ${notices.length ? `<div class="notices" role="status">${notices.map((n) => `<span>${esc(n)}</span>`).join("")}</div>` : ""}
-        <span class="hint" aria-hidden="true"><kbd>\u2191</kbd><kbd>\u2193</kbd><span>tune</span></span>
-        <button type="button" class="hint" data-legend aria-expanded="${legend2}" aria-keyshortcuts="h"><kbd class="${legend2 ? "down" : ""}">h</kbd><span>legend</span></button>
-        <span class="power${live ? " on" : ""}" title="${live ? "flowd reachable" : "flowd unreachable"}" aria-hidden="true"></span>
-      </div>
+    const body = panel2 ? sessionPanel2(panel2) : r && t ? r.pr ? prPanel(r.pr, t) : branchPanel(r.branch, r.feature) : EMPTY;
+    const heads = STAGES.map(([st, name]) => `<div><span class="hn">${name}</span><span class="hc">${all.filter((x) => x.stage === st).length}</span></div>`).join("");
+    return `<div class="app">
+    <header class="bar">
+      ${WORDMARK}<span class="sp"></span>
+      ${notices.length ? `<div class="notices" role="status">${notices.map((n, i) => `<span${i === 0 && alarm ? ' class="alarm"' : ""}>${esc(n)}</span>`).join("")}</div>` : ""}
+      <span class="kbd" aria-hidden="true"><kbd>\u2191</kbd><kbd>\u2193</kbd> select</span>
+      <button type="button" class="kbd" data-legend aria-expanded="${legend2}" aria-keyshortcuts="h"><kbd>h</kbd> legend</button>
     </header>
-    <div class="deck">
-      <main class="rack">
-        <div class="scale" aria-hidden="true"><span></span><span></span><span></span>${COLUMNS.map(([, label]) => `<span>${label}</span>`).join("")}</div>
-        <div class="chans">${views.length ? views.map((v) => channel(v, toggled2, p ? p.url : null, v.id === open)).join("") : '<p class="empty">No Sessions.</p>'}</div>
+    <div class="wrap">
+      <main class="board">
+        <div class="g heads"><div>Session</div>${heads}</div>
+        ${views.length ? views.map((v) => lane(v, toggled2, sel, v.id === open)).join("") : '<p class="empty">No Sessions.</p>'}
       </main>
-      <aside class="window"><div class="wbody"><div class="tscroll" role="region" aria-label="${panel2 ? "Session details" : "Pull request details"}">${panel2 ? panelHtml(panel2) : p && t ? tray(p, t) : EMPTY}</div></div></aside>
+      <aside><div class="p" role="region" aria-label="${panel2 ? "Session details" : "Details"}">${body}</div></aside>
     </div>
   </div>
   ${legend2 ? LEGEND : ""}`;
@@ -513,7 +519,7 @@
   var failing = false;
   var toggled = /* @__PURE__ */ new Set();
   var legend = false;
-  var tray2 = null;
+  var tray = null;
   var panel = null;
   var root = document.getElementById("root");
   async function get(path) {
@@ -533,46 +539,55 @@
     const jiraStale = jiraDataAge(prs, branches);
     if (jiraStale != null) notices.push(`Jira data ${jiraStale} min old`);
     const views = sessionViews(sessions, prs, branches);
-    if (tray2 && !views.some((v) => v.prs.some((p) => p.url === tray2.url))) tray2 = null;
+    if (tray && !views.some((v) => lanes(v).rows.some((r) => r.id === tray.id))) tray = null;
     const pv = panel ? sessionPanel(panel, views, tasks) : null;
     if (!pv) panel = null;
-    return render(views, toggled, notices, !failing, legend, tray2, pv);
+    return render(views, toggled, notices, failing, legend, tray, pv);
   }
   var $ = (sel) => root.querySelector(sel);
   function draw() {
     const html = page();
     if (html === drawn) return;
-    const top = $(".tscroll")?.scrollTop ?? 0;
+    const board = $(".board")?.scrollTop ?? 0;
+    const p = $(".p")?.scrollTop ?? 0;
     root.innerHTML = drawn = html;
-    $(".tscroll").scrollTop = top;
+    $(".board").scrollTop = board;
+    $(".p").scrollTop = p;
   }
-  function openTray(url, col) {
+  function openTray(id, col) {
     panel = null;
-    tray2 = { url, focus: col, expanded: tray2?.expanded ?? /* @__PURE__ */ new Set() };
+    tray = { id, expanded: tray?.expanded ?? /* @__PURE__ */ new Set() };
     draw();
-    $(".tscroll").scrollTop = col ? $(`[data-sec="${col}"]`).offsetTop : 0;
-    $(".tclose").focus({ preventScroll: true });
-    if (col) {
-      setTimeout(() => {
-        if (tray2?.focus !== col) return;
-        draw();
-        tray2.focus = null;
-        $(".tsec.focus")?.classList.remove("focus");
-        drawn = page();
-      }, 1e3);
-    }
+    const p = $(".p");
+    p.scrollTop = col ? $(`[data-sec="${col}"]`).offsetTop - $(".p-head").offsetHeight : 0;
+    $(".p-x").focus({ preventScroll: true });
+  }
+  var still = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+  function toggle(id) {
+    const sel = `[data-chan="${CSS.escape(id)}"]`;
+    const h0 = $(sel)?.offsetHeight;
+    if (!toggled.delete(id)) toggled.add(id);
+    draw();
+    const el = $(sel);
+    if (!el || h0 == null || still()) return;
+    const T = { duration: 220, easing: "cubic-bezier(.2,.8,.2,1)" };
+    const folded = el.classList.contains("folded");
+    el.style.overflow = "hidden";
+    el.animate([{ height: `${h0}px` }, { height: `${el.offsetHeight}px` }], T).onfinish = () => el.style.overflow = "";
+    const leg = [{ height: "33px" }, { height: "3px" }];
+    el.querySelector(".trail")?.animate(folded ? leg : leg.reverse(), { ...T, pseudoElement: "::before" });
   }
   function closeTray() {
-    tray2 = null;
+    tray = null;
     panel = null;
     draw();
   }
   function openPanel(id) {
-    tray2 = null;
+    tray = null;
     panel = id;
     draw();
-    $(".tscroll").scrollTop = 0;
-    $(".tclose").focus({ preventScroll: true });
+    $(".p").scrollTop = 0;
+    $(".p-x").focus({ preventScroll: true });
   }
   async function poll() {
     try {
@@ -594,29 +609,29 @@
     const target = e.target;
     if (target.closest("[data-close]")) return closeTray();
     const thread = target.closest("[data-thread]");
-    if (thread && tray2) {
+    if (thread && tray) {
       const url = thread.dataset.thread;
-      if (!tray2.expanded.delete(url)) tray2.expanded.add(url);
+      if (!tray.expanded.delete(url)) tray.expanded.add(url);
       return draw();
     }
     const title = target.closest("[data-session]");
     if (title) {
-      const id2 = title.dataset.session;
-      return panel === id2 ? closeTray() : openPanel(id2);
+      const id = title.dataset.session;
+      return panel === id ? closeTray() : openPanel(id);
     }
     const goto = target.closest("[data-goto]");
     if (goto) {
-      const id2 = goto.dataset.goto;
-      const v = sessionViews(sessions, prs, branches).find((x) => x.id === id2);
-      if (v && isFolded(v, toggled) && !toggled.delete(id2)) toggled.add(id2);
-      openPanel(id2);
-      $(`[data-chan="${id2}"]`)?.scrollIntoView({ block: "nearest" });
+      const id = goto.dataset.goto;
+      const v = sessionViews(sessions, prs, branches).find((x) => x.id === id);
+      if (v && isFolded(v, toggled) && !toggled.delete(id)) toggled.add(id);
+      openPanel(id);
+      $(`[data-chan="${id}"]`)?.scrollIntoView({ block: "nearest" });
       return;
     }
     const pr = target.closest("[data-open]");
     if (pr) {
       const col = pr.dataset.col ?? null;
-      if (!col && tray2?.url === pr.dataset.open) return closeTray();
+      if (!col && tray?.id === pr.dataset.open) return closeTray();
       return openTray(pr.dataset.open, col);
     }
     if (target.closest("[data-legend]")) {
@@ -625,22 +640,20 @@
     }
     const el = target.closest("[data-toggle]");
     if (!el) return;
-    const id = el.dataset.toggle;
-    if (!toggled.delete(id)) toggled.add(id);
-    draw();
+    toggle(el.dataset.toggle);
   });
   document.addEventListener("keydown", (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-      const url = stepPr(sessionViews(sessions, prs, branches), toggled, tray2?.url ?? null, e.key === "ArrowDown" ? 1 : -1);
-      if (!url) return;
+      const id = stepPr(sessionViews(sessions, prs, branches), toggled, tray?.id ?? null, e.key === "ArrowDown" ? 1 : -1);
+      if (!id) return;
       e.preventDefault();
-      openTray(url, null);
-      $(".strip.sel")?.scrollIntoView({ block: "nearest" });
+      openTray(id, null);
+      $(".n7.tuned")?.scrollIntoView({ block: "nearest" });
       return;
     }
     if (e.repeat) return;
-    if (e.key === "Escape" && (tray2 || panel)) return closeTray();
+    if (e.key === "Escape" && (tray || panel)) return closeTray();
     if (e.key === "h" || e.key === "H") legend = !legend;
     else if (e.key === "Escape" && legend) legend = false;
     else return;

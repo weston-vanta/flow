@@ -149,15 +149,13 @@ export interface PrView {
    * merge queue, so never ready. */
   node: "merged" | "closed" | "queued" | "ready" | "open";
   draft: boolean;
-  /** An open PR's place in the merge queue: `37/214`, `in merge queue · 37 of 214`, and the
-   * needle's place on the gauge, 0 at the front to 1 at the back. Null unless queued. */
-  queue: { label: string; text: string; at: number } | null;
+  /** An open PR's place in the merge queue: `merge queue · 37 of 214`, and how much of its
+   * badge's ring is filled, 0 at the back to 1 at the front. Null unless queued. */
+  queue: { text: string; fill: number } | null;
   base: Light;
   ci: Light;
   feedback: Light;
   review: ReviewLight;
-  /** True if the user should act on this PR: it is mergeable or a lamp is lit. */
-  attention: boolean;
   tray: Tray;
   jira: JiraView | null;
 }
@@ -180,6 +178,9 @@ export interface JiraView {
 
 /** A Session's Branch that heads no PR. */
 export interface BranchView {
+  /** `repo:branch`, as `flow branch list` keys it. */
+  key: string;
+  repo: string;
   name: string;
   jira: JiraView | null;
 }
@@ -340,15 +341,13 @@ export function prView(
     node: g.state === "MERGED" ? "merged" : g.state === "CLOSED" ? "closed" : q ? "queued" : ready ? "ready" : "open",
     draft: g.isDraft,
     queue: q && {
-      label: `${q.position}/${q.size}`,
-      text: `in merge queue · ${q.position} of ${q.size}`,
-      at: q.size > 1 ? Math.min(Math.max((q.position - 1) / (q.size - 1), 0), 1) : 0,
+      text: `merge queue · ${q.position} of ${q.size}`,
+      fill: q.size > 1 ? Math.min(Math.max((q.size - q.position) / (q.size - 1), 0), 1) : 1,
     },
     base,
     ci,
     feedback,
     review,
-    attention: open && (ready || lamps.some((l) => l.lamp === "act")),
     tray: trayView(g, below, now),
     jira: jiraView(jira),
   };
@@ -530,7 +529,7 @@ export function sessionViews(sessions: Session[], prs: Pr[], branches: Branch[] 
         if (feature.has(head(st[0]))) return [{ kind: "feature", head: view(st)[0], stacks: on(head(st[0])) }];
         return [{ kind: "stack", head: null, stacks: [view(st)] }];
       }),
-      ...own.map((b): Group => ({ kind: "branch", head: { name: b.branch, jira: jiraView(b.jira) }, stacks: on(b.key) })),
+      ...own.map((b): Group => ({ kind: "branch", head: { key: b.key, repo: b.repo, name: b.branch, jira: jiraView(b.jira) }, stacks: on(b.key) })),
     ];
     const state = s.status?.state ?? null;
     const cwd = s.origin?.cwd;
@@ -560,31 +559,74 @@ export function age(iso: string, now = Date.now()): string {
   return `${Math.floor(h / 24)} d`;
 }
 
-/** The one light on a folded Session: act if it is waiting for you or any PR needs
- * attention, else fine. */
-export function attentionLight(v: SessionView): Light {
-  const n = v.prs.length;
-  const prs = n ? `${n} pull request${n === 1 ? "" : "s"}` : "No pull requests";
-  if (v.status.state === "waiting") return { lamp: "act", tip: `${prs}: waiting for you` };
-  if (v.prs.some((p) => p.attention)) return { lamp: "act", tip: `${prs}: something needs action` };
-  return { lamp: "fine", tip: `${prs}: nothing needs action` };
-}
-
 /** Done Sessions and Sessions with no PRs start folded; `toggled` holds the ids the user has
  * flipped since load. */
 export function isFolded(v: SessionView, toggled: Set<string>): boolean {
   return (v.status.state === "done" || !v.prs.length) !== toggled.has(v.id);
 }
 
-/** The URL of the PR ↓ (`dir` 1) or ↑ (`dir` -1) selects after the one at `url`, in the order
- * the page draws them: Session by Session, Stack by Stack, bottom first. PRs in folded Sessions
- * are skipped, and so are Branches with no PR, which have no view. Wraps at both ends; from
- * nothing selected (or a PR no longer visible), ↓ picks the first and ↑ the last. Null when no
- * PR is visible. */
-export function stepPr(views: SessionView[], toggled: Set<string>, url: string | null, dir: 1 | -1): string | null {
-  const order = views.filter((v) => !isFolded(v, toggled)).flatMap((v) => v.prs.map((p) => p.url));
+/** The board's three stage columns. */
+export type Stage = "open" | "ready" | "merge";
+
+/** One node of a Session's lane: a PR or a Branch with no PR, in its stage column. `id` is the
+ * PR's URL or the Branch's key, and selects it. `feature` marks a Feature branch's head,
+ * `child` a PR in a Stack based on one. */
+export type Row = { id: string; stage: Stage; feature: boolean; child: boolean } & (
+  | { pr: PrView; branch: null }
+  | { pr: null; branch: BranchView }
+);
+
+/** A line from row `from` down to row `to`: `stack` joins a PR to the one stacked on it, `feat`
+ * a Feature branch's head to the bottom PR of each Stack based on it. */
+export interface Edge {
+  from: number;
+  to: number;
+  kind: "stack" | "feat";
+}
+
+/** Merged, closed and queued PRs are in Merge, mergeable ones in Ready, the rest and every
+ * Branch in Open. */
+export const stageOf = (p: PrView | null): Stage =>
+  !p ? "open" : p.node === "ready" ? "ready" : p.node === "open" ? "open" : "merge";
+
+/** A Session's groups as rows in the order drawn, one per PR or Branch, and the edges between them. */
+export function lanes(v: SessionView): { rows: Row[]; edges: Edge[] } {
+  const rows: Row[] = [];
+  const edges: Edge[] = [];
+  const pr = (p: PrView, feature: boolean, child: boolean) =>
+    rows.push({ id: p.url, stage: stageOf(p), feature, child, pr: p, branch: null }) - 1;
+  /** Adds a Stack's rows, joined bottom to top. */
+  const stack = (s: PrView[], child: boolean) =>
+    s.forEach((p, j) => {
+      const i = pr(p, false, child);
+      if (j) edges.push({ from: i - 1, to: i, kind: "stack" });
+    });
+  for (const g of v.groups) {
+    if (g.kind === "stack") {
+      stack(g.stacks[0], false);
+      continue;
+    }
+    const feature = g.stacks.length > 0;
+    const head =
+      g.kind === "feature"
+        ? pr(g.head, feature, false)
+        : rows.push({ id: g.head.key, stage: "open", feature, child: false, pr: null, branch: g.head }) - 1;
+    for (const s of g.stacks) {
+      edges.push({ from: head, to: rows.length, kind: "feat" });
+      stack(s, true);
+    }
+  }
+  return { rows, edges };
+}
+
+/** The id of the node ↓ (`dir` 1) or ↑ (`dir` -1) selects after the one at `id`, in the order
+ * the page draws them: Session by Session, row by row. Nodes in folded Sessions are skipped.
+ * Wraps at both ends; from nothing selected (or a node no longer visible), ↓ picks the first and
+ * ↑ the last. Null when no node is visible. */
+export function stepPr(views: SessionView[], toggled: Set<string>, id: string | null, dir: 1 | -1): string | null {
+  const order = views.filter((v) => !isFolded(v, toggled)).flatMap((v) => lanes(v).rows.map((r) => r.id));
   if (!order.length) return null;
-  const i = url == null ? -1 : order.indexOf(url);
+  const i = id == null ? -1 : order.indexOf(id);
   if (i < 0) return order[dir > 0 ? 0 : order.length - 1];
   return order[(i + dir + order.length) % order.length];
 }

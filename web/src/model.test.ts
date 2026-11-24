@@ -2,13 +2,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   activityLine,
-  attentionLight,
   isFolded,
   baseLight,
   ciLight,
   feedbackLight,
   jiraDataAge,
   jiraView,
+  lanes,
   prDataAge,
   prView,
   reviewLight,
@@ -295,17 +295,6 @@ test("a PR's view title is its GitHub title unchanged, prefix and all", () => {
   assert.equal(prView(gh({ title: "[ABC-123] Fix it" }), null).title, "[ABC-123] Fix it");
 });
 
-test("attention: an open PR that is mergeable or has a lit lamp", () => {
-  assert.equal(prView(gh(), 1).attention, true);
-  assert.equal(prView(gh({ mergeable: "CONFLICTING" }), 1).attention, true);
-  assert.equal(prView(gh({ reviewDecision: "REVIEW_REQUIRED" }), 1).attention, true);
-  assert.equal(prView(gh({ reviewRequests: [{ login: "ana", asCodeOwner: false }] }), 1).attention, false);
-  assert.equal(prView(gh({ checks: [check("IN_PROGRESS", null)] }), 1).attention, false);
-  assert.equal(prView(gh({ isDraft: true }), 1).attention, false);
-  assert.equal(prView(gh({ state: "CLOSED", threads: [thread(), thread()] }), 1).attention, false);
-  assert.equal(prView(gh({ state: "MERGED" }), 1).attention, false);
-});
-
 test("mergeable: open, not a draft, no review outstanding, all four lamps fine", () => {
   const node = (o: Partial<Github>) => prView(gh(o), 1).node;
   assert.equal(node({}), "ready");
@@ -320,26 +309,24 @@ test("mergeable: open, not a draft, no review outstanding, all four lamps fine",
   assert.equal(node({ state: "CLOSED" }), "closed");
 });
 
-test("queued: an open PR in the merge queue is never mergeable and needs attention only for a lit lamp", () => {
+test("queued: an open PR in the merge queue is never mergeable", () => {
   const mergeQueue = { position: 37, size: 214 };
   assert.equal(prView(gh({ mergeQueue }), 1).node, "queued");
-  assert.equal(prView(gh({ mergeQueue }), 1).attention, false);
   assert.equal(prView(gh({ mergeQueue, threads: [thread()] }), 1).node, "queued");
-  assert.equal(prView(gh({ mergeQueue, threads: [thread()] }), 1).attention, true);
   // A leftover entry on a merged PR doesn't matter.
   assert.equal(prView(gh({ mergeQueue, state: "MERGED" }), 1).node, "merged");
   assert.equal(prView(gh({ mergeQueue, state: "MERGED" }), 1).queue, null);
   assert.equal(prView(gh(), 1).queue, null);
 });
 
-test("queue: the label, the text, and the needle's place from the front (0) to the back (1)", () => {
+test("queue: the text, and the ring's fill, empty at the back (0) to full at the front (1)", () => {
   const queue = (position: number, size: number) => prView(gh({ mergeQueue: { position, size } }), 1).queue;
-  assert.deepEqual(queue(37, 214), { label: "37/214", text: "in merge queue · 37 of 214", at: 36 / 213 });
-  assert.equal(queue(1, 214)?.at, 0);
-  assert.equal(queue(214, 214)?.at, 1);
-  assert.equal(queue(1, 1)?.at, 0);
-  // Position and size can disagree for a moment; the needle stays on the scale.
-  assert.equal(queue(5, 3)?.at, 1);
+  assert.deepEqual(queue(37, 214), { text: "merge queue · 37 of 214", fill: 177 / 213 });
+  assert.equal(queue(1, 214)?.fill, 1);
+  assert.equal(queue(214, 214)?.fill, 0);
+  assert.equal(queue(1, 1)?.fill, 1);
+  // Position and size can disagree for a moment; the fill stays on the ring.
+  assert.equal(queue(5, 3)?.fill, 0);
 });
 
 const nums = (stacks: { number: number }[][]) => stacks.map((s) => s.map((g) => g.number));
@@ -480,8 +467,8 @@ test("a Session's Branches without a PR follow its Stacks, oldest first", () => 
     ["feat/x", []],
     ["feat/new", []],
   ]);
-  // Branch rows count towards neither the folded light nor its PR count.
-  assert.deepEqual(attentionLight(v), { lamp: "fine", tip: "2 pull requests: nothing needs action" });
+  // Branch rows don't count as PRs.
+  assert.equal(v.prs.length, 2);
   // A Session with only a Branch takes its repo from it.
   const [only] = sessionViews([session("o")], [], [branch("o", "feat/y", AT, "acme/api")]);
   assert.equal(only.repo, "acme/api");
@@ -510,21 +497,6 @@ test("done Sessions go last; each group newest first, unstarted last", () => {
     [],
   ).map((v) => v.id);
   assert.deepEqual(ids, ["d", "b", "e", "c", "a"]);
-});
-
-test("folded Session light: act if waiting or any PR needs attention, else fine", () => {
-  const view = (state: Session["status"], ...gs: Partial<Github>[]) =>
-    sessionViews([session("s", { status: state })], gs.map((g, i) => pr("s", { number: i + 1, ...g })))[0];
-  const st = (state: "running" | "waiting" | "idle" | "done") => ({ at: AT, state });
-  assert.equal(attentionLight(view(st("waiting"))).lamp, "act");
-  assert.equal(attentionLight(view(st("running"))).lamp, "fine");
-  assert.equal(attentionLight(view(st("running"), { reviewRequests: [{ login: "a", asCodeOwner: false }] })).lamp, "fine");
-  assert.equal(attentionLight(view(st("idle"), { reviewRequests: [{ login: "a", asCodeOwner: false }] }, {})).lamp, "act");
-  assert.equal(attentionLight(view(st("idle"), { mergeable: "CONFLICTING", reviewRequests: [{ login: "a", asCodeOwner: false }] })).lamp, "act");
-  // Over all of a Session's Stacks: the act is in a second Stack.
-  const two = view(st("idle"), { reviewRequests: [{ login: "a", asCodeOwner: false }] }, { stack: { number: 9, position: 1 }, mergeable: "CONFLICTING" });
-  assert.equal(two.groups.length, 2);
-  assert.deepEqual(attentionLight(two), { lamp: "act", tip: "2 pull requests: something needs action" });
 });
 
 test("done Sessions and Sessions with no PRs start folded; a toggle flips the default", () => {
@@ -570,16 +542,18 @@ const stepped = (owner: string, n: number, stack: { number: number; position: nu
   pr(owner, { number: n, url: `#${n}`, headRefName: `b${n}`, stack });
 
 /** Session a: a Stack of #2 on #1, then #3 alone; Session b: #4 and a Branch with no PR;
- * Session c: no PRs. The page draws #1 #2 #3 #4. */
+ * Session c: no PRs. The page draws #1 #2 #3 #4 and the Branch. */
 function stepViews() {
   const prs = [stepped("a", 2, { number: 1, position: 2 }), stepped("a", 1, { number: 1, position: 1 }), stepped("a", 3), stepped("b", 4)];
   return sessionViews([session("a"), session("b"), session("c")], prs, [branch("b", "loose", AT)]);
 }
 const step = (url: string | null, dir: 1 | -1, toggled = new Set<string>()) => stepPr(stepViews(), toggled, url, dir);
 
-test("step order: from nothing selected, ↓ picks the first PR and ↑ the last", () => {
+const LOOSE = "acme/widgets:loose";
+
+test("step order: from nothing selected, ↓ picks the first node and ↑ the last", () => {
   assert.equal(step(null, 1), "#1");
-  assert.equal(step(null, -1), "#4");
+  assert.equal(step(null, -1), LOOSE);
 });
 
 test("step order: next and previous within a Stack, across Stacks and across Sessions", () => {
@@ -589,22 +563,24 @@ test("step order: next and previous within a Stack, across Stacks and across Ses
   assert.equal(step("#3", -1), "#2");
   assert.equal(step("#3", 1), "#4");
   assert.equal(step("#4", -1), "#3");
+  assert.equal(step("#4", 1), LOOSE);
+  assert.equal(step(LOOSE, -1), "#4");
 });
 
-test("step order: wraps at both ends, never onto a Branch with no PR", () => {
-  assert.equal(step("#4", 1), "#1");
-  assert.equal(step("#1", -1), "#4");
+test("step order: wraps at both ends", () => {
+  assert.equal(step(LOOSE, 1), "#1");
+  assert.equal(step("#1", -1), LOOSE);
 });
 
 test("step order: skips folded Sessions", () => {
   const folded = new Set(["a"]);
   assert.equal(step(null, 1, folded), "#4");
-  assert.equal(step("#4", 1, folded), "#4");
+  assert.equal(step(LOOSE, 1, folded), "#4");
   // A selected PR that has been folded away steps as if nothing were selected.
   assert.equal(stepPr(stepViews(), new Set(["b"]), "#4", -1), "#3");
 });
 
-test("step order: null with no visible PR", () => {
+test("step order: null with nothing visible", () => {
   assert.equal(step(null, 1, new Set(["a", "b"])), null);
   assert.equal(stepPr([], new Set(), null, -1), null);
 });
@@ -847,4 +823,62 @@ test("session panel: also on this task lists the Task's other listed Sessions in
   const tasks = [task("w", ["a", "b", "d", "unlisted"]), task("other", ["c"])];
   assert.deepEqual(sessionPanel("a", views, tasks)!.task!.others.map((v) => v.id), ["b", "d"]);
   assert.deepEqual(sessionPanel("c", views, tasks)!.task!.others, []);
+});
+
+/** Each row as `#n` or the Branch name, its stage, and F for a Feature branch's head, ↳ for a
+ * Stack based on one; each edge as `from>to` (feat edges `from=>to`). */
+function laneShape(v: SessionView) {
+  const { rows, edges } = lanes(v);
+  return {
+    rows: rows.map((r) => `${r.child ? "↳" : ""}${r.feature ? "F" : ""}${r.pr ? `#${r.pr.number}` : r.branch.name} ${r.stage}`),
+    edges: edges.map((e) => `${e.from}${e.kind === "feat" ? "=>" : ">"}${e.to}`),
+  };
+}
+
+test("lanes: each PR's stage; open and drafts in Open, mergeable in Ready, queued, merged and closed in Merge", () => {
+  const prs = [
+    pr("s", { number: 1, headRefName: "a" }),
+    pr("s", { number: 2, headRefName: "b", isDraft: true }),
+    pr("s", { number: 3, headRefName: "c", mergeable: "CONFLICTING" }),
+    pr("s", { number: 4, headRefName: "d", mergeQueue: { position: 2, size: 5 } }),
+    pr("s", { number: 5, headRefName: "e", state: "MERGED" }),
+    pr("s", { number: 6, headRefName: "f", state: "CLOSED" }),
+  ];
+  const [v] = sessionViews([session("s")], prs, [branch("s", "wip", AT)], NOW);
+  assert.deepEqual(laneShape(v), {
+    rows: ["#1 ready", "#2 open", "#3 open", "#4 merge", "#5 merge", "#6 merge", "wip open"],
+    edges: [],
+  });
+  // A row's id is the PR's URL or the Branch's key.
+  assert.deepEqual(lanes(v).rows.map((r) => r.id).slice(-2), [prs[5].github!.url, "acme/widgets:wip"]);
+});
+
+test("lanes: a Stack's PRs bottom first, each joined to the one stacked on it", () => {
+  const prs = [
+    pr("s", { number: 2, headRefName: "b", baseRefName: "a", stack: { number: 1, position: 2 }, mergeable: "CONFLICTING" }),
+    pr("s", { number: 1, headRefName: "a", stack: { number: 1, position: 1 } }),
+    pr("s", { number: 3, headRefName: "c" }),
+  ];
+  const [v] = sessionViews([session("s")], prs, [], NOW);
+  assert.deepEqual(laneShape(v), { rows: ["#1 ready", "#2 open", "#3 ready"], edges: ["0>1"] });
+});
+
+test("lanes: a Feature branch heads its Stacks, joined to the bottom PR of each", () => {
+  const prs = [
+    pr("s", { number: 20, headRefName: "feature/x", baseRefName: "main", isDraft: true }),
+    pr("s", { number: 21, headRefName: "a", baseRefName: "feature/x", stack: { number: 21, position: 1 } }),
+    pr("s", { number: 22, headRefName: "b", baseRefName: "a", stack: { number: 21, position: 2 } }),
+    pr("s", { number: 23, headRefName: "c", baseRefName: "feature/x" }),
+  ];
+  const [v] = sessionViews([session("s")], prs, [], NOW);
+  assert.deepEqual(laneShape(v), {
+    rows: ["F#20 open", "↳#21 ready", "↳#22 ready", "↳#23 ready"],
+    edges: ["0=>1", "1>2", "0=>3"],
+  });
+  // Before its feature PR exists, the Branch heads the group the same way.
+  const [w] = sessionViews([session("s")], prs.slice(1), [branch("s", "feature/x", AT)], NOW);
+  assert.deepEqual(laneShape(w), {
+    rows: ["Ffeature/x open", "↳#21 ready", "↳#22 ready", "↳#23 ready"],
+    edges: ["0=>1", "1>2", "0=>3"],
+  });
 });
