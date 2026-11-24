@@ -59,7 +59,7 @@ _Avoid_: walkthrough, review guide, architecture doc
 ### Work
 
 **Session**:
-One Claude Code conversation running in a herdr pane on some CDE, identified by its Claude session id. Its record outlives the pane. Its status is one of running, waiting for you, idle (alive, not working) or done (the conversation ended: exited, cleared, or its pane closed). `/clear` ends one Session and starts another in the same pane; resuming a conversation continues the same Session. A done Session stays listed while it owns an open PR, and for a day after it has none; one that never created a worktree stays listed only five minutes.
+One coding agent's conversation running in a herdr pane on some CDE, identified by the agent's session id. Today every Session is a Claude Code conversation, so the rest of this entry uses Claude Code's terms. Its record outlives the pane. Its status is one of running, waiting for you, idle (alive, not working) or done (the conversation ended: exited, cleared, or its pane closed). `/clear` ends one Session and starts another in the same pane; resuming a conversation continues the same Session. A done Session stays listed while it owns an open PR, and for a day after it has none; one that never created a worktree stays listed only five minutes.
 _Avoid_: agent, worker, conversation
 
 **Subagent**:
@@ -117,7 +117,7 @@ _Avoid_: integration PR, rollup PR
 ### Data
 
 **Store**:
-The one place flow keeps what it knows, on `/efs-home`. Everything the web app and CLI show is read from the Store, never from herdr, GitHub or transcripts directly. It holds current state only, not history.
+The one place flow keeps what it knows, on `/efs-home`. Everything the web app and CLI show is read from the Store, never from herdr, GitHub or transcripts directly. It holds each entity's current state; a newer fact replaces an older one. flow keeps no record of past work yet.
 _Avoid_: cache, database, state
 
 **Facet**:
