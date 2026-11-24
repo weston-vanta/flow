@@ -570,8 +570,8 @@ export type Stage = "open" | "ready" | "merge";
 
 /** One node of a Session's lane: a PR or a Branch with no PR, in its stage column. `id` is the
  * PR's URL or the Branch's key, and selects it. `feature` marks a Feature branch's head,
- * `child` a PR in a Stack based on one. */
-export type Row = { id: string; stage: Stage; feature: boolean; child: boolean } & (
+ * `head`, for a PR in a Stack based on one, is the index of that head's row. */
+export type Row = { id: string; stage: Stage; feature: boolean; head: number | null } & (
   | { pr: PrView; branch: null }
   | { pr: null; branch: BranchView }
 );
@@ -593,27 +593,27 @@ export const stageOf = (p: PrView | null): Stage =>
 export function lanes(v: SessionView): { rows: Row[]; edges: Edge[] } {
   const rows: Row[] = [];
   const edges: Edge[] = [];
-  const pr = (p: PrView, feature: boolean, child: boolean) =>
-    rows.push({ id: p.url, stage: stageOf(p), feature, child, pr: p, branch: null }) - 1;
+  const pr = (p: PrView, feature: boolean, head: number | null) =>
+    rows.push({ id: p.url, stage: stageOf(p), feature, head, pr: p, branch: null }) - 1;
   /** Adds a Stack's rows, joined bottom to top. */
-  const stack = (s: PrView[], child: boolean) =>
+  const stack = (s: PrView[], head: number | null) =>
     s.forEach((p, j) => {
-      const i = pr(p, false, child);
+      const i = pr(p, false, head);
       if (j) edges.push({ from: i - 1, to: i, kind: "stack" });
     });
   for (const g of v.groups) {
     if (g.kind === "stack") {
-      stack(g.stacks[0], false);
+      stack(g.stacks[0], null);
       continue;
     }
     const feature = g.stacks.length > 0;
     const head =
       g.kind === "feature"
-        ? pr(g.head, feature, false)
-        : rows.push({ id: g.head.key, stage: "open", feature, child: false, pr: null, branch: g.head }) - 1;
+        ? pr(g.head, feature, null)
+        : rows.push({ id: g.head.key, stage: "open", feature, head: null, pr: null, branch: g.head }) - 1;
     for (const s of g.stacks) {
       edges.push({ from: head, to: rows.length, kind: "feat" });
-      stack(s, true);
+      stack(s, head);
     }
   }
   return { rows, edges };

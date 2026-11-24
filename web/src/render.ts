@@ -43,7 +43,7 @@ const badge = (p: PrView, text: string) =>
 
 /** Pixel geometry of a lane's nodes and edges. Rows are 28px tall at a 36px pitch below 12px of
  * padding; Open is fluid, Ready and Merge 96px each. A Stack based on a Feature branch is
- * indented so its line runs apart from the Feature branch's. */
+ * indented where it shares the Feature branch's column. */
 const PITCH = 36;
 const NODE = 28;
 const PAD = 12;
@@ -51,7 +51,10 @@ const NARROW = 96;
 const COL: Record<Stage, number> = { open: 0, ready: 1, merge: 2 };
 /** A column's left edge inside the lane's area. */
 const xl = (c: number) => (c === 0 ? "0px" : `(100% - ${(3 - c) * NARROW}px)`);
-const indent = (r: Row) => (r.child ? (COL[r.stage] === 0 ? 24 : 16) : 0);
+/** A Stack based on a Feature branch is indented only where it shares the head's column, so the
+ * two lines run apart there; elsewhere its nodes get the column's full width. */
+const indent = (r: Row, rows: Row[]) =>
+  r.head != null && rows[r.head].stage === r.stage ? (COL[r.stage] === 0 ? 24 : 16) : 0;
 const top = (i: number) => PAD + i * PITCH;
 
 /** An edge as a positioned hairline: straight down within a column, else an elbow that turns
@@ -59,7 +62,7 @@ const top = (i: number) => PAD + i * PITCH;
 function edge(e: Edge, rows: Row[]): string {
   const a = rows[e.from];
   const b = rows[e.to];
-  const [ca, cb, ia, ib] = [COL[a.stage], COL[b.stage], indent(a), indent(b)];
+  const [ca, cb, ia, ib] = [COL[a.stage], COL[b.stage], indent(a, rows), indent(b, rows)];
   const y = top(e.from) + NODE;
   const h = top(e.to) + NODE / 2 - y;
   const cls = `edge e-${e.kind}`;
@@ -79,11 +82,11 @@ const dot = (p: PrView, col: Column, label: string) => {
 };
 
 /** A node: badge, number, and in Open the title and four dots. A Branch is its name in mono. */
-function node(r: Row, i: number, sel: string | null): string {
+function node(r: Row, i: number, rows: Row[], sel: string | null): string {
   const c = COL[r.stage];
   const full = c === 0;
   const tuned = r.id === sel ? " tuned" : "";
-  const style = `grid-row:${i + 1};grid-column:${c + 1};margin-left:${6 + indent(r)}px`;
+  const style = `grid-row:${i + 1};grid-column:${c + 1};margin-left:${6 + indent(r, rows)}px`;
   if (r.branch) {
     const b = r.branch;
     const tip = `${b.name} · ${r.feature ? "feature branch, " : ""}no pull request yet${b.jira ? ` · ${b.jira.key}` : ""}`;
@@ -225,7 +228,7 @@ function lane(v: SessionView, toggled: Set<string>, sel: string | null, open: bo
       return `<div class="fc" style="grid-column:${c + 2}">${n ? `<span class="cnt mono">${n}</span>` : ""}</div>`;
     }).join("");
   } else if (rows.length) {
-    body = `<div class="area" style="grid-template-rows:repeat(${rows.length},${NODE}px);row-gap:${PITCH - NODE}px;padding:${PAD}px 0">${edges.map((e) => edge(e, rows)).join("")}${rows.map((r, i) => node(r, i, sel)).join("")}</div>`;
+    body = `<div class="area" style="grid-template-rows:repeat(${rows.length},${NODE}px);row-gap:${PITCH - NODE}px;padding:${PAD}px 0">${edges.map((e) => edge(e, rows)).join("")}${rows.map((r, i) => node(r, i, rows, sel)).join("")}</div>`;
   } else {
     body = '<div class="area none">no pull requests yet</div>';
   }
