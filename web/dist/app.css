@@ -258,6 +258,7 @@ aside {
 }
 .trail::before {
   content: "";
+  box-sizing: border-box;
   pointer-events: none;
   position: absolute;
   left: 3px;

@@ -52,7 +52,7 @@ aside{min-height:0;display:flex}
 /* The rail: an L (top band + left leg) cut with clip-path; it folds the lane. Its corner is
  * concentric with the card's. ::after draws a highlight sweeping along a running Session's rail. */
 .trail{position:absolute;left:0;top:0;right:0;height:36px;z-index:2;clip-path:polygon(0 0,100% 0,100% 7px,22px 7px,22px 36px,0 36px)}
-.trail::before{content:"";pointer-events:none;position:absolute;left:3px;top:3px;width:calc(100% - 19px);height:33px;border-top:3px solid var(--st);border-left:3px solid var(--st);border-top-left-radius:7px}
+.trail::before{content:"";box-sizing:border-box;pointer-events:none;position:absolute;left:3px;top:3px;width:calc(100% - 19px);height:33px;border-top:3px solid var(--st);border-left:3px solid var(--st);border-top-left-radius:7px}
 .trail:hover::before{filter:brightness(.82)}
 .trail:focus-visible{outline:none}
 .trail:focus-visible::before{filter:brightness(.6)}
