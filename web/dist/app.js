@@ -435,7 +435,7 @@
     const others = task?.others.length ? `<div class="p-sub">also on this task</div>${task.others.map((o) => `<button type="button" class="p-item p-btn w-${o.status.state ?? "none"}" data-goto="${esc(o.id)}" title="Show this session"><span>${esc(o.title)}</span><span class="p-host">${statusFor(o)}</span></button>`).join("")}` : "";
     return `<div class="p-head w-${v.status.state ?? "none"}"><span title="${esc(statusTip(v))}">${statusFor(v)}</span><span class="p-meta">${esc(counts)}</span>${CLOSE("Close session")}</div>
     <h2 class="p-title">${esc(v.title)}</h2>
-    ${activity ? `<div class="p-line" title="${esc(v.activity)}">${esc(activity)}</div>` : ""}
+    ${activity ? `<div class="p-line p-activity" title="${esc(v.activity)}">${esc(activity)}</div>` : ""}
     <div class="p-line p-dim">${esc(v.cde ?? "unknown CDE")}${v.repo ? ` \xB7 <span class="p-mono">${esc(v.repo)}</span>` : ""}</div>
     <section class="p-sec" aria-label="task">
       <div class="p-sech"><span class="p-key">task</span>${task ? "" : '<span class="p-fine">not part of a task</span>'}</div>
@@ -574,7 +574,10 @@
     const folded = el.classList.contains("folded");
     el.style.overflow = "hidden";
     el.animate([{ height: `${h0}px` }, { height: `${el.offsetHeight}px` }], T).onfinish = () => el.style.overflow = "";
-    const leg = [{ height: "33px" }, { height: "3px" }];
+    const leg = [
+      { height: "33px", borderLeftWidth: "3px", borderTopLeftRadius: "7px", borderBottomLeftRadius: "0px" },
+      { height: "3px", borderLeftWidth: "0px", borderTopLeftRadius: "1.5px", borderBottomLeftRadius: "1.5px" }
+    ];
     el.querySelector(".trail")?.animate(folded ? leg : leg.reverse(), { ...T, pseudoElement: "::before" });
   }
   function closeTray() {

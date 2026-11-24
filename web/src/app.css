@@ -62,7 +62,7 @@ aside{min-height:0;display:flex}
 
 /* Folded: one line (rail, title; a count per column). */
 .folded .lh{justify-content:center}
-.folded .trail::before{height:3px}
+.folded .trail::before{height:3px;border-left-width:0;border-top-left-radius:1.5px;border-bottom-left-radius:1.5px}
 .folded .tt{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .folded .lm2{display:none}
 .fc{grid-row:1;display:flex;align-items:center;padding:0 12px}
@@ -128,6 +128,7 @@ aside{min-height:0;display:flex}
 .p-title{margin:14px 0 4px;font-size:17px;line-height:23px;font-weight:600;letter-spacing:-.02em;overflow-wrap:anywhere}
 .p-mono-title{font-family:var(--mono);font-size:15px;font-weight:500;letter-spacing:0}
 .p-line{color:var(--ink);overflow-wrap:anywhere}
+.p-activity{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
 .p-dim{margin-top:2px;color:var(--ink2);font-size:12px}
 .p-mono{font-family:var(--mono);font-size:11.5px;letter-spacing:0}
 .p-sec{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}

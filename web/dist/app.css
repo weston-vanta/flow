@@ -310,6 +310,9 @@ aside {
 }
 .folded .trail::before {
   height: 3px;
+  border-left-width: 0;
+  border-top-left-radius: 1.5px;
+  border-bottom-left-radius: 1.5px;
 }
 .folded .tt {
   white-space: nowrap;
@@ -624,6 +627,12 @@ aside {
 .p-line {
   color: var(--ink);
   overflow-wrap: anywhere;
+}
+.p-activity {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
 }
 .p-dim {
   margin-top: 2px;

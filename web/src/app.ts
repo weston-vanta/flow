@@ -90,7 +90,11 @@ function toggle(id: string) {
   const folded = el.classList.contains("folded");
   el.style.overflow = "hidden";
   el.animate([{ height: `${h0}px` }, { height: `${el.offsetHeight}px` }], T).onfinish = () => (el.style.overflow = "");
-  const leg = [{ height: "33px" }, { height: "3px" }];
+  // Folded, the rail is a straight bar: the leg shrinks into it and its corner straightens.
+  const leg = [
+    { height: "33px", borderLeftWidth: "3px", borderTopLeftRadius: "7px", borderBottomLeftRadius: "0px" },
+    { height: "3px", borderLeftWidth: "0px", borderTopLeftRadius: "1.5px", borderBottomLeftRadius: "1.5px" },
+  ];
   el.querySelector(".trail")?.animate(folded ? leg : leg.reverse(), { ...T, pseudoElement: "::before" });
 }
 
