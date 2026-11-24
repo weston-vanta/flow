@@ -238,21 +238,21 @@
   function lanes(v) {
     const rows = [];
     const edges = [];
-    const pr = (p, feature, child) => rows.push({ id: p.url, stage: stageOf(p), feature, child, pr: p, branch: null }) - 1;
-    const stack = (s, child) => s.forEach((p, j) => {
-      const i = pr(p, false, child);
+    const pr = (p, feature, head) => rows.push({ id: p.url, stage: stageOf(p), feature, head, pr: p, branch: null }) - 1;
+    const stack = (s, head) => s.forEach((p, j) => {
+      const i = pr(p, false, head);
       if (j) edges.push({ from: i - 1, to: i, kind: "stack" });
     });
     for (const g of v.groups) {
       if (g.kind === "stack") {
-        stack(g.stacks[0], false);
+        stack(g.stacks[0], null);
         continue;
       }
       const feature = g.stacks.length > 0;
-      const head = g.kind === "feature" ? pr(g.head, feature, false) : rows.push({ id: g.head.key, stage: "open", feature, child: false, pr: null, branch: g.head }) - 1;
+      const head = g.kind === "feature" ? pr(g.head, feature, null) : rows.push({ id: g.head.key, stage: "open", feature, head: null, pr: null, branch: g.head }) - 1;
       for (const s of g.stacks) {
         edges.push({ from: head, to: rows.length, kind: "feat" });
-        stack(s, true);
+        stack(s, head);
       }
     }
     return { rows, edges };
@@ -331,12 +331,12 @@
   var NARROW = 96;
   var COL = { open: 0, ready: 1, merge: 2 };
   var xl = (c) => c === 0 ? "0px" : `(100% - ${(3 - c) * NARROW}px)`;
-  var indent = (r) => r.child ? COL[r.stage] === 0 ? 24 : 16 : 0;
+  var indent = (r, rows) => r.head != null && rows[r.head].stage === r.stage ? COL[r.stage] === 0 ? 24 : 16 : 0;
   var top = (i) => PAD + i * PITCH;
   function edge(e, rows) {
     const a = rows[e.from];
     const b = rows[e.to];
-    const [ca, cb, ia, ib] = [COL[a.stage], COL[b.stage], indent(a), indent(b)];
+    const [ca, cb, ia, ib] = [COL[a.stage], COL[b.stage], indent(a, rows), indent(b, rows)];
     const y = top(e.from) + NODE;
     const h = top(e.to) + NODE / 2 - y;
     const cls = `edge e-${e.kind}`;
@@ -352,11 +352,11 @@
     const l = p[col];
     return `<button type="button" class="t-${sig(l)}" data-open="${esc(p.url)}" data-col="${col}" title="${esc(l.tip)}" aria-label="${esc(`${l.tip}. Show ${label} details for #${p.number}`)}"></button>`;
   };
-  function node(r, i, sel) {
+  function node(r, i, rows, sel) {
     const c = COL[r.stage];
     const full = c === 0;
     const tuned = r.id === sel ? " tuned" : "";
-    const style = `grid-row:${i + 1};grid-column:${c + 1};margin-left:${6 + indent(r)}px`;
+    const style = `grid-row:${i + 1};grid-column:${c + 1};margin-left:${6 + indent(r, rows)}px`;
     if (r.branch) {
       const b = r.branch;
       const tip2 = `${b.name} \xB7 ${r.feature ? "feature branch, " : ""}no pull request yet${b.jira ? ` \xB7 ${b.jira.key}` : ""}`;
@@ -460,7 +460,7 @@
         return `<div class="fc" style="grid-column:${c + 2}">${n ? `<span class="cnt mono">${n}</span>` : ""}</div>`;
       }).join("");
     } else if (rows.length) {
-      body = `<div class="area" style="grid-template-rows:repeat(${rows.length},${NODE}px);row-gap:${PITCH - NODE}px;padding:${PAD}px 0">${edges.map((e) => edge(e, rows)).join("")}${rows.map((r, i) => node(r, i, sel)).join("")}</div>`;
+      body = `<div class="area" style="grid-template-rows:repeat(${rows.length},${NODE}px);row-gap:${PITCH - NODE}px;padding:${PAD}px 0">${edges.map((e) => edge(e, rows)).join("")}${rows.map((r, i) => node(r, i, rows, sel)).join("")}</div>`;
     } else {
       body = '<div class="area none">no pull requests yet</div>';
     }

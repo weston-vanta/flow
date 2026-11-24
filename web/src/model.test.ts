@@ -825,12 +825,12 @@ test("session panel: also on this task lists the Task's other listed Sessions in
   assert.deepEqual(sessionPanel("c", views, tasks)!.task!.others, []);
 });
 
-/** Each row as `#n` or the Branch name, its stage, and F for a Feature branch's head, ↳ for a
- * Stack based on one; each edge as `from>to` (feat edges `from=>to`). */
+/** Each row as `#n` or the Branch name, its stage, and F for a Feature branch's head, ↳ and the
+ * head's row for a Stack based on one; each edge as `from>to` (feat edges `from=>to`). */
 function laneShape(v: SessionView) {
   const { rows, edges } = lanes(v);
   return {
-    rows: rows.map((r) => `${r.child ? "↳" : ""}${r.feature ? "F" : ""}${r.pr ? `#${r.pr.number}` : r.branch.name} ${r.stage}`),
+    rows: rows.map((r) => `${r.head != null ? `↳${r.head}` : ""}${r.feature ? "F" : ""}${r.pr ? `#${r.pr.number}` : r.branch.name} ${r.stage}`),
     edges: edges.map((e) => `${e.from}${e.kind === "feat" ? "=>" : ">"}${e.to}`),
   };
 }
@@ -872,13 +872,13 @@ test("lanes: a Feature branch heads its Stacks, joined to the bottom PR of each"
   ];
   const [v] = sessionViews([session("s")], prs, [], NOW);
   assert.deepEqual(laneShape(v), {
-    rows: ["F#20 open", "↳#21 ready", "↳#22 ready", "↳#23 ready"],
+    rows: ["F#20 open", "↳0#21 ready", "↳0#22 ready", "↳0#23 ready"],
     edges: ["0=>1", "1>2", "0=>3"],
   });
   // Before its feature PR exists, the Branch heads the group the same way.
   const [w] = sessionViews([session("s")], prs.slice(1), [branch("s", "feature/x", AT)], NOW);
   assert.deepEqual(laneShape(w), {
-    rows: ["Ffeature/x open", "↳#21 ready", "↳#22 ready", "↳#23 ready"],
+    rows: ["Ffeature/x open", "↳0#21 ready", "↳0#22 ready", "↳0#23 ready"],
     edges: ["0=>1", "1>2", "0=>3"],
   });
 });
