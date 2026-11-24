@@ -194,7 +194,7 @@ function sessionPanel({ session: v, counts, task }: PanelView): string {
     : "";
   return `<div class="p-head w-${v.status.state ?? "none"}"><span title="${esc(statusTip(v))}">${statusFor(v)}</span><span class="p-meta">${esc(counts)}</span>${CLOSE("Close session")}</div>
     <h2 class="p-title">${esc(v.title)}</h2>
-    ${activity ? `<div class="p-line" title="${esc(v.activity!)}">${esc(activity)}</div>` : ""}
+    ${activity ? `<div class="p-line p-activity" title="${esc(v.activity!)}">${esc(activity)}</div>` : ""}
     <div class="p-line p-dim">${esc(v.cde ?? "unknown CDE")}${v.repo ? ` · <span class="p-mono">${esc(v.repo)}</span>` : ""}</div>
     <section class="p-sec" aria-label="task">
       <div class="p-sech"><span class="p-key">task</span>${task ? "" : '<span class="p-fine">not part of a task</span>'}</div>
