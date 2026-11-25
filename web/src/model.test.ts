@@ -104,6 +104,9 @@ test("base: behind the default branch for more than 24h → act; the tip names e
   assert.equal(base({ mergeable: "CONFLICTING" }).tip, "base: merge conflict with main");
   assert.equal(base({ mergeable: "CONFLICTING" }, 9918).tip, "base: merge conflict with #9918");
   assert.equal(base({ behindSince: hoursAgo(25) }).tip, "base: behind main since 1 d ago");
+  // Fine: up to date is only claimed for a PR on its branch, not one stacked on another PR.
+  assert.equal(base({ behindSince: hoursAgo(23) }).tip, "base: no conflict, up to date with main");
+  assert.equal(base({}, 9918).tip, "base: no conflict");
   assert.equal(
     base({ mergeable: "CONFLICTING", behindSince: hoursAgo(49) }).tip,
     "base: merge conflict with main · behind main since 2 d ago",
@@ -151,47 +154,38 @@ test("size tip: files changed, with the lines added and removed", () => {
 });
 
 test("tray: every section gives its fine statement when nothing is wrong", () => {
-  const t = trayView(gh(), null, NOW);
-  assert.deepEqual(t.base, { fine: "no conflict, up to date with main", items: null });
+  const t = trayView(gh(), NOW);
+  assert.equal(t.base, "main");
   assert.deepEqual(t.ci, { fine: "passing", items: null });
   assert.deepEqual(t.feedback, { fine: "no open threads", items: null });
   assert.deepEqual(t.review, { fine: "approved", items: null });
-  assert.equal(trayView(gh(), 9918, NOW).base.fine, "no conflict");
-  assert.equal(trayView(gh({ checks: [check("IN_PROGRESS", null)] }), null, NOW).ci.fine, "running");
-  assert.equal(trayView(gh({ reviewDecision: "REVIEW_REQUIRED" }), null, NOW).review.fine, "required, none requested");
-  assert.equal(trayView(gh({ reviewDecision: null }), null, NOW).review.fine, "not required");
-  // Behind for less than a day is not a base problem yet.
-  assert.equal(trayView(gh({ behindSince: hoursAgo(23) }), null, NOW).base.fine, "no conflict, up to date with main");
+  assert.equal(trayView(gh({ checks: [check("IN_PROGRESS", null)] }), NOW).ci.fine, "running");
+  assert.equal(trayView(gh({ reviewDecision: "REVIEW_REQUIRED" }), NOW).review.fine, "required, none requested");
+  assert.equal(trayView(gh({ reviewDecision: null }), NOW).review.fine, "not required");
 });
 
-test("tray: merged and closed PRs give every section's fine statement", () => {
+test("tray: merged and closed PRs give every section's fine statement and the base branch", () => {
   const bad: Partial<Github> = {
     mergeable: "CONFLICTING",
     checks: [check("COMPLETED", "FAILURE")],
     threads: [thread()],
     reviewRequests: [{ login: "ana", asCodeOwner: false }],
   };
-  assert.deepEqual(
-    Object.values(trayView(gh({ ...bad, state: "MERGED" }), null, NOW)).map((s) => s.fine),
-    ["merged", "passed", "no open threads", "merged"],
-  );
-  assert.deepEqual(
-    Object.values(trayView(gh({ ...bad, state: "CLOSED" }), null, NOW)).map((s) => s.fine),
-    ["closed", "passed", "no open threads", "closed"],
-  );
+  const fines = (t: ReturnType<typeof trayView>) => [t.base, t.ci.fine, t.feedback.fine, t.review.fine];
+  assert.deepEqual(fines(trayView(gh({ ...bad, state: "MERGED" }), NOW)), ["main", "passed", "no open threads", "merged"]);
+  assert.deepEqual(fines(trayView(gh({ ...bad, state: "CLOSED" }), NOW)), ["main", "passed", "no open threads", "closed"]);
 });
 
-test("tray base: conflict named by the PR below or the base branch, and behind since", () => {
-  const g = gh({ mergeable: "CONFLICTING", behindSince: hoursAgo(26) });
-  assert.deepEqual(trayView(g, null, NOW).base.items, ["Merge conflict with main", "Behind main since 1 d ago"]);
-  assert.deepEqual(trayView(gh({ mergeable: "CONFLICTING" }), 9918, NOW).base.items, ["Merge conflict with #9918"]);
+test("tray base: the base branch's name alone, whatever its problems; the lamp's tip names them", () => {
+  const g = gh({ mergeable: "CONFLICTING", behindSince: hoursAgo(26), baseRefName: "feat/a" });
+  assert.equal(trayView(g, NOW).base, "feat/a");
 });
 
 test("tray CI: only failing required checks, with their links", () => {
   const g = gh({
     checks: [check("COMPLETED", "SUCCESS", "lint"), check("COMPLETED", "FAILURE", "e2e"), check("IN_PROGRESS", null, "unit")],
   });
-  assert.deepEqual(trayView(g, null, NOW).ci.items, [{ name: "e2e", url: "https://ci.example/e2e" }]);
+  assert.deepEqual(trayView(g, NOW).ci.items, [{ name: "e2e", url: "https://ci.example/e2e" }]);
 });
 
 test("tray feedback: threads oldest first, by path:line or the path alone", () => {
@@ -201,7 +195,7 @@ test("tray feedback: threads oldest first, by path:line or the path alone", () =
       thread({ login: "ana", createdAt: hoursAgo(3), path: "a.ts", line: 12 }),
     ],
   });
-  const items = trayView(g, null, NOW).feedback.items!;
+  const items = trayView(g, NOW).feedback.items!;
   assert.deepEqual(
     items.map((t) => [t.author, t.where, t.ago]),
     [
@@ -214,7 +208,7 @@ test("tray feedback: threads oldest first, by path:line or the path alone", () =
 });
 
 test("tray feedback: a body over 280 characters or 4 lines is long", () => {
-  const long = (body: string) => trayView(gh({ threads: [thread({ body })] }), null, NOW).feedback.items![0].long;
+  const long = (body: string) => trayView(gh({ threads: [thread({ body })] }), NOW).feedback.items![0].long;
   assert.equal(long("Rename this."), false);
   assert.equal(long("x".repeat(280)), false);
   assert.equal(long("x".repeat(281)), true);
@@ -236,7 +230,7 @@ test("tray review: each reviewer once; a pending request wins over an earlier re
       { login: "sam", state: "CHANGES_REQUESTED", teams: [] },
     ],
   });
-  assert.deepEqual(trayView(g, null, NOW).review.items, [
+  assert.deepEqual(trayView(g, NOW).review.items, [
     { name: "ana", team: false, state: "requested", codeOwner: false, teams: [] },
     { name: "frontend", team: true, state: "requested", codeOwner: true, teams: [] },
     { name: "docs", team: true, state: "requested", codeOwner: false, teams: [] },
@@ -252,7 +246,7 @@ test("session views name a stacked PR's base by the PR below it", () => {
   ];
   const [, top] = sessionViews([session("s")], prs, [], NOW)[0].groups[0].stacks[0];
   assert.equal(top.number, 2);
-  assert.deepEqual(top.tray.base.items, ["Merge conflict with #1"]);
+  assert.equal(top.base.tip, "base: merge conflict with #1");
 });
 
 test("review: changes requested or nobody requested → act; pending requests → count; else fine", () => {
@@ -630,9 +624,9 @@ test("feature branch: gathers only its owner's Stacks; another Session's Stack n
   const [s, t] = sessionViews([session("s"), session("t")], prs, [], NOW);
   assert.deepEqual(shape(s), [["#20", [[21]]]]);
   assert.deepEqual(shape(t), [[null, [[22]]]]);
-  assert.deepEqual(t.prs[0].tray.base.items, ["Merge conflict with feature/x"]);
+  assert.equal(t.prs[0].base.tip, "base: merge conflict with feature/x");
   const healthy = sessionViews([session("t")], [{ ...prs[2], github: { ...prs[2].github!, mergeable: "MERGEABLE" } }], [], NOW)[0];
-  assert.equal(healthy.prs[0].tray.base.fine, "no conflict, up to date with feature/x");
+  assert.equal(healthy.prs[0].base.tip, "base: no conflict, up to date with feature/x");
   // Another Session's Stack on it alone doesn't make it a Feature branch.
   const [lone] = sessionViews([session("s"), session("t")], [prs[0], prs[2]], [], NOW);
   assert.deepEqual(shape(lone), [[null, [[20]]]]);

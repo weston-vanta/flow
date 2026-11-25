@@ -227,7 +227,7 @@ const DAY = 24 * 60 * 60_000;
 /** What the PR's base is called: the PR below it in the Stack, else its base branch. */
 const baseName = (g: Github, below: number | null) => (below != null ? `#${below}` : g.baseRefName);
 
-/** The PR's base problems, worded for the tray; empty when there are none or it is not open. */
+/** The PR's base problems, as sentences; empty when there are none or it is not open. */
 function baseProblems(g: Github, below: number | null, now: number): string[] {
   if (g.state !== "OPEN") return [];
   const out: string[] = [];
@@ -249,7 +249,7 @@ export function baseLight(g: Github, below: number | null = null, now = Date.now
   if (problems.length) {
     return { lamp: "act", tip: `base: ${problems.map((p) => p[0].toLowerCase() + p.slice(1)).join(" · ")}` };
   }
-  return done(g, "base") ?? { lamp: "fine", tip: "base: no conflict" };
+  return done(g, "base") ?? { lamp: "fine", tip: below == null ? `base: no conflict, up to date with ${g.baseRefName}` : "base: no conflict" };
 }
 
 const failingChecks = (g: Github) => g.checks.filter((c) => c.conclusion && FAILING.has(c.conclusion));
@@ -349,7 +349,7 @@ export function prView(
     ci,
     feedback,
     review,
-    tray: trayView(g, below, now),
+    tray: trayView(g, now),
     jira: jiraView(jira),
   };
 }
@@ -388,8 +388,8 @@ export interface TrayReviewer {
 
 /** The tray's four sections, one per lamp. */
 export interface Tray {
-  /** Each item is a sentence: "Merge conflict with #9918", "Behind main since 2 d ago". */
-  base: Section<string>;
+  /** The base branch's name; the base lamp's tip says what, if anything, is wrong with it. */
+  base: string;
   ci: Section<TrayCheck>;
   feedback: Section<TrayThread>;
   review: Section<TrayReviewer>;
@@ -422,13 +422,12 @@ function reviewers(g: Github): TrayReviewer[] {
   return [...requested, ...reviewed];
 }
 
-/** The tray for one PR. `below` is the number of the PR below it in its Stack, if any. A
- * merged or closed PR shows every section's fine statement. */
-export function trayView(g: Github, below: number | null = null, now = Date.now()): Tray {
+/** The tray for one PR. A merged or closed PR shows every section's fine statement. */
+export function trayView(g: Github, now = Date.now()): Tray {
   const word = g.state === "MERGED" ? "merged" : "closed";
   if (g.state !== "OPEN") {
     return {
-      base: section([], word),
+      base: g.baseRefName,
       ci: section([], "passed"),
       feedback: section([], "no open threads"),
       review: section([], word),
@@ -453,7 +452,7 @@ export function trayView(g: Github, below: number | null = null, now = Date.now(
         ? "approved"
         : "not required";
   return {
-    base: section(baseProblems(g, below, now), below == null ? `no conflict, up to date with ${g.baseRefName}` : "no conflict"),
+    base: g.baseRefName,
     ci: section(
       failingChecks(g).map((c) => ({ name: c.name, url: c.url })),
       running ? "running" : "passing",
