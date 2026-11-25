@@ -79,7 +79,7 @@ aside{min-height:0;display:flex}
 .e-r{border-left-width:1px;border-bottom-width:1px;border-bottom-left-radius:8px}
 
 /* A node: badge · number · title · four dots, one line; Ready and Merge show badge and number. */
-.n7{position:relative;z-index:1;margin-right:6px;height:28px;min-width:0;display:flex;align-items:center;gap:8px;padding:0 8px 0 6px;border-radius:8px;background:var(--card);box-shadow:0 0 0 1px var(--line2),0 1px 2px rgba(17,17,16,.04)}
+.n7{position:relative;z-index:1;cursor:pointer;margin-right:6px;height:28px;min-width:0;display:flex;align-items:center;gap:8px;padding:0 8px 0 6px;border-radius:8px;background:var(--card);box-shadow:0 0 0 1px var(--line2),0 1px 2px rgba(17,17,16,.04)}
 .n7:hover{box-shadow:0 0 0 1px var(--ink3),0 3px 10px -4px rgba(17,17,16,.15)}
 .n7.tuned,.n7.tuned:hover{box-shadow:0 0 0 1.5px var(--ink),0 4px 12px -5px rgba(17,17,16,.3)}
 .n7.compact{gap:6px}

@@ -81,7 +81,8 @@ const dot = (p: PrView, col: Column, label: string) => {
   return `<button type="button" class="t-${sig(l)}" data-open="${esc(p.url)}" data-col="${col}" title="${esc(l.tip)}" aria-label="${esc(`${l.tip}. Show ${label} details for #${p.number}`)}"></button>`;
 };
 
-/** A node: badge, number, and in Open the title and four dots. A Branch is its name in mono. */
+/** A node: badge, number, and in Open the title and four dots. A Branch is its name in mono. A
+ * click anywhere on it selects it; its buttons are for the keyboard and screen readers. */
 function node(r: Row, i: number, rows: Row[], sel: string | null): string {
   const c = COL[r.stage];
   const full = c === 0;
@@ -90,7 +91,7 @@ function node(r: Row, i: number, rows: Row[], sel: string | null): string {
   if (r.branch) {
     const b = r.branch;
     const tip = `${b.name} · ${r.feature ? "feature branch, " : ""}no pull request yet${b.jira ? ` · ${b.jira.key}` : ""}`;
-    return `<div class="n7 local${r.feature ? " feat" : ""}${tuned}" style="${style}" title="${esc(tip)}">
+    return `<div class="n7 local${r.feature ? " feat" : ""}${tuned}" style="${style}" title="${esc(tip)}" data-open="${esc(r.id)}">
       <span class="bd">${r.feature ? "F" : ""}</span>
       <button type="button" class="tl" data-open="${esc(r.id)}" aria-label="${esc(`Select branch ${b.name}, no pull request yet`)}">${esc(b.name)}</button>
     </div>`;
@@ -100,7 +101,7 @@ function node(r: Row, i: number, rows: Row[], sel: string | null): string {
   const aria = `Select #${p.number}, ${p.title}, ${word}`;
   const tip = `#${p.number} ${p.title} · ${word}${p.queue ? ` · ${p.queue.text}` : ""}`;
   const st = p.node === "closed" ? "merged" : p.node;
-  return `<div class="n7 st-${st}${r.feature ? " feat" : ""}${full ? "" : " compact"}${tuned}" style="${style}" title="${esc(tip)}">
+  return `<div class="n7 st-${st}${r.feature ? " feat" : ""}${full ? "" : " compact"}${tuned}" style="${style}" title="${esc(tip)}" data-open="${esc(p.url)}">
       ${badge(p, r.feature ? "F" : String(p.pos ?? ""))}
       <button type="button" class="nm mono" data-open="${esc(p.url)}" aria-label="${esc(aria)}">${p.number}</button>${
         full
