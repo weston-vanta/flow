@@ -12,7 +12,6 @@
   --amber:#F0A020;
   --orange:#E8833A;
   --green:#2F9E5B;
-  --violet:#6E56CF;
   --sans:Geist,Inter,system-ui,sans-serif;
   --mono:"Geist Mono","JetBrains Mono",ui-monospace,monospace;
 }
@@ -521,17 +520,17 @@ aside {
   inset: -5px -2px;
 }
 .t-ok {
-  background: var(--green);
+  background: var(--rule);
 }
 .t-act {
   background: var(--red);
 }
 .t-run {
-  background: var(--amber);
+  box-shadow: inset 0 0 0 1.5px var(--amber);
   animation: blink 1.4s ease-in-out infinite;
 }
 .t-count {
-  background: var(--violet);
+  box-shadow: inset 0 0 0 1.5px var(--ink2);
 }
 .t-none {
   background: var(--line);
