@@ -249,7 +249,7 @@ test("session views name a stacked PR's base by the PR below it", () => {
   assert.equal(top.base.tip, "base: merge conflict with #1");
 });
 
-test("review: changes requested or nobody requested → act; pending requests → count; else fine", () => {
+test("review: changes requested or nobody requested → act; pending requests → count unless approved; else fine", () => {
   const r = (o: Partial<Github>) => {
     const l = reviewLight(gh(o));
     return [l.lamp, l.count];
@@ -263,6 +263,8 @@ test("review: changes requested or nobody requested → act; pending requests �
   // Drafts follow the same rules.
   assert.deepEqual(r({ isDraft: true, reviewDecision: "REVIEW_REQUIRED" }), ["act", null]);
   assert.deepEqual(r({ reviewDecision: "APPROVED" }), ["fine", null]);
+  // Approved is approved, whoever else is still asked: nothing is waiting.
+  assert.deepEqual(r({ reviewDecision: "APPROVED", reviewRequests: [{ login: "ana", asCodeOwner: false }] }), ["fine", null]);
   assert.deepEqual(r({ reviewDecision: null }), ["fine", null]);
   // A stacked PR's base requires no review, so GitHub gives no decision; the review still counts.
   const changes = { login: "ana", state: "CHANGES_REQUESTED" as const, teams: [] };
@@ -275,6 +277,8 @@ test("review tooltip names the requested people and teams", () => {
     gh({ reviewDecision: "REVIEW_REQUIRED", reviewRequests: [{ login: "ana", asCodeOwner: false }, { team: "acme/web", asCodeOwner: false }] }),
   ).tip;
   assert.match(tip, /ana, acme\/web/);
+  const approved = reviewLight(gh({ reviewDecision: "APPROVED", reviewRequests: [{ login: "ana", asCodeOwner: false }] })).tip;
+  assert.equal(approved, "review: approved, also requested: ana");
 });
 
 test("Session status lamp: running → run, waiting → act, idle and done → fine", () => {

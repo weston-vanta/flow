@@ -104,15 +104,15 @@ aside{min-height:0;display:flex}
 .local.feat .bd{color:var(--ink);font-weight:600}
 .bd.queued,.lb-q{--fill:.7;box-shadow:none;background:radial-gradient(closest-side,var(--card) calc(100% - 2px),transparent calc(100% - 1.5px)),conic-gradient(var(--amber) calc(var(--fill)*360deg),var(--line2) 0)}
 
-/* Dots: the four signals. Colour only where something needs you (red) or is under way (amber);
- * fine is flat grey, and pending reviews a neutral ring. */
+/* Dots: the four signals. Colour only where something needs you (red) or is under way (amber:
+ * CI running is a blinking ring, a review waiting a solid dot); fine is flat grey. */
 .dots{flex:none;display:flex;gap:4px}
 .dots button{position:relative;width:7px;height:7px;border-radius:50%}
 .dots button::after{content:"";position:absolute;inset:-5px -2px}
 .t-ok{background:var(--rule)}
 .t-act{background:var(--red)}
 .t-run{box-shadow:inset 0 0 0 1.5px var(--amber);animation:blink 1.4s ease-in-out infinite}
-.t-count{box-shadow:inset 0 0 0 1.5px var(--ink2)}
+.t-count{background:var(--amber)}
 .t-none{background:var(--line)}
 @keyframes blink{50%{opacity:.4}}
 

@@ -530,7 +530,7 @@ aside {
   animation: blink 1.4s ease-in-out infinite;
 }
 .t-count {
-  box-shadow: inset 0 0 0 1.5px var(--ink2);
+  background: var(--amber);
 }
 .t-none {
   background: var(--line);

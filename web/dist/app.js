@@ -58,6 +58,7 @@
       return light("act", "review: changes requested");
     }
     const names = g.reviewRequests.map((r) => "login" in r ? r.login : r.team);
+    if (names.length && g.reviewDecision === "APPROVED") return light("fine", `review: approved, also requested: ${names.join(", ")}`);
     if (names.length) return light("fine", `review needed: ${names.join(", ")}`, names.length);
     if (g.reviewDecision === "REVIEW_REQUIRED") return light("act", "review: no reviewers requested");
     return light("fine", g.reviewDecision === "APPROVED" ? "review: approved" : "review: none required");
@@ -473,7 +474,7 @@
       <span><i class="lr lr-w"></i>waiting for you</span><span><i class="lr lr-r"></i>running</span><span><i class="lr"></i>idle</span><span><i class="lr lr-d"></i>done</span><span><i class="lr lr-f"></i>folded: click the rail</span>
     </div>
     <div class="lg-col"><span class="lg-h">Signals</span><span class="lg-sub">base \xB7 CI \xB7 feedback \xB7 review</span>
-      <span><i class="ld t-act"></i>needs you</span><span><i class="ld t-run"></i>running</span><span><i class="ld t-count"></i>review requested</span><span><i class="ld t-ok"></i>fine</span>
+      <span><i class="ld t-act"></i>needs you</span><span><i class="ld t-run"></i>running</span><span><i class="ld t-count"></i>waiting for review</span><span><i class="ld t-ok"></i>fine</span>
     </div>
     <div class="lg-col"><span class="lg-h">Pull requests</span>
       <span><i class="lb"></i>open</span><span><i class="lb">2</i>position in a stack</span><span><i class="lb lb-f">F</i>feature branch</span><span><i class="lb lb-d"></i>draft</span><span><i class="lb lb-m"></i>mergeable</span><span><i class="lb lb-q"></i>in merge queue</span><span><i class="lb lb-x"></i>merged or closed</span><span><i class="lb lb-l"></i>local branch, no PR</span>
