@@ -145,7 +145,7 @@ export interface PrView {
   title: string;
   /** `3 files, +500 −40`. */
   sizeTip: string;
-  /** ready: mergeable (open, not a draft, all four columns fine). queued: open and in the
+  /** ready: mergeable (open, not a draft, approved or no review required, all four columns fine). queued: open and in the
    * merge queue, so never ready. */
   node: "merged" | "closed" | "queued" | "ready" | "open";
   draft: boolean;
@@ -331,7 +331,8 @@ export function prView(
   const lamps = [base, ci, feedback, review];
   const open = g.state === "OPEN";
   const q = open ? g.mergeQueue : null;
-  const ready = !q && open && !g.isDraft && review.count == null && lamps.every((l) => l.lamp === "fine");
+  // GitHub's review decision rules: pending requests don't block a PR it counts as approved.
+  const ready = !q && open && !g.isDraft && g.reviewDecision !== "REVIEW_REQUIRED" && lamps.every((l) => l.lamp === "fine");
   return {
     pos,
     url: g.url,
