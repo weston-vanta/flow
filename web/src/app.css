@@ -61,7 +61,8 @@ aside{min-height:0;display:flex}
 @keyframes railsweep{0%{background-position:-16px 0}55%,100%{background-position:calc(100% + 16px) 0}}
 
 /* Folded: one line (rail, title; a count per column). */
-.folded .trail::before{height:3px;border-left-width:0;border-top-left-radius:1.5px;border-bottom-left-radius:1.5px}
+/* Folded, the bar starts where the open rail's corner ends (3px inset + 7px radius). */
+.folded .trail::before{left:10px;width:calc(100% - 26px);height:3px;border-left-width:0;border-top-left-radius:1.5px;border-bottom-left-radius:1.5px}
 .folded .tt{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .folded .lm2{display:none}
 /* Top-anchored at the folded line's 52px, so nothing moves while the lane animates its height. */
