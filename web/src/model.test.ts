@@ -295,13 +295,17 @@ test("a PR's view title is its GitHub title unchanged, prefix and all", () => {
   assert.equal(prView(gh({ title: "[ABC-123] Fix it" }), null).title, "[ABC-123] Fix it");
 });
 
-test("mergeable: open, not a draft, no review outstanding, all four lamps fine", () => {
+test("mergeable: open, not a draft, approved or no review required, all four lamps fine", () => {
   const node = (o: Partial<Github>) => prView(gh(o), 1).node;
   assert.equal(node({}), "ready");
   assert.equal(node({ reviewDecision: null }), "ready");
   assert.equal(node({ checks: [] }), "ready");
   assert.equal(node({ isDraft: true }), "open");
-  assert.equal(node({ reviewRequests: [{ login: "ana", asCodeOwner: false }] }), "open");
+  // GitHub's review decision rules, not the pending requests: approved with requests still out is mergeable.
+  const ana = [{ login: "ana", asCodeOwner: false }];
+  assert.equal(node({ reviewRequests: ana }), "ready");
+  assert.equal(node({ reviewRequests: ana, reviewDecision: null }), "ready");
+  assert.equal(node({ reviewRequests: ana, reviewDecision: "REVIEW_REQUIRED" }), "open");
   assert.equal(node({ reviewDecision: "REVIEW_REQUIRED" }), "open");
   assert.equal(node({ checks: [check("IN_PROGRESS", null)] }), "open");
   assert.equal(node({ threads: [thread()] }), "open");

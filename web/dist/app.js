@@ -80,7 +80,7 @@
     const lamps = [base, ci, feedback, review];
     const open = g.state === "OPEN";
     const q = open ? g.mergeQueue : null;
-    const ready = !q && open && !g.isDraft && review.count == null && lamps.every((l) => l.lamp === "fine");
+    const ready = !q && open && !g.isDraft && g.reviewDecision !== "REVIEW_REQUIRED" && lamps.every((l) => l.lamp === "fine");
     return {
       pos,
       url: g.url,
