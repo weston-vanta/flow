@@ -307,6 +307,8 @@ aside {
   }
 }
 .folded .trail::before {
+  left: 10px;
+  width: calc(100% - 26px);
   height: 3px;
   border-left-width: 0;
   border-top-left-radius: 1.5px;
