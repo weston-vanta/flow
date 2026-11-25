@@ -26,7 +26,7 @@
     if (problems.length) {
       return { lamp: "act", tip: `base: ${problems.map((p) => p[0].toLowerCase() + p.slice(1)).join(" \xB7 ")}` };
     }
-    return done(g, "base") ?? { lamp: "fine", tip: "base: no conflict" };
+    return done(g, "base") ?? { lamp: "fine", tip: below == null ? `base: no conflict, up to date with ${g.baseRefName}` : "base: no conflict" };
   }
   var failingChecks = (g) => g.checks.filter((c) => c.conclusion && FAILING.has(c.conclusion));
   function ciLight(g) {
@@ -97,7 +97,7 @@
       ci,
       feedback,
       review,
-      tray: trayView(g, below, now),
+      tray: trayView(g, now),
       jira: jiraView(jira)
     };
   }
@@ -122,11 +122,11 @@
     }));
     return [...requested, ...reviewed];
   }
-  function trayView(g, below = null, now = Date.now()) {
+  function trayView(g, now = Date.now()) {
     const word = g.state === "MERGED" ? "merged" : "closed";
     if (g.state !== "OPEN") {
       return {
-        base: section([], word),
+        base: g.baseRefName,
         ci: section([], "passed"),
         feedback: section([], "no open threads"),
         review: section([], word)
@@ -144,7 +144,7 @@
     }));
     const review = g.reviewDecision === "REVIEW_REQUIRED" ? "required, none requested" : g.reviewDecision === "APPROVED" ? "approved" : "not required";
     return {
-      base: section(baseProblems(g, below, now), below == null ? `no conflict, up to date with ${g.baseRefName}` : "no conflict"),
+      base: g.baseRefName,
       ci: section(
         failingChecks(g).map((c) => ({ name: c.name, url: c.url })),
         running ? "running" : "passing"
@@ -378,7 +378,6 @@
   var ext = (url, cls, title, text) => `<a class="${cls}" href="${esc(url)}" target="_blank" rel="noreferrer" title="${esc(title)}">${esc(text)}</a>`;
   function items(p, col, expanded) {
     const t = p.tray;
-    if (col === "base") return t.base.items.map((s) => `<div class="p-item">${esc(s)}</div>`).join("");
     if (col === "ci") {
       return t.ci.items.map((c) => `<div class="p-item">${c.url ? ext(c.url, "p-mono", "Open job", c.name) : `<span class="p-mono">${esc(c.name)}</span>`}</div>`).join("");
     }
@@ -404,12 +403,14 @@
   }
   function prPanel(p, t) {
     const sections = COLUMNS.map(([col, label]) => {
-      const s = p.tray[col];
       const l = p[col];
+      const act = l.lamp === "act" ? " act" : "";
       const led = "count" in l && l.count != null ? String(l.count) : "";
+      const s = col === "base" ? null : p.tray[col];
+      const fine = col === "base" ? `<span class="p-fine p-mono${act}" title="${esc(l.tip)}">${esc(p.tray.base)}</span>` : s.fine != null ? `<span class="p-fine${act}">${esc(s.fine)}</span>` : "";
       return `<section class="p-sec" data-sec="${col}" aria-label="${label}">
-      <div class="p-sech"><span class="p-led t-${sig(l)}" title="${esc(l.tip)}">${led}</span><span class="p-key">${label}</span>${s.fine != null ? `<span class="p-fine${l.lamp === "act" ? " act" : ""}">${esc(s.fine)}</span>` : ""}</div>
-      ${s.items ? `<div class="p-items">${items(p, col, t.expanded)}</div>` : ""}
+      <div class="p-sech"><span class="p-led t-${sig(l)}" title="${esc(l.tip)}">${led}</span><span class="p-key">${label}</span>${fine}</div>
+      ${s?.items && col !== "base" ? `<div class="p-items">${items(p, col, t.expanded)}</div>` : ""}
     </section>`;
     }).join("");
     return `<div class="p-head">${ext(p.url, "p-mono p-num", `Open #${p.number} on GitHub`, `#${p.number}`)}${p.draft && p.node === "open" ? '<span class="p-draft">draft</span>' : ""}<span class="p-meta p-mono">${esc(p.sizeTip)}</span>${CLOSE("Close details")}</div>
